@@ -627,6 +627,35 @@ function canUseCleanFinalResolverPathForReviewBlockedParent(
     && isDesignatedReviewBlockerResolver(goal, unresolvedReviewBlocked[0]);
 }
 
+function hasReciprocalReviewBlockerResolver(goal: UltragoalItem, plan: UltragoalPlan): boolean {
+  const resolverId = goal.reviewBlockerResolution?.resolverGoalId;
+  if (!resolverId) return false;
+  const resolvers = plan.goals.filter((candidate) => candidate.id === resolverId);
+  if (resolvers.length !== 1) return false;
+  return resolvers[0]!.resolvesReviewBlockedGoalId === goal.id;
+}
+
+function hasUniqueGoalIds(plan: UltragoalPlan): boolean {
+  return new Set(plan.goals.map((candidate) => candidate.id)).size === plan.goals.length;
+}
+
+function canPersistNormalFinalAggregateCompletion(
+  plan: UltragoalPlan,
+  goal: UltragoalItem,
+  finalRunCheckpoint: boolean,
+  allowActiveFinalCodexGoal: boolean | undefined,
+): boolean {
+  if (!finalRunCheckpoint || allowActiveFinalCodexGoal) return false;
+  if (!hasUniqueGoalIds(plan)) return false;
+  if (!isScheduleEligible(goal)) return false;
+  const unresolvedReviewBlocked = unresolvedReviewBlockedGoals(plan);
+  if (unresolvedReviewBlocked.length === 0) {
+    return plan.goals.every((candidate) => candidate.status !== 'review_blocked'
+      || hasReciprocalReviewBlockerResolver(candidate, plan));
+  }
+  return canUseCleanFinalResolverPathForReviewBlockedParent(plan, goal, finalRunCheckpoint, allowActiveFinalCodexGoal);
+}
+
 async function canReconcileCompletedTaskScopedAggregateSnapshot(
   cwd: string,
   plan: UltragoalPlan,
@@ -1831,16 +1860,11 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     }
     if (
       aggregateMode
-      && finalRunCheckpoint
-      && !options.allowActiveFinalCodexGoal
-      && (
-        unresolvedReviewBlockedGoals(plan).length === 0
-        || canUseCleanFinalResolverPathForReviewBlockedParent(
-          plan,
-          goal,
-          finalRunCheckpoint,
-          options.allowActiveFinalCodexGoal,
-        )
+      && canPersistNormalFinalAggregateCompletion(
+        plan,
+        goal,
+        finalRunCheckpoint,
+        options.allowActiveFinalCodexGoal,
       )
     ) {
       normalFinalAggregateCompletion = {
