@@ -325,7 +325,7 @@ describe('cli/ultragoal', () => {
         reconciliation?: { ok: boolean; warnings: string[]; snapshot: { unavailableReason?: string } };
       };
       assert.equal(parsed.summary.complete, 1);
-      assert.equal(parsed.summary.aggregateComplete, false);
+      assert.equal(parsed.summary.aggregateComplete, true);
       assert.equal(parsed.summary.artifactComplete, true);
       assert.equal(parsed.codexGoalFallback?.status, 'codex_goal_reconciliation_unavailable');
       assert.equal(parsed.codexGoalFallback?.reason, 'db_schema_context_error');
@@ -339,7 +339,7 @@ describe('cli/ultragoal', () => {
         JSON.stringify({ error: 'SQL error: no such table: thread_goals' }),
       ]));
       const output = human.stdout.join('\n');
-      assert.match(output, /ultragoal artifact goals: complete/);
+      assert.match(output, /ultragoal aggregate product: complete/);
       assert.match(output, /codex goal fallback: Codex goal DB\/schema\/context is unavailable/);
       assert.match(output, /codex goal warning: .*no such table: thread_goals/);
     });

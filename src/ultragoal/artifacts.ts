@@ -1829,13 +1829,20 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
         throw new UltragoalError(`${formatCodexGoalReconciliation(reconciliation)}${taskScopedRequirement}${remediation}`);
       }
     }
-    const designatedReviewBlockerResolver = goal.resolvesReviewBlockedGoalId
-      ? isDesignatedReviewBlockerResolver(
-        goal,
-        plan.goals.find((candidate) => candidate.id === goal.resolvesReviewBlockedGoalId),
+    if (
+      aggregateMode
+      && finalRunCheckpoint
+      && !options.allowActiveFinalCodexGoal
+      && (
+        unresolvedReviewBlockedGoals(plan).length === 0
+        || canUseCleanFinalResolverPathForReviewBlockedParent(
+          plan,
+          goal,
+          finalRunCheckpoint,
+          options.allowActiveFinalCodexGoal,
+        )
       )
-      : false;
-    if (aggregateMode && finalRunCheckpoint && !options.allowActiveFinalCodexGoal && designatedReviewBlockerResolver) {
+    ) {
       normalFinalAggregateCompletion = {
         status: 'complete',
         completedAt: now,
