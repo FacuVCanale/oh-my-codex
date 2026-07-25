@@ -1073,17 +1073,102 @@ describe('ultragoal artifacts', () => {
       ]);
 
       const tampered = await readUltragoalPlan(cwd);
-      assert.equal(isFinalRunCompletionCandidate(tampered, tampered.goals.find((goal) => goal.id === 'G004-final')!), true);
+      assert.equal(isFinalRunCompletionCandidate(tampered, tampered.goals.find((goal) => goal.id === 'G004-final')!), false);
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: 'G004-final',
+          status: 'complete',
+          evidence: 'G004-final completed planned work for .omx/ultragoal/goals.json; validation complete; reviews clean.',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /not complete|objective mismatch|Completed task-scoped aggregate reconciliation/,
+      );
+
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals.find((goal) => goal.id === 'G001-parent')?.status, 'review_blocked');
+      assert.equal(plan.aggregateCompletion, undefined);
+      assert.equal(summarizeUltragoalPlan(plan).aggregateComplete, false);
+      assert.equal(isUltragoalDone(plan), false);
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.equal((ledger.match(/"event":"aggregate_completed"/g) ?? []).length, 0);
+    });
+  });
+
+  it('does not terminalize when a falsely-resolved parent coexists with a legitimate designated resolver', async () => {
+    await withTempRepo(async (cwd) => {
+      const objective = ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE;
+      await writeAggregateFixturePlan(cwd, 'G004-resolver-b', [
+        aggregateFixtureGoal('G001-parent-a', 'review_blocked', {
+          reviewBlockerResolution: {
+            resolverGoalId: 'G002-resolver-a',
+            status: 'complete',
+            resolvedAt: '2026-01-01T00:00:00.000Z',
+            evidence: 'forged resolution metadata for parent A',
+          },
+        }),
+        aggregateFixtureGoal('G002-resolver-a', 'complete', {
+          completedAt: '2026-01-01T00:00:00.000Z',
+          evidence: 'resolver A done',
+          resolvesReviewBlockedGoalId: 'G009-elsewhere',
+        }),
+        aggregateFixtureGoal('G003-parent-b', 'review_blocked', {
+          reviewBlockerResolution: {
+            resolverGoalId: 'G004-resolver-b',
+            status: 'pending',
+            evidence: 'legitimate blocker for parent B',
+          },
+        }),
+        aggregateFixtureGoal('G004-resolver-b', 'in_progress', {
+          startedAt: '2026-01-01T00:00:00.000Z',
+          resolvesReviewBlockedGoalId: 'G003-parent-b',
+        }),
+      ]);
+
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: 'G004-resolver-b',
+          status: 'complete',
+          evidence: 'G004-resolver-b completed planned work for .omx/ultragoal/goals.json; validation complete; reviews clean.',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: cleanQualityGate(),
+        }),
+        /not complete|objective mismatch|Completed task-scoped aggregate reconciliation/,
+      );
+
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals.find((goal) => goal.id === 'G001-parent-a')?.status, 'review_blocked');
+      assert.equal(plan.aggregateCompletion, undefined);
+      assert.equal(summarizeUltragoalPlan(plan).aggregateComplete, false);
+      assert.equal(isUltragoalDone(plan), false);
+      const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');
+      assert.equal((ledger.match(/"event":"aggregate_completed"/g) ?? []).length, 0);
+    });
+  });
+
+  it('does not treat a self-referential review-blocker resolver as a designated resolver', async () => {
+    await withTempRepo(async (cwd) => {
+      const objective = ULTRAGOAL_AGGREGATE_CODEX_OBJECTIVE;
+      await writeAggregateFixturePlan(cwd, 'G001-self', [
+        aggregateFixtureGoal('G001-self', 'review_blocked', {
+          reviewBlockerResolution: {
+            resolverGoalId: 'G001-self',
+            status: 'pending',
+            evidence: 'self-referential resolver metadata',
+          },
+          resolvesReviewBlockedGoalId: 'G001-self',
+        }),
+      ]);
 
       const completed = await checkpointUltragoal(cwd, {
-        goalId: 'G004-final',
+        goalId: 'G001-self',
         status: 'complete',
-        evidence: 'G004-final completed planned work for .omx/ultragoal/goals.json; validation complete; reviews clean.',
+        evidence: 'G001-self completed planned work for .omx/ultragoal/goals.json; validation complete; reviews clean.',
         codexGoal: { goal: { objective, status: 'complete' } },
         qualityGate: cleanQualityGate(),
       });
 
-      assert.equal(completed.goals.find((goal) => goal.id === 'G001-parent')?.status, 'review_blocked');
       assert.equal(completed.aggregateCompletion, undefined);
       assert.equal(summarizeUltragoalPlan(completed).aggregateComplete, false);
       const ledger = await readFile(join(cwd, '.omx/ultragoal/ledger.jsonl'), 'utf-8');

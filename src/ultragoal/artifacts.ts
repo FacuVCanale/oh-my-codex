@@ -610,6 +610,7 @@ function unresolvedReviewBlockedGoals(plan: UltragoalPlan): UltragoalItem[] {
 
 function isDesignatedReviewBlockerResolver(goal: UltragoalItem, parent: UltragoalItem | undefined): boolean {
   return parent?.status === 'review_blocked'
+    && parent.id !== goal.id
     && goal.resolvesReviewBlockedGoalId === parent.id
     && parent.reviewBlockerResolution?.resolverGoalId === goal.id;
 }
@@ -648,11 +649,7 @@ function canPersistNormalFinalAggregateCompletion(
   if (!finalRunCheckpoint || allowActiveFinalCodexGoal) return false;
   if (!hasUniqueGoalIds(plan)) return false;
   if (!isScheduleEligible(goal)) return false;
-  const unresolvedReviewBlocked = unresolvedReviewBlockedGoals(plan);
-  if (unresolvedReviewBlocked.length === 0) {
-    return plan.goals.every((candidate) => candidate.status !== 'review_blocked'
-      || hasReciprocalReviewBlockerResolver(candidate, plan));
-  }
+  if (unresolvedReviewBlockedGoals(plan).length === 0) return true;
   return canUseCleanFinalResolverPathForReviewBlockedParent(plan, goal, finalRunCheckpoint, allowActiveFinalCodexGoal);
 }
 
@@ -769,6 +766,7 @@ function isReviewBlockedResolved(goal: UltragoalItem, plan: UltragoalPlan): bool
   if (goal.status !== 'review_blocked') return false;
   const resolverId = goal.reviewBlockerResolution?.resolverGoalId;
   if (!resolverId || goal.reviewBlockerResolution?.status !== 'complete') return false;
+  if (!hasReciprocalReviewBlockerResolver(goal, plan)) return false;
   const resolver = plan.goals.find((candidate) => candidate.id === resolverId);
   return resolver?.status === 'complete';
 }
