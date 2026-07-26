@@ -649,6 +649,7 @@ function canPersistNormalFinalAggregateCompletion(
   if (!finalRunCheckpoint || allowActiveFinalCodexGoal) return false;
   if (!hasUniqueGoalIds(plan)) return false;
   if (!isScheduleEligible(goal)) return false;
+  if (goal.status !== 'in_progress' || plan.activeGoalId !== goal.id) return false;
   if (unresolvedReviewBlockedGoals(plan).length === 0) return true;
   return canUseCleanFinalResolverPathForReviewBlockedParent(plan, goal, finalRunCheckpoint, allowActiveFinalCodexGoal);
 }
