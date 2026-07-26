@@ -1150,6 +1150,9 @@ function appendGoalToPlan(plan: UltragoalPlan, options: AddUltragoalGoalOptions 
 export async function addUltragoalGoal(cwd: string, options: AddUltragoalGoalOptions): Promise<{ plan: UltragoalPlan; goal: UltragoalItem }> {
   return withUltragoalMutationLock(cwd, async () => {
   const plan = await readUltragoalPlanUnderLock(cwd);
+  if (plan.aggregateCompletion?.status === 'complete') {
+    throw new UltragoalError('Cannot add a goal to an already completed aggregate ultragoal plan; start a new plan for post-terminal work.');
+  }
   const now = iso(options.now);
   const goal = appendGoalToPlan(plan, options);
   await writePlan(cwd, plan);
@@ -1742,6 +1745,9 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
   const plan = await readUltragoalPlanUnderLock(cwd);
   const goal = plan.goals.find((candidate) => candidate.id === options.goalId);
   if (!goal) throw new UltragoalError(`Unknown ultragoal id: ${options.goalId}`);
+  if (plan.aggregateCompletion?.status === 'complete' && options.status !== 'complete') {
+    throw new UltragoalError(`Cannot record a ${options.status} checkpoint for ${goal.id} after the aggregate ultragoal plan is complete; the terminal aggregate receipt is immutable.`);
+  }
   const now = iso(options.now);
   if (options.status === 'blocked') {
     if (goal.status !== 'in_progress') {
