@@ -9374,7 +9374,7 @@ function isAllowedOmxCleanupDryRunCommand(command: string): boolean {
   if (!isSingleLiteralShellInvocation(command)) return false;
   const words = literalInvocationWords(command);
   const index = skipLiteralLeadingAssignments(words);
-  if (commandNameFromShellWord(words[index] ?? "") !== "omx") return false;
+  if (!["omx", "gjc"].includes(commandNameFromShellWord(words[index] ?? ""))) return false;
   const args = words.slice(index + 1).filter(Boolean);
   return args[0] === "cleanup"
     && args.includes("--dry-run")
@@ -9448,11 +9448,31 @@ function isAllowedOmxSparkshellWrappedReadOnlyCommand(wrappedCommand: string): b
     && collectOmxStateCommandOperations(wrappedCommand, "write").length === 0;
 }
 
-function isAllowedOmxReadOnlyCommand(command: string): boolean {
+// The read-only allowlist (help/version/status/read, sparkshell-wrapped
+// discovery) must not authorize based on the bare `omx`/`gjc` basename alone:
+// an attacker-controlled PATH prefix or a path-qualified impostor executable
+// could otherwise be granted this allowance regardless of what it actually
+// does, since the caller returns immediately on a positive match. Require the
+// same trusted-package-CLI execution-context proof already used for the
+// direct-cancel path before any read-only shape is even considered.
+function isTrustedOmxOrGjcReadOnlyInvocation(command: string, cwd: string): boolean {
   if (!isSingleLiteralShellInvocation(command)) return false;
+  if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
+  if (commandHasUnsafeConductorShellState(command, cwd)) return false;
+  if (commandHasUnsafeDynamicLoaderEnvironment(command)) return false;
+  const words = tokenizeConductorShellWords(command);
+  const index = skipShellCommandPositionPrefixWords(words, 0);
+  const commandName = commandNameFromShellWord(words[index] ?? "");
+  if (commandName !== "omx" && commandName !== "gjc") return false;
+  return conductorCommandResolvesTrustedPackageCli(words, 0, index, createConductorRuntimeShellState(cwd), cwd);
+}
+
+function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
+  if (!isTrustedOmxOrGjcReadOnlyInvocation(command, cwd)) return false;
   const words = literalInvocationWords(command);
   const index = skipLiteralLeadingAssignments(words);
-  if (commandNameFromShellWord(words[index] ?? "") !== "omx") return false;
+  const commandName = commandNameFromShellWord(words[index] ?? "");
+  if (commandName !== "omx" && commandName !== "gjc") return false;
   const args = words.slice(index + 1).filter(Boolean);
   if (args.length === 0) return false;
   if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) return true;
@@ -9499,7 +9519,7 @@ function isAllowedDeepInterviewCommandSpecificBash(
   if (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command)) {
     return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
   }
-  return isAllowedOmxReadOnlyCommand(command)
+  return isAllowedOmxReadOnlyCommand(command, cwd)
     || isAllowedGhReadOnlyCommand(command)
     || isAllowedVersionProbeCommand(command);
 }
@@ -9742,7 +9762,7 @@ function isAllowedRalplanBashWrite(
   // Read-only discovery (help/version/status/read, sparkshell-wrapped
   // read-only argv, and gh read-only commands) is not implementation intent
   // and must not be misclassified as a write during ralplan planning (#3314).
-  if (isAllowedOmxReadOnlyCommand(command) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command)) {
+  if (isAllowedOmxReadOnlyCommand(command, cwd) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command)) {
     return true;
   }
 

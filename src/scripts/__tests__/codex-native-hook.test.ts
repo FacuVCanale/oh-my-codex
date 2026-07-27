@@ -13426,15 +13426,33 @@ exit 0
 			})(), /Deep-interview is active|write intent|handoff|direct/);
 			await writeIssue3239ActiveAutopilotDeepInterviewState(cwd, sessionId, threadId);
 
-			for (const [label, command] of [
-				["omx-help", "omx --help"],
-				["omx-state-read", "omx state read --json"],
-				["omx-cleanup-dry-run", "omx cleanup --dry-run"],
-				["gh-issue-list", "gh issue list --repo Yeachan-Heo/oh-my-codex"],
-				["rtk-version", "rtk --version"],
-				["omx-help-benign-locale-env", "LANG=C omx --help"],
-			] as const) {
-				await assertAllowed(label, await bash(command, label));
+			{
+				// The read-only allowlist requires the same trusted-package-CLI
+				// execution-context proof the direct-cancel path uses (#3313/#3314
+				// hardening), so these assertions need `omx` to resolve to this
+				// worktree's own canonical CLI rather than relying on whatever
+				// ambient PATH the test runner happens to inherit.
+				const readOnlyTrustedBinDir = await mkdtemp(join(tmpdir(), "omx-issue-3239-readonly-trusted-bin-"));
+				const workspacePackageCliForReadOnly = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+				await symlink(workspacePackageCliForReadOnly, join(readOnlyTrustedBinDir, "omx"));
+				const inheritedReadOnlyPath = process.env.PATH;
+				process.env.PATH = `${readOnlyTrustedBinDir}:${inheritedReadOnlyPath ?? ""}`;
+				try {
+					for (const [label, command] of [
+						["omx-help", "omx --help"],
+						["omx-state-read", "omx state read --json"],
+						["omx-cleanup-dry-run", "omx cleanup --dry-run"],
+						["gh-issue-list", "gh issue list --repo Yeachan-Heo/oh-my-codex"],
+						["rtk-version", "rtk --version"],
+						["omx-help-benign-locale-env", "LANG=C omx --help"],
+					] as const) {
+						await assertAllowed(label, await bash(command, label));
+					}
+				} finally {
+					if (inheritedReadOnlyPath === undefined) delete process.env.PATH;
+					else process.env.PATH = inheritedReadOnlyPath;
+					await rm(readOnlyTrustedBinDir, { recursive: true, force: true });
+				}
 			}
 
 			for (const [label, command, pattern] of [
@@ -13765,6 +13783,51 @@ exit 0
 				// #3313: deep-interview's own structured lifecycle stays reachable.
 				await assertAllowed("omx cancel", "omx cancel");
 
+				// The read-only allowlist authorizes the *outer* omx/gjc invocation, not
+				// just the wrapped argv shape, so it must require the same trusted-package-CLI
+				// execution-context proof the direct-cancel path already uses. An impostor
+				// binary (PATH-prefix override or path-qualified) must never reach the
+				// allow-return for --help, state read, or sparkshell, regardless of what its
+				// wrapped argv looks like.
+				{
+					const impostorBinDir = await mkdtemp(join(tmpdir(), "omx-impostor-bin-"));
+					await writeFile(join(impostorBinDir, "omx"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(impostorBinDir, "omx"), 0o755);
+					try {
+						await assertBlocked("PATH-prefix impostor omx --help stays blocked", `PATH="${impostorBinDir}" omx --help`);
+						await assertBlocked(
+							"PATH-prefix impostor omx state read stays blocked",
+							`PATH="${impostorBinDir}" omx state read --mode deep-interview --json`,
+						);
+						await assertBlocked(
+							"PATH-prefix impostor omx sparkshell stays blocked",
+							`PATH="${impostorBinDir}" omx sparkshell -- git status --short --branch`,
+						);
+						await assertBlocked(
+							"path-qualified impostor omx sparkshell stays blocked",
+							`${join(impostorBinDir, "omx")} sparkshell -- git status --short --branch`,
+						);
+					} finally {
+						await rm(impostorBinDir, { recursive: true, force: true });
+					}
+				}
+
+				// gjc is a first-class alias of the same canonical package CLI; a trusted
+				// gjc shim must get the same read-only discovery allowance omx does.
+				{
+					const gjcTrustedBinDir = await mkdtemp(join(tmpdir(), "omx-gjc-trusted-bin-"));
+					await symlink(workspacePackageCli, join(gjcTrustedBinDir, "gjc"));
+					const previousGjcPath = process.env.PATH;
+					process.env.PATH = `${gjcTrustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+					try {
+						await assertAllowed("trusted gjc --help", "gjc --help");
+						await assertAllowed("trusted gjc sparkshell wrapped git status", "gjc sparkshell -- git status --short --branch");
+					} finally {
+						if (previousGjcPath === undefined) delete process.env.PATH; else process.env.PATH = previousGjcPath;
+						await rm(gjcTrustedBinDir, { recursive: true, force: true });
+					}
+				}
+
 				// Guards that must NOT relax: unsafe sparkshell modes, mutation-shaped
 				// wrapped argv, raw redirects into own session state, active-state
 				// overrides, and PATH-prefix smuggling on `omx cancel`.
@@ -13856,6 +13919,34 @@ exit 0
 				await assertAllowed("omx ralplan --help", "omx ralplan --help");
 				await assertAllowed("omx state read --mode ralplan --json", "omx state read --mode ralplan --json");
 				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
+
+				{
+					const impostorBinDir = await mkdtemp(join(tmpdir(), "omx-impostor-bin-ralplan-"));
+					await writeFile(join(impostorBinDir, "omx"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(impostorBinDir, "omx"), 0o755);
+					try {
+						await assertBlocked("PATH-prefix impostor omx --help stays blocked", `PATH="${impostorBinDir}" omx --help`);
+						await assertBlocked(
+							"PATH-prefix impostor omx sparkshell stays blocked",
+							`PATH="${impostorBinDir}" omx sparkshell -- git status --short --branch`,
+						);
+					} finally {
+						await rm(impostorBinDir, { recursive: true, force: true });
+					}
+				}
+
+				{
+					const gjcTrustedBinDir = await mkdtemp(join(tmpdir(), "omx-gjc-trusted-bin-ralplan-"));
+					await symlink(workspacePackageCli, join(gjcTrustedBinDir, "gjc"));
+					const previousGjcPath = process.env.PATH;
+					process.env.PATH = `${gjcTrustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+					try {
+						await assertAllowed("trusted gjc --help", "gjc --help");
+					} finally {
+						if (previousGjcPath === undefined) delete process.env.PATH; else process.env.PATH = previousGjcPath;
+						await rm(gjcTrustedBinDir, { recursive: true, force: true });
+					}
+				}
 
 				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
