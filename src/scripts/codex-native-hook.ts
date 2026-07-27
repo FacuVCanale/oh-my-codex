@@ -6531,17 +6531,20 @@ function tokenizeShellWords(segment: string): string[] {
       }
       continue;
     }
-    // Bash's own lexer only treats ASCII space/tab (and newline as a
-    // statement terminator already normalized upstream) as word-separating
-    // blanks; it does NOT split on other Unicode whitespace (NBSP U+00A0,
-    // BOM U+FEFF, Zs-class spaces, U+2028/2029, etc). JS regex `\s` matches
-    // all of those, which previously let an embedded Unicode whitespace
-    // character make this tokenizer see two words ("omx", "--help") while
-    // Bash resolves and executes a single differently-named executable
-    // ("omx<NBSP>--help") -- silently borrowing a trusted lookup for a
-    // different, attacker-controlled binary. Restrict this split to the
-    // literal ASCII blank set Bash actually recognizes.
-    if (!quote && (char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\v" || char === "\f")) {
+    // Bash's own lexer treats ONLY ASCII space, tab, and newline as
+    // word-separating blanks. It does NOT split on any other whitespace --
+    // not Unicode whitespace (NBSP U+00A0, BOM U+FEFF, Zs-class spaces,
+    // U+2028/2029), and not other ASCII control characters either (CR, VT,
+    // FF are literal bytes within a word to Bash, confirmed empirically via
+    // `bash -c`). JS regex `\s` (and an earlier, still-too-broad fix that
+    // additionally special-cased CR/VT/FF) previously let an embedded
+    // whitespace/control character make this tokenizer see two words
+    // ("omx", "--help") while Bash resolves and executes a single,
+    // differently-named executable ("omx<NBSP>--help", "omx<VT>--help",
+    // etc.) -- silently borrowing a trusted lookup for a different,
+    // attacker-controlled binary. Restrict this split to exactly the three
+    // characters Bash's own lexer recognizes as blanks.
+    if (!quote && (char === " " || char === "\t" || char === "\n")) {
       pushCurrent();
       continue;
     }

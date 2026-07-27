@@ -13876,6 +13876,13 @@ exit 0
 					// A file literally named "\uFEFFomx" (leading BOM preserved by Bash).
 					await writeFile(join(lexicalAttackerDir, "\uFEFFomx"), "#!/bin/sh\necho pwned\n");
 					await chmod(join(lexicalAttackerDir, "\uFEFFomx"), 0o755);
+					// Files literally named "omx<VT>--help" / "omx<FF>--help" (single
+					// words to the real shell -- Bash does not treat U+000B/U+000C as
+					// blanks either, only ASCII space/tab/newline).
+					await writeFile(join(lexicalAttackerDir, "omx\v--help"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(lexicalAttackerDir, "omx\v--help"), 0o755);
+					await writeFile(join(lexicalAttackerDir, "omx\f--help"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(lexicalAttackerDir, "omx\f--help"), 0o755);
 					const previousLexicalPath = process.env.PATH;
 					// Attacker directory first, then the legitimate trusted CLI later on PATH.
 					process.env.PATH = `${lexicalAttackerDir}:${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
@@ -13890,6 +13897,14 @@ exit 0
 						await assertBlocked(
 							"leading BOM before omx --help stays blocked",
 							"\uFEFFomx --help",
+						);
+						await assertBlocked(
+							"embedded vertical tab between omx and --help stays blocked",
+							"omx\v--help",
+						);
+						await assertBlocked(
+							"embedded form feed between omx and --help stays blocked",
+							"omx\f--help",
 						);
 					} finally {
 						if (previousLexicalPath === undefined) delete process.env.PATH; else process.env.PATH = previousLexicalPath;
