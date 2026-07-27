@@ -13768,6 +13768,27 @@ exit 0
 				await assertAllowed("plain git status", "git status --short --branch");
 				await assertAllowed("plain find", "find . -maxdepth 3 -type d");
 
+				// Direct plain `rg` must also stay read-only when it is genuinely
+				// available on this host's real PATH (a user-managed external
+				// executable, not one this repo controls). ripgrep is not part of
+				// the base OS image or this lane's installed toolset, so this check
+				// is best-effort/skip-when-absent rather than hermetic -- it proves
+				// the classifier's generic non-omx/gjc read-only path for a real,
+				// externally-resolved `rg` wherever one happens to exist, without
+				// making the suite depend on ripgrep being installed everywhere.
+				{
+					const { execFileSync } = await import("node:child_process");
+					let realRgPath: string | null = null;
+					try {
+						realRgPath = execFileSync("/bin/sh", ["-c", "command -v rg"], { encoding: "utf-8" }).trim() || null;
+					} catch {
+						realRgPath = null;
+					}
+					if (realRgPath) {
+						await assertAllowed("plain rg (real, externally-resolved binary)", `rg -n -i "foo" README.md`);
+					}
+				}
+
 				// #3313/#3314: omx/gjc help/version/status/read must not be misclassified as writes.
 				await assertAllowed("omx --help", "omx --help");
 				await assertAllowed("omx ralplan --help", "omx ralplan --help");
@@ -13914,9 +13935,36 @@ exit 0
 
 				// Guards that must NOT relax: unsafe sparkshell modes, mutation-shaped
 				// wrapped argv, raw redirects into own session state, active-state
-				// overrides, and PATH-prefix smuggling on `omx cancel`.
+				// overrides, and PATH-prefix smuggling on `omx cancel`. `--help`/`-h`
+				// is safe anywhere (every subcommand consulted short-circuits before
+				// real work), but `--version`/`-v` is NOT universally safe (e.g.
+				// `omx cleanup --version` still performs real cleanup because that
+				// subcommand only special-cases `--help`/`-h`), so it must only be
+				// trusted as a bare top-level probe. A `--help` meant for a
+				// sparkshell-wrapped script must not short-circuit scrutiny of that
+				// wrapped script, and an inherited OMX_SPARKSHELL_BIN override must
+				// deny the sparkshell allowance entirely.
 				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
+				await assertBlocked("omx cleanup --version stays blocked (not a bare top-level probe)", "omx cleanup --version");
+				await assertBlocked("omx cleanup -v stays blocked (not a bare top-level probe)", "omx cleanup -v");
+				await assertBlocked(
+					"sparkshell-wrapped --help meant for the wrapped script stays scrutinized",
+					"omx sparkshell -- ./mutate.sh --help",
+				);
+				{
+					const previousSparkshellBin = process.env.OMX_SPARKSHELL_BIN;
+					process.env.OMX_SPARKSHELL_BIN = "/tmp/attacker-sidecar";
+					try {
+						await assertBlocked(
+							"inherited OMX_SPARKSHELL_BIN override denies the sparkshell allowance",
+							"omx sparkshell -- git status --short --branch",
+						);
+					} finally {
+						if (previousSparkshellBin === undefined) delete process.env.OMX_SPARKSHELL_BIN;
+						else process.env.OMX_SPARKSHELL_BIN = previousSparkshellBin;
+					}
+				}
 				await assertBlocked(
 					"raw redirect into own session state",
 					`echo '{}' > ${join(sessionDir, "deep-interview-state.json")}`,
@@ -14034,6 +14082,24 @@ exit 0
 
 				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
+				await assertBlocked("omx cleanup --version stays blocked (not a bare top-level probe)", "omx cleanup --version");
+				await assertBlocked(
+					"sparkshell-wrapped --help meant for the wrapped script stays scrutinized",
+					"omx sparkshell -- ./mutate.sh --help",
+				);
+				{
+					const previousSparkshellBin = process.env.OMX_SPARKSHELL_BIN;
+					process.env.OMX_SPARKSHELL_BIN = "/tmp/attacker-sidecar";
+					try {
+						await assertBlocked(
+							"inherited OMX_SPARKSHELL_BIN override denies the sparkshell allowance",
+							"omx sparkshell -- git status --short --branch",
+						);
+					} finally {
+						if (previousSparkshellBin === undefined) delete process.env.OMX_SPARKSHELL_BIN;
+						else process.env.OMX_SPARKSHELL_BIN = previousSparkshellBin;
+					}
+				}
 				await assertBlocked(
 					"raw redirect into own session state",
 					`echo '{}' > ${join(sessionDir, "ralplan-state.json")}`,

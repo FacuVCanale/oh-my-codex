@@ -9456,6 +9456,12 @@ function extractOmxSparkshellDirectArgvCommand(args: readonly string[]): string 
 }
 
 function isAllowedOmxSparkshellWrappedReadOnlyCommand(wrappedCommand: string): boolean {
+  // sparkshell dispatches the wrapped argv through a native sidecar binary
+  // resolved via OMX_SPARKSHELL_BIN (overridable) rather than executing the
+  // wrapped argv directly; an inherited override could substitute an
+  // attacker-controlled sidecar for the one that scrutiny assumes runs the
+  // literal wrapped argv, so this allowance requires no override is present.
+  if (safeString(process.env.OMX_SPARKSHELL_BIN).trim() !== "") return false;
   return !commandHasDeepInterviewWriteIntent(wrappedCommand)
     && !commandHasNestedCliMutationIntent(wrappedCommand)
     && collectOmxStateCommandOperations(wrappedCommand, "write").length === 0;
@@ -9541,13 +9547,29 @@ function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
   if (commandName !== "omx" && commandName !== "gjc") return false;
   const args = words.slice(index + 1).filter(Boolean);
   if (args.length === 0) return false;
-  if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) return true;
+  // Sparkshell must be recognized before any generic "--help/--version
+  // anywhere in args" heuristic below: its wrapped argv belongs to a
+  // DIFFERENT program (e.g. `omx sparkshell -- ./mutate.sh --help`), and a
+  // `--help` meant for that wrapped script is not evidence the omx/gjc
+  // invocation itself is read-only.
+  const sparkshellWrapped = extractOmxSparkshellDirectArgvCommand(args);
+  if (sparkshellWrapped !== null) return isAllowedOmxSparkshellWrappedReadOnlyCommand(sparkshellWrapped);
+  // A bare top-level probe (`omx --help`, `omx -h`, `omx --version`,
+  // `omx -v`, and nothing else) never dispatches to a subcommand handler,
+  // so both help and version forms are safe here.
+  if (args.length === 1 && (args[0] === "--help" || args[0] === "-h" || args[0] === "--version" || args[0] === "-v")) return true;
+  // `--help`/`-h` appearing anywhere is safe to recognize generically: every
+  // omx subcommand consulted (including `cleanup`) short-circuits real work
+  // before it runs when `--help`/`-h` is present, matching conventional CLI
+  // behavior. `--version`/`-v` is NOT universally safe the same way --
+  // `cleanup`, for example, never inspects them and falls through to real
+  // process/tmp cleanup -- so they are only trusted in the bare top-level
+  // form above, never as a trailing flag on an arbitrary subcommand.
+  if (args.some((arg) => arg === "--help" || arg === "-h")) return true;
   if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
   if (args[0] === "state" && ["read", "status"].includes(args[1] ?? "")) {
     return stateReadTrailingArgsAreSafe(args.slice(2));
   }
-  const sparkshellWrapped = extractOmxSparkshellDirectArgvCommand(args);
-  if (sparkshellWrapped !== null) return isAllowedOmxSparkshellWrappedReadOnlyCommand(sparkshellWrapped);
   return isAllowedOmxCleanupDryRunCommand(command);
 }
 
