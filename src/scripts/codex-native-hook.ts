@@ -9450,21 +9450,74 @@ function isAllowedOmxSparkshellWrappedReadOnlyCommand(wrappedCommand: string): b
 
 // The read-only allowlist (help/version/status/read, sparkshell-wrapped
 // discovery) must not authorize based on the bare `omx`/`gjc` basename alone:
-// an attacker-controlled PATH prefix or a path-qualified impostor executable
-// could otherwise be granted this allowance regardless of what it actually
-// does, since the caller returns immediately on a positive match. Require the
-// same trusted-package-CLI execution-context proof already used for the
-// direct-cancel path before any read-only shape is even considered.
-function isTrustedOmxOrGjcReadOnlyInvocation(command: string, cwd: string): boolean {
-  if (!isSingleLiteralShellInvocation(command)) return false;
-  if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
+// an attacker-controlled PATH prefix, a path-qualified impostor executable
+// (absolute OR relative -- `./omx` resolves via the current directory, never
+// via PATH, so a basename-only trust check can be fooled by a legitimate
+// trusted `omx` existing elsewhere on PATH while a *different* `./omx` is
+// what the shell actually executes), or an inherited BASH_FUNC_omx%%/gjc%%
+// shell-function shadow could otherwise be granted this allowance regardless
+// of what it actually does, since the caller returns immediately on a
+// positive match. Share the exact trusted-package-CLI execution-context
+// proof already used for the direct-cancel path (including its literal bare
+// command-word grammar, function-shadow rejection, and inherited
+// NODE_OPTIONS/OPENSSL_CONF/Node-output-environment checks) so both paths
+// can never drift apart.
+const OMX_GJC_TRUSTED_CONTEXT_UNSAFE_INHERITED_ENV_NAMES = [
+  "NODE_OPTIONS",
+  "OPENSSL_CONF",
+];
+
+function omxOrGjcExecutionContextIsTrusted(
+  command: string,
+  cwd: string,
+  allowedCommandWords: readonly string[],
+): boolean {
   if (commandHasUnsafeConductorShellState(command, cwd)) return false;
+  if (allowedCommandWords.some((name) => safeString(process.env[`BASH_FUNC_${name}%%`]).trim() !== "")) return false;
+  const unsafeInheritedNames = [...OMX_GJC_TRUSTED_CONTEXT_UNSAFE_INHERITED_ENV_NAMES, ...CONDUCTOR_NODE_OUTPUT_ENVIRONMENT_NAMES];
+  if (unsafeInheritedNames.some((name) => safeString(process.env[name]).trim() !== "")) return false;
   if (commandHasUnsafeDynamicLoaderEnvironment(command)) return false;
+  if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
   const words = tokenizeConductorShellWords(command);
   const index = skipShellCommandPositionPrefixWords(words, 0);
+  // Require the literal bare command word (no path separator at all, not
+  // just an unqualified basename) so a relative or absolute impostor never
+  // borrows a trusted PATH resolution that belongs to a different, unrelated
+  // `omx`/`gjc` entry.
+  const commandWord = shellWordLiteral(words[index] ?? "");
+  if (!allowedCommandWords.includes(commandWord)) return false;
+  return conductorCommandResolvesTrustedPackageCli(words, 0, index, createConductorRuntimeShellState(cwd), cwd);
+}
+
+function isTrustedOmxOrGjcReadOnlyInvocation(command: string, cwd: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  return omxOrGjcExecutionContextIsTrusted(command, cwd, ["omx", "gjc"]);
+}
+// Shape-only recognizer (no trust check): true when `command` syntactically
+// looks like one of the omx/gjc read-only shapes this allowlist grants
+// (--help/-h/--version/-v, help/status/version, state read|status,
+// sparkshell direct-argv, cleanup --dry-run). Used so callers can hard-deny
+// a recognized-but-untrusted shape instead of silently falling through to
+// the generic write-intent scanner, which has no notion of this allowlist's
+// trust requirement and could independently (and wrongly) conclude "no
+// write intent" for an unrelated reason -- e.g. an inherited BASH_FUNC_omx%%
+// shell-function shadow can make the generic PATH-mutation scanner treat the
+// invocation as a shell function rather than a binary and skip its own
+// mutation classification entirely. A hard hard-deny here closes that
+// fallthrough regardless of what the generic scanner would otherwise infer.
+function omxOrGjcReadOnlyShapeMatches(command: string): boolean {
+  if (!isSingleLiteralShellInvocation(command)) return false;
+  const words = literalInvocationWords(command);
+  const index = skipLiteralLeadingAssignments(words);
   const commandName = commandNameFromShellWord(words[index] ?? "");
   if (commandName !== "omx" && commandName !== "gjc") return false;
-  return conductorCommandResolvesTrustedPackageCli(words, 0, index, createConductorRuntimeShellState(cwd), cwd);
+  const args = words.slice(index + 1).filter(Boolean);
+  if (args.length === 0) return false;
+  if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) return true;
+  if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
+  if (args[0] === "state" && ["read", "status"].includes(args[1] ?? "")) return true;
+  if (extractOmxSparkshellDirectArgvCommand(args) !== null) return true;
+  return args[0] === "cleanup" && args.includes("--dry-run");
 }
 
 function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
@@ -9527,20 +9580,10 @@ function isAllowedDeepInterviewCommandSpecificBash(
 // The pre-#3293 direct-cancel trust check is retained for Ralplan and
 // Conductor. IR2 scopes hook-owned terminalization to Autopilot deep-interview
 // only; those other workflows still execute their existing trusted command.
-const DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES = [
-  "NODE_OPTIONS",
-  "OPENSSL_CONF",
-];
-
+// Shares omxOrGjcExecutionContextIsTrusted with the read-only allowlist so the
+// two proofs cannot drift apart (see the comment above that helper).
 function directOmxCancelCommandHasTrustedExecutionContext(command: string, cwd: string): boolean {
-  if (commandHasUnsafeConductorShellState(command, cwd)) return false;
-  if (safeString(process.env["BASH_FUNC_omx%%"]).trim() !== "") return false;
-  const unsafeInheritedNames = [...DIRECT_OMX_CANCEL_UNSAFE_INHERITED_ENV_NAMES, ...CONDUCTOR_NODE_OUTPUT_ENVIRONMENT_NAMES];
-  if (unsafeInheritedNames.some((name) => safeString(process.env[name]).trim() !== "")) return false;
-  if (commandHasUnsafeDynamicLoaderEnvironment(command)) return false;
-  if (commandHasUnsafeLeadingRuntimeEnvironment(command)) return false;
-  const words = tokenizeConductorShellWords(command);
-  return conductorCommandResolvesTrustedPackageCli(words, 0, 0, createConductorRuntimeShellState(cwd), cwd);
+  return omxOrGjcExecutionContextIsTrusted(command, cwd, ["omx"]);
 }
 
 function isCommandResolutionSensitiveEnvironmentName(name: string): boolean {
@@ -9584,6 +9627,18 @@ function isAllowedDeepInterviewBashWrite(
     return questionClassification.kind === "allowed" && isSingleLiteralShellInvocation(command);
   }
   if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command, cwd)) return true;
+  // A command that syntactically matches a direct-cancel or read-only omx/gjc
+  // shape but failed that specific check (untrusted execution context,
+  // invalid grammar, unsafe sparkshell mode, etc.) must hard-deny here rather
+  // than fall through to the generic write-intent scanner below: that
+  // scanner has no notion of this allowlist's trust requirement and can
+  // independently conclude "no write intent" for unrelated reasons (e.g. an
+  // inherited BASH_FUNC_omx%%/gjc%% shell-function shadow), silently
+  // re-authorizing exactly what the specific check just refused.
+  if (
+    (payload && readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command))
+    || omxOrGjcReadOnlyShapeMatches(command)
+  ) return false;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
@@ -9765,6 +9820,11 @@ function isAllowedRalplanBashWrite(
   if (isAllowedOmxReadOnlyCommand(command, cwd) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command)) {
     return true;
   }
+  // Hard-deny a recognized-but-untrusted omx/gjc read-only shape instead of
+  // falling through to the generic write-intent scanner below, which has no
+  // notion of this allowlist's trust requirement (see the identical deny in
+  // isAllowedDeepInterviewBashWrite for the full rationale).
+  if (omxOrGjcReadOnlyShapeMatches(command)) return false;
 
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
   const targets = extractDeepInterviewCommandWriteTargets(command);

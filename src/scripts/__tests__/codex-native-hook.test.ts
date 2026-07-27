@@ -13803,14 +13803,45 @@ exit 0
 							"PATH-prefix impostor omx sparkshell stays blocked",
 							`PATH="${impostorBinDir}" omx sparkshell -- git status --short --branch`,
 						);
-						await assertBlocked(
-							"path-qualified impostor omx sparkshell stays blocked",
-							`${join(impostorBinDir, "omx")} sparkshell -- git status --short --branch`,
-						);
+					await assertBlocked(
+						"path-qualified impostor omx sparkshell stays blocked",
+						`${join(impostorBinDir, "omx")} sparkshell -- git status --short --branch`,
+					);
 					} finally {
 						await rm(impostorBinDir, { recursive: true, force: true });
 					}
 				}
+
+				// A relative-path impostor `./omx` resolves via the current directory,
+				// never via PATH, so it must stay blocked even when a legitimate
+				// trusted `omx` also exists on PATH -- basename-only trust would be
+				// fooled by the unrelated trusted PATH entry.
+				{
+					await writeFile(join(cwd, "omx"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(cwd, "omx"), 0o755);
+					try {
+						await assertBlocked(
+							"relative-path impostor ./omx sparkshell stays blocked with a legitimate trusted omx also on PATH",
+							"./omx sparkshell -- git status --short --branch",
+						);
+					} finally {
+						await rm(join(cwd, "omx"), { force: true });
+					}
+				}
+
+				// An inherited BASH_FUNC_omx%% shell-function shadow must stay blocked
+				// even against a trusted PATH resolution for the real binary.
+				{
+					const previousBashFuncOmx = process.env["BASH_FUNC_omx%%"];
+					process.env["BASH_FUNC_omx%%"] = "() { echo shadowed; }";
+					try {
+						await assertBlocked("inherited BASH_FUNC_omx%% shadow stays blocked", "omx --help");
+					} finally {
+						if (previousBashFuncOmx === undefined) delete process.env["BASH_FUNC_omx%%"];
+						else process.env["BASH_FUNC_omx%%"] = previousBashFuncOmx;
+					}
+				}
+
 
 				// gjc is a first-class alias of the same canonical package CLI; a trusted
 				// gjc shim must get the same read-only discovery allowance omx does.
