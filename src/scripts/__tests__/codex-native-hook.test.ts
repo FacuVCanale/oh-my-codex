@@ -13743,7 +13743,10 @@ exit 0
 
 			try {
 				// #3314: plain, non-omx-wrapped read-only discovery must already stay allowed.
-				await assertAllowed("plain rg", `rg -n -i "foo" README.md`);
+				// Use coreutils/git only (guaranteed present and root-owned on every CI
+				// runner); ripgrep is not part of the standard test image, so asserting
+				// on it here would make this hermetic classifier test depend on ambient
+				// package installation rather than on the fix under test.
 				await assertAllowed("plain git status", "git status --short --branch");
 				await assertAllowed("plain find", "find . -maxdepth 3 -type d");
 
@@ -13755,9 +13758,9 @@ exit 0
 				await assertAllowed("omx state status --mode=deep-interview --json", "omx state status --mode=deep-interview --json");
 
 				// #3314: sparkshell-wrapped read-only discovery must not be misclassified as a write.
-				await assertAllowed("sparkshell wrapped rg", `omx sparkshell -- rg -n -i "foo" README.md`);
 				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
-				await assertAllowed("sparkshell json-flagged wrapped rg", `omx sparkshell --json -- rg -n -i "foo" README.md`);
+				await assertAllowed("sparkshell wrapped find", "omx sparkshell -- find . -maxdepth 1 -type f");
+				await assertAllowed("sparkshell json-flagged wrapped git status", "omx sparkshell --json -- git status --short --branch");
 
 				// #3313: deep-interview's own structured lifecycle stays reachable.
 				await assertAllowed("omx cancel", "omx cancel");
@@ -13765,7 +13768,7 @@ exit 0
 				// Guards that must NOT relax: unsafe sparkshell modes, mutation-shaped
 				// wrapped argv, raw redirects into own session state, active-state
 				// overrides, and PATH-prefix smuggling on `omx cancel`.
-				await assertBlocked("sparkshell --shell mode stays scrutinized", `omx sparkshell --shell 'rg -n -i "foo" README.md'`);
+				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
 				await assertBlocked(
 					"raw redirect into own session state",
@@ -13847,15 +13850,14 @@ exit 0
 			};
 
 			try {
-				await assertAllowed("plain rg", `rg -n -i "foo" README.md`);
 				await assertAllowed("plain git status", "git status --short --branch");
 				await assertAllowed("plain find", "find . -maxdepth 3 -type d");
 				await assertAllowed("omx --help", "omx --help");
 				await assertAllowed("omx ralplan --help", "omx ralplan --help");
 				await assertAllowed("omx state read --mode ralplan --json", "omx state read --mode ralplan --json");
-				await assertAllowed("sparkshell wrapped rg", `omx sparkshell -- rg -n -i "foo" README.md`);
+				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
 
-				await assertBlocked("sparkshell --shell mode stays scrutinized", `omx sparkshell --shell 'rg -n -i "foo" README.md'`);
+				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
 				await assertBlocked(
 					"raw redirect into own session state",
