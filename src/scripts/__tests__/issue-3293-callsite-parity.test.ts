@@ -85,7 +85,7 @@ describe("issue #3293 callsite parity baseline", () => {
 
 	it("deep-interview ~9498: non-cancel read-only OMX command is allowed", async () => {
 		const f = await fixture("deep-interview", "readonly");
-		try { assert.equal((await preToolUse(f, "omx state read --json")).outputJson, null); }
+		try { await withTrustedOmx(f.cwd, async () => assert.equal((await preToolUse(f, "omx state read --json")).outputJson, null)); }
 		finally { await rm(f.cwd, { recursive: true, force: true }); }
 	});
 
