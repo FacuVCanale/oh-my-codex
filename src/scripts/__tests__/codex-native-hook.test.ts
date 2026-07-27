@@ -13666,6 +13666,209 @@ exit 0
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
+	it("issue #3313/#3314 permits standalone deep-interview lifecycle reachability and read-only discovery without relaxing write guards", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-issue-3313-3314-di-"));
+		try {
+			const stateDir = join(cwd, ".omx", "state");
+			const sessionId = "sess-issue-3313-3314-di";
+			const threadId = "thread-issue-3313-3314-di";
+			const sessionDir = join(stateDir, "sessions", sessionId);
+			await mkdir(sessionDir, { recursive: true });
+			await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd, leader_thread_id: threadId });
+			await writeJson(join(stateDir, "subagent-tracking.json"), {
+				schemaVersion: 1,
+				sessions: {
+					[sessionId]: {
+						session_id: sessionId,
+						leader_thread_id: threadId,
+						threads: { [threadId]: { thread_id: threadId, kind: "leader" } },
+					},
+				},
+			});
+			await writeJson(join(sessionDir, "skill-active-state.json"), {
+				active: true,
+				skill: "deep-interview",
+				phase: "planning",
+				session_id: sessionId,
+				thread_id: threadId,
+				active_skills: [{
+					skill: "deep-interview",
+					phase: "planning",
+					active: true,
+					session_id: sessionId,
+					thread_id: threadId,
+				}],
+			});
+			const activeWrite = await executeStateOperation("state_write", {
+				mode: "deep-interview",
+				active: true,
+				current_phase: "intent-first",
+				session_id: sessionId,
+				thread_id: threadId,
+				workingDirectory: cwd,
+			});
+			assert.notEqual(activeWrite.isError, true);
+			await writeFile(join(cwd, "README.md"), "foo bar\n");
+
+			// Payload-realistic regression for #3314's reported live-runtime
+			// discrepancy: exercise the actual PreToolUse dispatch path against a
+			// process-wide trusted PATH (not an inline `PATH=... omx` assignment,
+			// and not a manually short-circuited fixture) so the omx CLI resolves
+			// exactly the way a live Codex session resolves it.
+			const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+			const trustedBinDir = await mkdtemp(join(tmpdir(), "omx-issue-3313-3314-trusted-bin-"));
+			await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
+			const inheritedPath = process.env.PATH;
+			process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+
+			const preToolUse = (command: string) => dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: sessionId,
+				thread_id: threadId,
+				agent_id: threadId,
+				tool_name: "Bash",
+				tool_use_id: `tool-issue-3313-3314-di-${Math.random()}`,
+				tool_input: { command },
+			}, { cwd });
+			const assertAllowed = async (label: string, command: string) => {
+				const result = await preToolUse(command);
+				assert.equal(result.outputJson, null, `${label}: ${JSON.stringify(result.outputJson)}`);
+			};
+			const assertBlocked = async (label: string, command: string, pattern?: RegExp) => {
+				const result = await preToolUse(command);
+				assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", label);
+				if (pattern) assert.match(JSON.stringify(result.outputJson), pattern, label);
+			};
+
+			try {
+				// #3314: plain, non-omx-wrapped read-only discovery must already stay allowed.
+				await assertAllowed("plain rg", `rg -n -i "foo" README.md`);
+				await assertAllowed("plain git status", "git status --short --branch");
+				await assertAllowed("plain find", "find . -maxdepth 3 -type d");
+
+				// #3313/#3314: omx/gjc help/version/status/read must not be misclassified as writes.
+				await assertAllowed("omx --help", "omx --help");
+				await assertAllowed("omx ralplan --help", "omx ralplan --help");
+				await assertAllowed("omx state read (bare)", "omx state read --json");
+				await assertAllowed("omx state read --mode deep-interview --json", "omx state read --mode deep-interview --json");
+				await assertAllowed("omx state status --mode=deep-interview --json", "omx state status --mode=deep-interview --json");
+
+				// #3314: sparkshell-wrapped read-only discovery must not be misclassified as a write.
+				await assertAllowed("sparkshell wrapped rg", `omx sparkshell -- rg -n -i "foo" README.md`);
+				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
+				await assertAllowed("sparkshell json-flagged wrapped rg", `omx sparkshell --json -- rg -n -i "foo" README.md`);
+
+				// #3313: deep-interview's own structured lifecycle stays reachable.
+				await assertAllowed("omx cancel", "omx cancel");
+
+				// Guards that must NOT relax: unsafe sparkshell modes, mutation-shaped
+				// wrapped argv, raw redirects into own session state, active-state
+				// overrides, and PATH-prefix smuggling on `omx cancel`.
+				await assertBlocked("sparkshell --shell mode stays scrutinized", `omx sparkshell --shell 'rg -n -i "foo" README.md'`);
+				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
+				await assertBlocked(
+					"raw redirect into own session state",
+					`echo '{}' > ${join(sessionDir, "deep-interview-state.json")}`,
+					/is not under allowed deep-interview artifact/,
+				);
+				await assertBlocked(
+					"active-state override via omx state write stays blocked",
+					`omx state write --input '${JSON.stringify({ mode: "deep-interview", active: true, current_phase: "planning", session_id: sessionId, workingDirectory: cwd })}' --json`,
+				);
+				await assertBlocked("PATH-prefix smuggled omx cancel stays blocked", `PATH="${trustedBinDir}" omx cancel`, /PATH|write intent/);
+			} finally {
+				if (inheritedPath === undefined) delete process.env.PATH; else process.env.PATH = inheritedPath;
+				await rm(trustedBinDir, { recursive: true, force: true });
+			}
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("issue #3314 permits ralplan planning read-only discovery without relaxing write guards", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-issue-3314-ralplan-"));
+		try {
+			const stateDir = join(cwd, ".omx", "state");
+			const sessionId = "sess-issue-3314-ralplan";
+			const threadId = "thread-issue-3314-ralplan";
+			const sessionDir = join(stateDir, "sessions", sessionId);
+			await mkdir(sessionDir, { recursive: true });
+			await writeJson(join(stateDir, "session.json"), { session_id: sessionId, cwd, leader_thread_id: threadId });
+			await writeJson(join(stateDir, "subagent-tracking.json"), {
+				schemaVersion: 1,
+				sessions: {
+					[sessionId]: {
+						session_id: sessionId,
+						leader_thread_id: threadId,
+						threads: { [threadId]: { thread_id: threadId, kind: "leader" } },
+					},
+				},
+			});
+			await writeJson(join(sessionDir, "skill-active-state.json"), {
+				version: 1,
+				active: true,
+				skill: "ralplan",
+				phase: "planning",
+				session_id: sessionId,
+				active_skills: [{ skill: "ralplan", phase: "planning", active: true, session_id: sessionId }],
+			});
+			await writeJson(join(sessionDir, "ralplan-state.json"), {
+				active: true,
+				mode: "ralplan",
+				current_phase: "planning",
+				session_id: sessionId,
+			});
+			await writeFile(join(cwd, "README.md"), "foo bar\n");
+
+			const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
+			const trustedBinDir = await mkdtemp(join(tmpdir(), "omx-issue-3314-ralplan-trusted-bin-"));
+			await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
+			const inheritedPath = process.env.PATH;
+			process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+
+			const preToolUse = (command: string) => dispatchCodexNativeHook({
+				hook_event_name: "PreToolUse",
+				cwd,
+				session_id: sessionId,
+				thread_id: threadId,
+				agent_id: threadId,
+				tool_name: "Bash",
+				tool_use_id: `tool-issue-3314-ralplan-${Math.random()}`,
+				tool_input: { command },
+			}, { cwd });
+			const assertAllowed = async (label: string, command: string) => {
+				const result = await preToolUse(command);
+				assert.equal(result.outputJson, null, `${label}: ${JSON.stringify(result.outputJson)}`);
+			};
+			const assertBlocked = async (label: string, command: string) => {
+				const result = await preToolUse(command);
+				assert.equal((result.outputJson as { decision?: string } | null)?.decision, "block", label);
+			};
+
+			try {
+				await assertAllowed("plain rg", `rg -n -i "foo" README.md`);
+				await assertAllowed("plain git status", "git status --short --branch");
+				await assertAllowed("plain find", "find . -maxdepth 3 -type d");
+				await assertAllowed("omx --help", "omx --help");
+				await assertAllowed("omx ralplan --help", "omx ralplan --help");
+				await assertAllowed("omx state read --mode ralplan --json", "omx state read --mode ralplan --json");
+				await assertAllowed("sparkshell wrapped rg", `omx sparkshell -- rg -n -i "foo" README.md`);
+
+				await assertBlocked("sparkshell --shell mode stays scrutinized", `omx sparkshell --shell 'rg -n -i "foo" README.md'`);
+				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
+				await assertBlocked(
+					"raw redirect into own session state",
+					`echo '{}' > ${join(sessionDir, "ralplan-state.json")}`,
+				);
+			} finally {
+				if (inheritedPath === undefined) delete process.env.PATH; else process.env.PATH = inheritedPath;
+				await rm(trustedBinDir, { recursive: true, force: true });
+			}
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
 
 	it("does not protect matching state basenames outside the canonical state root", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-product-session-json-"));

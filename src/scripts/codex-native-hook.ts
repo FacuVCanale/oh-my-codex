@@ -9381,6 +9381,73 @@ function isAllowedOmxCleanupDryRunCommand(command: string): boolean {
     && args.every((arg, argIndex) => argIndex === 0 || arg === "--dry-run" || arg === "--json");
 }
 
+function stateReadTrailingArgsAreSafe(trailing: string[]): boolean {
+  let sawMode = false;
+  let sawJson = false;
+  for (let index = 0; index < trailing.length; index += 1) {
+    const arg = trailing[index] ?? "";
+    if (arg === "--json") {
+      if (sawJson) return false;
+      sawJson = true;
+      continue;
+    }
+    if (arg === "--mode") {
+      if (sawMode) return false;
+      const value = trailing[index + 1] ?? "";
+      if (!value || value.startsWith("-")) return false;
+      sawMode = true;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--mode=")) {
+      if (sawMode || !arg.slice("--mode=".length)) return false;
+      sawMode = true;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+// Sparkshell's direct-argv dispatch (`omx sparkshell [--json] [--budget N] --
+// <argv...>`) executes the wrapped argv without shell reinterpretation, so
+// each wrapped word is already a literal token. Re-quoting those literal
+// tokens into a synthetic single-invocation command string lets the wrapped
+// invocation be re-scrutinized through the exact same write-intent checks
+// used for a directly-typed command, instead of trusting a bespoke allowlist.
+// `--shell`/`--tmux-pane`/any unrecognized sparkshell flag is refused (return
+// null) because those modes are not literal, bounded argv dispatch.
+function extractOmxSparkshellDirectArgvCommand(args: readonly string[]): string | null {
+  if (args[0] !== "sparkshell") return null;
+  let index = 1;
+  while (index < args.length) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      const wrapped = args.slice(index + 1);
+      if (wrapped.length === 0) return null;
+      return wrapped.map((word) => `'${word.replace(/'/g, `'\\''`)}'`).join(" ");
+    }
+    if (arg === "--json") {
+      index += 1;
+      continue;
+    }
+    if (arg === "--budget") {
+      const value = args[index + 1] ?? "";
+      if (!/^[1-9][0-9]*$/.test(value)) return null;
+      index += 2;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+function isAllowedOmxSparkshellWrappedReadOnlyCommand(wrappedCommand: string): boolean {
+  return !commandHasDeepInterviewWriteIntent(wrappedCommand)
+    && !commandHasNestedCliMutationIntent(wrappedCommand)
+    && collectOmxStateCommandOperations(wrappedCommand, "write").length === 0;
+}
+
 function isAllowedOmxReadOnlyCommand(command: string): boolean {
   if (!isSingleLiteralShellInvocation(command)) return false;
   const words = literalInvocationWords(command);
@@ -9391,8 +9458,10 @@ function isAllowedOmxReadOnlyCommand(command: string): boolean {
   if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) return true;
   if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
   if (args[0] === "state" && ["read", "status"].includes(args[1] ?? "")) {
-    return args.slice(2).every((arg) => arg === "--json");
+    return stateReadTrailingArgsAreSafe(args.slice(2));
   }
+  const sparkshellWrapped = extractOmxSparkshellDirectArgvCommand(args);
+  if (sparkshellWrapped !== null) return isAllowedOmxSparkshellWrappedReadOnlyCommand(sparkshellWrapped);
   return isAllowedOmxCleanupDryRunCommand(command);
 }
 
@@ -9418,14 +9487,17 @@ function isAllowedGhReadOnlyCommand(command: string): boolean {
 function isAllowedDeepInterviewCommandSpecificBash(
   payload: CodexHookPayload,
   command: string,
+  cwd: string,
 ): boolean {
   const questionClassification = classifyOmxQuestionPreToolUse(command, payload);
   if (questionClassification.kind === "allowed") return true;
-  // A command shaped like direct cancellation must never fall through to a
-  // generic allowance: when the trusted execution context cannot be proven,
-  // the exemption denies rather than degrading to the ordinary benign path.
+  // Parity with the ralplan/Conductor trusted direct-cancel path (#3313): a
+  // standalone (non-Autopilot-supervised) deep-interview session has no
+  // hook-owned cancellation handler, so `omx cancel` must still reach the
+  // same trusted-execution-context check ralplan already applies rather than
+  // being denied unconditionally. An unproven execution context still denies.
   if (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command)) {
-    return false;
+    return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
   }
   return isAllowedOmxReadOnlyCommand(command)
     || isAllowedGhReadOnlyCommand(command)
@@ -9491,7 +9563,7 @@ function isAllowedDeepInterviewBashWrite(
     // compound/redirect/substitution form is denied so it cannot smuggle a mutation.
     return questionClassification.kind === "allowed" && isSingleLiteralShellInvocation(command);
   }
-  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command)) return true;
+  if (payload && isAllowedDeepInterviewCommandSpecificBash(payload, command, cwd)) return true;
   if (sourcesFileWrittenEarlierInSameCommand(cwd, command)) return false;
   const stateWriteOperations = collectOmxStateCommandOperations(command, "write");
   const hasUnsafeRuntimeStateWrite = (words: string[]): boolean => {
@@ -9666,6 +9738,12 @@ function isAllowedRalplanBashWrite(
   // executable, preload code, or redirect a state tree.
   if (rawCommand === command && isDirectOmxCancelCommand(command, { allowForce: true })) {
     return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
+  }
+  // Read-only discovery (help/version/status/read, sparkshell-wrapped
+  // read-only argv, and gh read-only commands) is not implementation intent
+  // and must not be misclassified as a write during ralplan planning (#3314).
+  if (isAllowedOmxReadOnlyCommand(command) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command)) {
+    return true;
   }
 
   const beadsCommand = classifyRalplanBeadsMetadataCommand(cwd, command);
