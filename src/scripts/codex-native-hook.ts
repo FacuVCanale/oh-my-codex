@@ -6531,7 +6531,17 @@ function tokenizeShellWords(segment: string): string[] {
       }
       continue;
     }
-    if (!quote && /\s/.test(char)) {
+    // Bash's own lexer only treats ASCII space/tab (and newline as a
+    // statement terminator already normalized upstream) as word-separating
+    // blanks; it does NOT split on other Unicode whitespace (NBSP U+00A0,
+    // BOM U+FEFF, Zs-class spaces, U+2028/2029, etc). JS regex `\s` matches
+    // all of those, which previously let an embedded Unicode whitespace
+    // character make this tokenizer see two words ("omx", "--help") while
+    // Bash resolves and executes a single differently-named executable
+    // ("omx<NBSP>--help") -- silently borrowing a trusted lookup for a
+    // different, attacker-controlled binary. Restrict this split to the
+    // literal ASCII blank set Bash actually recognizes.
+    if (!quote && (char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\v" || char === "\f")) {
       pushCurrent();
       continue;
     }
@@ -9572,6 +9582,14 @@ function isAllowedDeepInterviewCommandSpecificBash(
   if (readPreToolUseRawCommand(payload) === command && isDirectOmxCancelCommand(command)) {
     return directOmxCancelCommandHasTrustedExecutionContext(command, cwd);
   }
+  // Authorization decisions whose security contract depends on exact bytes
+  // must compare against the unmodified command string, matching the
+  // direct-cancel exemption above: ECMAScript trim() removes a leading
+  // BOM/NBSP/CR from the analyzed `command`, which could otherwise let a
+  // differently-named executable (e.g. `\uFEFFomx`) borrow the trusted
+  // `omx`/`gjc` read-only allowance while the shell actually executes the
+  // untrimmed, differently-named binary.
+  if (readPreToolUseRawCommand(payload) !== command) return false;
   return isAllowedOmxReadOnlyCommand(command, cwd)
     || isAllowedGhReadOnlyCommand(command)
     || isAllowedVersionProbeCommand(command);
@@ -9817,7 +9835,14 @@ function isAllowedRalplanBashWrite(
   // Read-only discovery (help/version/status/read, sparkshell-wrapped
   // read-only argv, and gh read-only commands) is not implementation intent
   // and must not be misclassified as a write during ralplan planning (#3314).
-  if (isAllowedOmxReadOnlyCommand(command, cwd) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command)) {
+  // Requires raw/analyzed byte equality first, matching the direct-cancel
+  // exemption above: trimming can otherwise let a differently-named
+  // executable (e.g. leading BOM/NBSP) borrow this trusted allowance while
+  // the shell executes a different, untrimmed binary name.
+  if (
+    rawCommand === command
+    && (isAllowedOmxReadOnlyCommand(command, cwd) || isAllowedGhReadOnlyCommand(command) || isAllowedVersionProbeCommand(command))
+  ) {
     return true;
   }
   // Hard-deny a recognized-but-untrusted omx/gjc read-only shape instead of

@@ -13859,6 +13859,44 @@ exit 0
 					}
 				}
 
+				// Lexical-boundary mismatches between our tokenizer/analysis and the
+				// actual shell that will execute the command must not let a
+				// differently-named executable borrow this trust: a wrapper
+				// (env/command/time) around an impostor, a non-ASCII whitespace
+				// character embedded mid-command, and a leading BOM stripped by
+				// ECMAScript trim() must all still resolve to denial.
+				{
+					const lexicalAttackerDir = await mkdtemp(join(tmpdir(), "omx-lexical-attacker-"));
+					await writeFile(join(lexicalAttackerDir, "omx"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(lexicalAttackerDir, "omx"), 0o755);
+					// A file literally named "omx<NBSP>--help" (single word to the real
+					// shell, since Bash does not treat U+00A0 as a blank).
+					await writeFile(join(lexicalAttackerDir, "omx\u00A0--help"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(lexicalAttackerDir, "omx\u00A0--help"), 0o755);
+					// A file literally named "\uFEFFomx" (leading BOM preserved by Bash).
+					await writeFile(join(lexicalAttackerDir, "\uFEFFomx"), "#!/bin/sh\necho pwned\n");
+					await chmod(join(lexicalAttackerDir, "\uFEFFomx"), 0o755);
+					const previousLexicalPath = process.env.PATH;
+					// Attacker directory first, then the legitimate trusted CLI later on PATH.
+					process.env.PATH = `${lexicalAttackerDir}:${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+					try {
+						await assertBlocked("env-wrapped omx --help stays blocked", "env omx --help");
+						await assertBlocked("command-wrapped omx --help stays blocked", "command omx --help");
+						await assertBlocked("time-wrapped omx --help stays blocked", "time omx --help");
+						await assertBlocked(
+							"embedded NBSP between omx and --help stays blocked",
+							"omx\u00A0--help",
+						);
+						await assertBlocked(
+							"leading BOM before omx --help stays blocked",
+							"\uFEFFomx --help",
+						);
+					} finally {
+						if (previousLexicalPath === undefined) delete process.env.PATH; else process.env.PATH = previousLexicalPath;
+						await rm(lexicalAttackerDir, { recursive: true, force: true });
+					}
+				}
+
 				// Guards that must NOT relax: unsafe sparkshell modes, mutation-shaped
 				// wrapped argv, raw redirects into own session state, active-state
 				// overrides, and PATH-prefix smuggling on `omx cancel`.
