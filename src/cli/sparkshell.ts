@@ -306,11 +306,13 @@ export function parseSparkShellFallbackInvocation(
   if (args[0] === '--shell') {
     const script = args[1];
     if (!script) throw new Error(`--shell requires a command string.\n${SPARKSHELL_USAGE}`);
+    if (args.length !== 2) throw new Error(`--shell does not accept additional arguments.\n${SPARKSHELL_USAGE}`);
     return { kind: 'command', argv: resolveFallbackShellArgv(script, options) };
   }
   if (args[0]?.startsWith('--shell=')) {
     const script = args[0].slice('--shell='.length);
     if (!script.trim()) throw new Error(`--shell requires a command string.\n${SPARKSHELL_USAGE}`);
+    if (args.length !== 1) throw new Error(`--shell does not accept additional arguments.\n${SPARKSHELL_USAGE}`);
     return { kind: 'command', argv: resolveFallbackShellArgv(script, options) };
   }
 

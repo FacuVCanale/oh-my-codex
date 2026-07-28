@@ -13738,6 +13738,19 @@ exit 0
 			await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
 			const inheritedPath = process.env.PATH;
 			process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+			const sparkshellImplementationEnvironmentNames = [
+				"OMX_SPARKSHELL_BIN",
+				"OMX_NATIVE_CACHE_DIR",
+				"OMX_NATIVE_MANIFEST_URL",
+				"OMX_NATIVE_RELEASE_BASE_URL",
+				"OMX_NATIVE_AUTO_FETCH",
+				"XDG_CACHE_HOME",
+				"LOCALAPPDATA",
+			] as const;
+			const inheritedSparkshellImplementationEnvironment = Object.fromEntries(
+				sparkshellImplementationEnvironmentNames.map((name) => [name, process.env[name]]),
+			);
+			for (const name of sparkshellImplementationEnvironmentNames) delete process.env[name];
 
 			const preToolUse = (command: string) => dispatchCodexNativeHook({
 				hook_event_name: "PreToolUse",
@@ -13794,10 +13807,14 @@ exit 0
 				await assertAllowed("omx ralplan --help", "omx ralplan --help");
 				await assertAllowed("omx state read (bare)", "omx state read --json");
 				await assertAllowed("omx state read --mode deep-interview --json", "omx state read --mode deep-interview --json");
-				await assertAllowed("omx state status --mode=deep-interview --json", "omx state status --mode=deep-interview --json");
+				await assertAllowed("omx state get-status --mode=deep-interview --json", "omx state get-status --mode=deep-interview --json");
+				await assertAllowed("omx state read nested help", "omx state read --help");
+				await assertAllowed("omx auth nested help", "omx auth --help");
+				await assertBlocked("invalid state status spelling stays blocked", "omx state status --mode=deep-interview --json");
 
 				// #3314: sparkshell-wrapped read-only discovery must not be misclassified as a write.
 				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
+				await assertAllowed("sparkshell nested help", "omx sparkshell --help");
 				await assertAllowed("sparkshell wrapped find", "omx sparkshell -- find . -maxdepth 1 -type f");
 				await assertAllowed("sparkshell json-flagged wrapped git status", "omx sparkshell --json -- git status --short --branch");
 
@@ -13935,16 +13952,20 @@ exit 0
 
 				// Guards that must NOT relax: unsafe sparkshell modes, mutation-shaped
 				// wrapped argv, raw redirects into own session state, active-state
-				// overrides, and PATH-prefix smuggling on `omx cancel`. `--help`/`-h`
-				// is safe anywhere (every subcommand consulted short-circuits before
-				// real work), but `--version`/`-v` is NOT universally safe (e.g.
-				// `omx cleanup --version` still performs real cleanup because that
-				// subcommand only special-cases `--help`/`-h`), so it must only be
-				// trusted as a bare top-level probe. A `--help` meant for a
+				// overrides, and PATH-prefix smuggling on `omx cancel`. Nested help is
+				// allowed only in parser positions that short-circuit before side effects;
+				// trailing help on mutators must remain blocked. A `--help` meant for a
 				// sparkshell-wrapped script must not short-circuit scrutiny of that
-				// wrapped script, and an inherited OMX_SPARKSHELL_BIN override must
-				// deny the sparkshell allowance entirely.
+				// wrapped script, and every inherited or leading sidecar/cache identity
+				// override must deny the sparkshell allowance entirely.
 				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
+				await assertBlocked("sparkshell tmux-pane mode stays scrutinized", "omx sparkshell --tmux-pane %42");
+				await assertBlocked("sparkshell trailing help does not short-circuit shell mode", "omx sparkshell --shell 'git status --short --branch' --help");
+				await assertBlocked("auth trailing help does not short-circuit slot mutation", "omx auth use slot --help");
+				await assertBlocked(
+					"workflow mutator trailing help does not short-circuit execution",
+					"omx performance-goal create --objective x --evaluator-command true --evaluator-contract x --help",
+				);
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
 				await assertBlocked("omx cleanup --version stays blocked (not a bare top-level probe)", "omx cleanup --version");
 				await assertBlocked("omx cleanup -v stays blocked (not a bare top-level probe)", "omx cleanup -v");
@@ -13952,18 +13973,25 @@ exit 0
 					"sparkshell-wrapped --help meant for the wrapped script stays scrutinized",
 					"omx sparkshell -- ./mutate.sh --help",
 				);
-				{
-					const previousSparkshellBin = process.env.OMX_SPARKSHELL_BIN;
-					process.env.OMX_SPARKSHELL_BIN = "/tmp/attacker-sidecar";
+				for (const [name, value] of [
+					["OMX_SPARKSHELL_BIN", "/tmp/attacker-sidecar"],
+					["OMX_NATIVE_CACHE_DIR", "/tmp/attacker-native-cache"],
+					["OMX_NATIVE_MANIFEST_URL", "https://attacker.invalid/manifest.json"],
+					["OMX_NATIVE_RELEASE_BASE_URL", "https://attacker.invalid/releases"],
+					["OMX_NATIVE_AUTO_FETCH", "0"],
+					["XDG_CACHE_HOME", "/tmp/attacker-xdg-cache"],
+					["LOCALAPPDATA", "/tmp/attacker-localappdata"],
+				] as const) {
+					const previous = process.env[name];
+					process.env[name] = value;
 					try {
-						await assertBlocked(
-							"inherited OMX_SPARKSHELL_BIN override denies the sparkshell allowance",
-							"omx sparkshell -- git status --short --branch",
-						);
+						await assertBlocked(`inherited ${name} override denies the sparkshell allowance`, "omx sparkshell -- git status --short --branch");
 					} finally {
-						if (previousSparkshellBin === undefined) delete process.env.OMX_SPARKSHELL_BIN;
-						else process.env.OMX_SPARKSHELL_BIN = previousSparkshellBin;
+						if (previous === undefined) delete process.env[name];
+						else process.env[name] = previous;
 					}
+					await assertBlocked(`leading ${name} override denies the sparkshell allowance`, `${name}=${JSON.stringify(value)} omx sparkshell -- git status --short --branch`);
+					await assertBlocked(`env-wrapper ${name} override denies the sparkshell allowance`, `env ${name}=${JSON.stringify(value)} omx sparkshell -- git status --short --branch`);
 				}
 				await assertBlocked(
 					"raw redirect into own session state",
@@ -13977,6 +14005,11 @@ exit 0
 				await assertBlocked("PATH-prefix smuggled omx cancel stays blocked", `PATH="${trustedBinDir}" omx cancel`, /PATH|write intent/);
 			} finally {
 				if (inheritedPath === undefined) delete process.env.PATH; else process.env.PATH = inheritedPath;
+				for (const name of sparkshellImplementationEnvironmentNames) {
+					const previous = (inheritedSparkshellImplementationEnvironment as Record<string, string | undefined>)[name];
+					if (previous === undefined) delete process.env[name];
+					else process.env[name] = previous;
+				}
 				await rm(trustedBinDir, { recursive: true, force: true });
 			}
 		} finally {
@@ -14024,6 +14057,19 @@ exit 0
 			await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
 			const inheritedPath = process.env.PATH;
 			process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+			const sparkshellImplementationEnvironmentNames = [
+				"OMX_SPARKSHELL_BIN",
+				"OMX_NATIVE_CACHE_DIR",
+				"OMX_NATIVE_MANIFEST_URL",
+				"OMX_NATIVE_RELEASE_BASE_URL",
+				"OMX_NATIVE_AUTO_FETCH",
+				"XDG_CACHE_HOME",
+				"LOCALAPPDATA",
+			] as const;
+			const inheritedSparkshellImplementationEnvironment = Object.fromEntries(
+				sparkshellImplementationEnvironmentNames.map((name) => [name, process.env[name]]),
+			);
+			for (const name of sparkshellImplementationEnvironmentNames) delete process.env[name];
 
 			const preToolUse = (command: string) => dispatchCodexNativeHook({
 				hook_event_name: "PreToolUse",
@@ -14050,6 +14096,8 @@ exit 0
 				await assertAllowed("omx --help", "omx --help");
 				await assertAllowed("omx ralplan --help", "omx ralplan --help");
 				await assertAllowed("omx state read --mode ralplan --json", "omx state read --mode ralplan --json");
+				await assertAllowed("omx state get-status --mode ralplan --json", "omx state get-status --mode ralplan --json");
+				await assertBlocked("invalid state status spelling stays blocked", "omx state status --mode ralplan --json");
 				await assertAllowed("sparkshell wrapped git status", "omx sparkshell -- git status --short --branch");
 
 				{
@@ -14081,24 +14129,37 @@ exit 0
 				}
 
 				await assertBlocked("sparkshell --shell mode stays scrutinized", "omx sparkshell --shell 'git status --short --branch'");
+				await assertBlocked("sparkshell tmux-pane mode stays scrutinized", "omx sparkshell --tmux-pane %42");
+				await assertBlocked("sparkshell trailing help does not short-circuit shell mode", "omx sparkshell --shell 'git status --short --branch' --help");
+				await assertBlocked("auth trailing help does not short-circuit slot mutation", "omx auth use slot --help");
+				await assertBlocked(
+					"workflow mutator trailing help does not short-circuit execution",
+					"omx performance-goal create --objective x --evaluator-command true --evaluator-contract x --help",
+				);
 				await assertBlocked("sparkshell wrapped write stays blocked", `omx sparkshell -- bash -c 'echo x > src/generated.ts'`);
 				await assertBlocked("omx cleanup --version stays blocked (not a bare top-level probe)", "omx cleanup --version");
 				await assertBlocked(
 					"sparkshell-wrapped --help meant for the wrapped script stays scrutinized",
 					"omx sparkshell -- ./mutate.sh --help",
 				);
-				{
-					const previousSparkshellBin = process.env.OMX_SPARKSHELL_BIN;
-					process.env.OMX_SPARKSHELL_BIN = "/tmp/attacker-sidecar";
+				for (const [name, value] of [
+					["OMX_SPARKSHELL_BIN", "/tmp/attacker-sidecar"],
+					["OMX_NATIVE_CACHE_DIR", "/tmp/attacker-native-cache"],
+					["OMX_NATIVE_MANIFEST_URL", "https://attacker.invalid/manifest.json"],
+					["OMX_NATIVE_RELEASE_BASE_URL", "https://attacker.invalid/releases"],
+					["OMX_NATIVE_AUTO_FETCH", "0"],
+					["XDG_CACHE_HOME", "/tmp/attacker-xdg-cache"],
+					["LOCALAPPDATA", "/tmp/attacker-localappdata"],
+				] as const) {
+					const previous = process.env[name];
+					process.env[name] = value;
 					try {
-						await assertBlocked(
-							"inherited OMX_SPARKSHELL_BIN override denies the sparkshell allowance",
-							"omx sparkshell -- git status --short --branch",
-						);
+						await assertBlocked(`inherited ${name} override denies the sparkshell allowance`, "omx sparkshell -- git status --short --branch");
 					} finally {
-						if (previousSparkshellBin === undefined) delete process.env.OMX_SPARKSHELL_BIN;
-						else process.env.OMX_SPARKSHELL_BIN = previousSparkshellBin;
+						if (previous === undefined) delete process.env[name];
+						else process.env[name] = previous;
 					}
+					await assertBlocked(`leading ${name} override denies the sparkshell allowance`, `${name}=${JSON.stringify(value)} omx sparkshell -- git status --short --branch`);
 				}
 				await assertBlocked(
 					"raw redirect into own session state",
@@ -14106,6 +14167,11 @@ exit 0
 				);
 			} finally {
 				if (inheritedPath === undefined) delete process.env.PATH; else process.env.PATH = inheritedPath;
+				for (const name of sparkshellImplementationEnvironmentNames) {
+					const previous = (inheritedSparkshellImplementationEnvironment as Record<string, string | undefined>)[name];
+					if (previous === undefined) delete process.env[name];
+					else process.env[name] = previous;
+				}
 				await rm(trustedBinDir, { recursive: true, force: true });
 			}
 		} finally {

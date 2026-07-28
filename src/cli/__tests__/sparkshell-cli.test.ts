@@ -473,6 +473,17 @@ describe('parseSparkShellFallbackInvocation', () => {
     );
   });
 
+  it('rejects extra argv after explicit --shell fallback', () => {
+    assert.throws(
+      () => parseSparkShellFallbackInvocation(['--shell', 'printf ok', '--help'], { platform: 'linux' }),
+      /--shell does not accept additional arguments/,
+    );
+    assert.throws(
+      () => parseSparkShellFallbackInvocation(['--shell=printf ok', 'extra'], { platform: 'linux' }),
+      /--shell does not accept additional arguments/,
+    );
+  });
+
   it('translates explicit shell fallback through pwsh on Windows when available', () => {
     assert.deepEqual(
       parseSparkShellFallbackInvocation(['--shell', 'Write-Output ok'], {

@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "fs";
 import { appendFile, lstat, mkdir, open, readFile, readdir, stat, unlink, writeFile } from "fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { createHash } from "crypto";
 
 import { fileURLToPath, pathToFileURL } from "url";
@@ -9395,6 +9395,7 @@ function isAllowedOmxCleanupDryRunCommand(command: string): boolean {
 }
 
 function stateReadTrailingArgsAreSafe(trailing: string[]): boolean {
+  if (trailing.length === 1 && (trailing[0] === "--help" || trailing[0] === "-h" || trailing[0] === "help")) return true;
   let sawMode = false;
   let sawJson = false;
   for (let index = 0; index < trailing.length; index += 1) {
@@ -9456,12 +9457,7 @@ function extractOmxSparkshellDirectArgvCommand(args: readonly string[]): string 
 }
 
 function isAllowedOmxSparkshellWrappedReadOnlyCommand(wrappedCommand: string): boolean {
-  // sparkshell dispatches the wrapped argv through a native sidecar binary
-  // resolved via OMX_SPARKSHELL_BIN (overridable) rather than executing the
-  // wrapped argv directly; an inherited override could substitute an
-  // attacker-controlled sidecar for the one that scrutiny assumes runs the
-  // literal wrapped argv, so this allowance requires no override is present.
-  if (safeString(process.env.OMX_SPARKSHELL_BIN).trim() !== "") return false;
+  if ([...OMX_SPARKSHELL_IMPLEMENTATION_ENV_NAMES].some(environmentNameIsPresent)) return false;
   return !commandHasDeepInterviewWriteIntent(wrappedCommand)
     && !commandHasNestedCliMutationIntent(wrappedCommand)
     && collectOmxStateCommandOperations(wrappedCommand, "write").length === 0;
@@ -9481,6 +9477,38 @@ function isAllowedOmxSparkshellWrappedReadOnlyCommand(wrappedCommand: string): b
 // command-word grammar, function-shadow rejection, and inherited
 // NODE_OPTIONS/OPENSSL_CONF/Node-output-environment checks) so both paths
 // can never drift apart.
+
+const OMX_SPARKSHELL_IMPLEMENTATION_ENV_NAMES = new Set([
+  "OMX_SPARKSHELL_BIN",
+  "OMX_NATIVE_CACHE_DIR",
+  "OMX_NATIVE_MANIFEST_URL",
+  "OMX_NATIVE_RELEASE_BASE_URL",
+  "OMX_NATIVE_AUTO_FETCH",
+  "XDG_CACHE_HOME",
+  "LOCALAPPDATA",
+]);
+
+function environmentNameIsPresent(name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(process.env, name);
+}
+
+function commandHasLeadingEnvironmentName(command: string, names: ReadonlySet<string>): boolean {
+  const segments = splitShellCommandSegments(
+    stripHeredocBodiesForCommandScan(normalizeShellLineContinuations(command)),
+  );
+  for (const segment of segments) {
+    const words = tokenizeShellWords(segment);
+    const commandIndex = findWrappedCommandPositionIndex(words, 0);
+    const prefix = commandIndex === null ? words : words.slice(0, commandIndex);
+    if (prefix.some((word) => isEnvironmentAssignmentWord(word) && names.has(shellAssignmentName(word)))) return true;
+  }
+  return false;
+}
+
+function sparkshellImplementationOverrideIsPresent(command?: string): boolean {
+  if ([...OMX_SPARKSHELL_IMPLEMENTATION_ENV_NAMES].some(environmentNameIsPresent)) return true;
+  return command ? commandHasLeadingEnvironmentName(command, OMX_SPARKSHELL_IMPLEMENTATION_ENV_NAMES) : false;
+}
 const OMX_GJC_TRUSTED_CONTEXT_UNSAFE_INHERITED_ENV_NAMES = [
   "NODE_OPTIONS",
   "OPENSSL_CONF",
@@ -9512,18 +9540,63 @@ function isTrustedOmxOrGjcReadOnlyInvocation(command: string, cwd: string): bool
   if (!isSingleLiteralShellInvocation(command)) return false;
   return omxOrGjcExecutionContextIsTrusted(command, cwd, ["omx", "gjc"]);
 }
+const OMX_NESTED_HELP_COMMANDS = new Set([
+  "adapt",
+  "agents",
+  "agents-init",
+  "api",
+  "ask",
+  "autoresearch",
+  "autoresearch-goal",
+  "auth",
+  "capabilities",
+  "cleanup",
+  "deepinit",
+  "explore",
+  "hooks",
+  "hud",
+  "list",
+  "mcp-serve",
+  "mission",
+  "performance-goal",
+  "question",
+  "ralplan",
+  "ralph",
+  "resume",
+  "session",
+  "sidecar",
+  "sparkshell",
+  "state",
+  "team",
+  "tmux-hook",
+  "trace",
+  "ultragoal",
+  "url",
+  "wiki",
+]);
+const OMX_STATE_READ_ONLY_OPERATIONS = new Set(["read", "get-status"]);
+const OMX_HELP_TOKENS = new Set(["--help", "-h"]);
+
+function isAllowedOmxNestedHelpForm(args: readonly string[]): boolean {
+  if (args.length === 2 && OMX_NESTED_HELP_COMMANDS.has(args[0] ?? "")) {
+    return OMX_HELP_TOKENS.has(args[1] ?? "");
+  }
+  if (
+    args.length === 3
+    && args[0] === "state"
+    && OMX_STATE_READ_ONLY_OPERATIONS.has(args[1] ?? "")
+  ) {
+    return OMX_HELP_TOKENS.has(args[2] ?? "") || args[2] === "help";
+  }
+  return args.length === 2 && args[0] === "auth" && args[1] === "help";
+}
+
 // Shape-only recognizer (no trust check): true when `command` syntactically
-// looks like one of the omx/gjc read-only shapes this allowlist grants
-// (--help/-h/--version/-v, help/status/version, state read|status,
-// sparkshell direct-argv, cleanup --dry-run). Used so callers can hard-deny
-// a recognized-but-untrusted shape instead of silently falling through to
-// the generic write-intent scanner, which has no notion of this allowlist's
-// trust requirement and could independently (and wrongly) conclude "no
-// write intent" for an unrelated reason -- e.g. an inherited BASH_FUNC_omx%%
-// shell-function shadow can make the generic PATH-mutation scanner treat the
-// invocation as a shell function rather than a binary and skip its own
-// mutation classification entirely. A hard hard-deny here closes that
-// fallthrough regardless of what the generic scanner would otherwise infer.
+// resembles an OMX/GJC read-only surface or a recognized-but-sensitive
+// invocation that must be hard-denied when its strict parser form is not met.
+// It prevents the generic write-intent scanner from silently re-authorizing an
+// untrusted binary, shell-function shadow, invalid state spelling, or unsafe
+// sparkshell mode.
 function omxOrGjcReadOnlyShapeMatches(command: string): boolean {
   if (!isSingleLiteralShellInvocation(command)) return false;
   const words = literalInvocationWords(command);
@@ -9534,8 +9607,8 @@ function omxOrGjcReadOnlyShapeMatches(command: string): boolean {
   if (args.length === 0) return false;
   if (args.some((arg) => arg === "--help" || arg === "-h" || arg === "--version" || arg === "-v")) return true;
   if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
-  if (args[0] === "state" && ["read", "status"].includes(args[1] ?? "")) return true;
-  if (extractOmxSparkshellDirectArgvCommand(args) !== null) return true;
+  if (args[0] === "state" && ["read", "get-status", "status"].includes(args[1] ?? "")) return true;
+  if (args[0] === "sparkshell") return true;
   return args[0] === "cleanup" && args.includes("--dry-run");
 }
 
@@ -9547,27 +9620,18 @@ function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
   if (commandName !== "omx" && commandName !== "gjc") return false;
   const args = words.slice(index + 1).filter(Boolean);
   if (args.length === 0) return false;
-  // Sparkshell must be recognized before any generic "--help/--version
-  // anywhere in args" heuristic below: its wrapped argv belongs to a
-  // DIFFERENT program (e.g. `omx sparkshell -- ./mutate.sh --help`), and a
-  // `--help` meant for that wrapped script is not evidence the omx/gjc
-  // invocation itself is read-only.
-  const sparkshellWrapped = extractOmxSparkshellDirectArgvCommand(args);
-  if (sparkshellWrapped !== null) return isAllowedOmxSparkshellWrappedReadOnlyCommand(sparkshellWrapped);
-  // A bare top-level probe (`omx --help`, `omx -h`, `omx --version`,
-  // `omx -v`, and nothing else) never dispatches to a subcommand handler,
-  // so both help and version forms are safe here.
+
+  if (args[0] === "sparkshell") {
+    if (sparkshellImplementationOverrideIsPresent(command)) return false;
+    if (args.length === 2 && OMX_HELP_TOKENS.has(args[1] ?? "")) return true;
+    const sparkshellWrapped = extractOmxSparkshellDirectArgvCommand(args);
+    return sparkshellWrapped !== null && isAllowedOmxSparkshellWrappedReadOnlyCommand(sparkshellWrapped);
+  }
+
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h" || args[0] === "--version" || args[0] === "-v")) return true;
-  // `--help`/`-h` appearing anywhere is safe to recognize generically: every
-  // omx subcommand consulted (including `cleanup`) short-circuits real work
-  // before it runs when `--help`/`-h` is present, matching conventional CLI
-  // behavior. `--version`/`-v` is NOT universally safe the same way --
-  // `cleanup`, for example, never inspects them and falls through to real
-  // process/tmp cleanup -- so they are only trusted in the bare top-level
-  // form above, never as a trailing flag on an arbitrary subcommand.
-  if (args.some((arg) => arg === "--help" || arg === "-h")) return true;
-  if (args[0] === "help" || args[0] === "status" || args[0] === "version") return true;
-  if (args[0] === "state" && ["read", "status"].includes(args[1] ?? "")) {
+  if (args.length === 1 && (args[0] === "help" || args[0] === "status" || args[0] === "version")) return true;
+  if (isAllowedOmxNestedHelpForm(args)) return true;
+  if (args[0] === "state" && OMX_STATE_READ_ONLY_OPERATIONS.has(args[1] ?? "")) {
     return stateReadTrailingArgsAreSafe(args.slice(2));
   }
   return isAllowedOmxCleanupDryRunCommand(command);
@@ -11884,7 +11948,7 @@ function omxCliInvocationHasMutationIntent(words: string[], commandIndex: number
   const commandName = operands[0] ?? "";
   const subcommand = operands[1] ?? "";
   if (!commandName || ["help", "read", "status", "version"].includes(commandName)) return false;
-  if (commandName === "state" && ["read", "status"].includes(subcommand)) return false;
+  if (commandName === "state" && ["read", "get-status"].includes(subcommand)) return false;
   if (["deep-interview", "ralplan", "ralph", "team", "ultragoal"].includes(commandName) && ["read", "status"].includes(subcommand)) return false;
   return true;
 }
@@ -16756,18 +16820,42 @@ function conductorNativeExecutableHeaderIsRecognized(header: Buffer): boolean {
     || header.includes(0);
 }
 
+const CONDUCTOR_WINDOWS_DEFAULT_PATHEXT = [".COM", ".EXE", ".BAT", ".CMD"] as const;
+function conductorPathListDelimiter(): string {
+  return process.platform === "win32" ? ";" : delimiter;
+}
+// Windows resolves a bare command through PATHEXT; enumerate the actual suffix
+// order instead of treating `:` as a universal PATH separator or trusting a
+// basename without proving which executable the shell selected.
+
+function conductorExecutablePathCandidates(directory: string, commandName: string): string[] | null {
+  if (process.platform !== "win32") return [join(directory, commandName)];
+  const rawPathext = process.env.PATHEXT;
+  const suffixes = rawPathext === undefined || rawPathext === ""
+    ? [...CONDUCTOR_WINDOWS_DEFAULT_PATHEXT]
+    : rawPathext.split(conductorPathListDelimiter()).map((suffix) => suffix.trim().toUpperCase()).filter(Boolean);
+  if (suffixes.length === 0 || suffixes.some((suffix) => !/^\.[A-Z0-9]+$/.test(suffix))) return null;
+  return [
+    join(directory, commandName),
+    ...suffixes.map((suffix) => join(directory, `${commandName}${suffix.toLowerCase()}`)),
+  ];
+}
+
 function conductorResolvePathInterpreter(commandName: string, state: ShellPosixState): string | null {
   const path = getConductorShellBinding(state, "PATH").value;
   if (!path || path === CONDUCTOR_UNKNOWN_SHELL_BINDING) return null;
-  for (const entry of path.split(":")) {
+  for (const entry of path.split(conductorPathListDelimiter())) {
     if (!entry || !isAbsolute(entry) || isConductorStaticDirectoryInvalidated(state, resolve(entry))) return null;
-    const candidate = join(entry, commandName);
-    try {
-      accessSync(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      return null;
+    const candidates = conductorExecutablePathCandidates(entry, commandName);
+    if (!candidates) return null;
+    for (const candidate of candidates) {
+      try {
+        accessSync(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return null;
+      }
     }
   }
   return null;
@@ -16831,7 +16919,7 @@ function conductorPathMayResolveRepositoryExecutable(
   } catch {
     return true;
   }
-  for (const entry of path.split(":")) {
+  for (const entry of path.split(conductorPathListDelimiter())) {
     if (!entry || !isAbsolute(entry)) return true;
     let canonical: string;
     try {
@@ -16847,16 +16935,23 @@ function conductorPathMayResolveRepositoryExecutable(
       }
     }
 
-    const candidate = join(entry, commandName);
-    if (!existsSync(candidate)) {
+    const candidates = conductorExecutablePathCandidates(entry, commandName);
+    if (!candidates) return true;
+    let candidate: string | undefined;
+    for (const candidatePath of candidates) {
+      if (existsSync(candidatePath)) {
+        candidate = candidatePath;
+        break;
+      }
       try {
-        lstatSync(candidate);
+        lstatSync(candidatePath);
         return true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        return true;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return true;
       }
     }
+    if (!candidate) continue;
+
     // An invalidated PATH entry cannot affect resolution when it lacks this command.
     if (
       isConductorStaticDirectoryInvalidated(state, resolve(entry))
@@ -16941,7 +17036,7 @@ function conductorPackageCliHasTrustedNodeInterpreter(candidate: string, state: 
   }
   const path = getConductorShellBinding(state, "PATH").value;
   if (!path || path === CONDUCTOR_UNKNOWN_SHELL_BINDING) return false;
-  for (const entry of path.split(":")) {
+  for (const entry of path.split(conductorPathListDelimiter())) {
     if (!isAbsolute(entry) || isConductorStaticDirectoryInvalidated(state, resolve(entry))) return false;
     try {
       if (!statSync(realpathSync(entry)).isDirectory()) return false;
@@ -16949,16 +17044,22 @@ function conductorPackageCliHasTrustedNodeInterpreter(candidate: string, state: 
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       return false;
     }
-    const nodeCandidate = join(entry, "node");
-    if (!existsSync(nodeCandidate)) {
+    const nodeCandidates = conductorExecutablePathCandidates(entry, "node");
+    if (!nodeCandidates) return false;
+    let nodeCandidate: string | undefined;
+    for (const candidatePath of nodeCandidates) {
+      if (existsSync(candidatePath)) {
+        nodeCandidate = candidatePath;
+        break;
+      }
       try {
-        lstatSync(nodeCandidate);
+        lstatSync(candidatePath);
         return false;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        return false;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
       }
     }
+    if (!nodeCandidate) continue;
     return conductorPackageCliNodeInterpreterIsTrusted(nodeCandidate, rootCwd);
   }
   return false;
@@ -16974,7 +17075,7 @@ function conductorResolvedPackageCliCandidateIsTrusted(
   const expectedCandidate = conductorKnownPackageCliPath(commandName);
   const path = getConductorShellBinding(state, "PATH").value;
   if (!path || path === CONDUCTOR_UNKNOWN_SHELL_BINDING) return false;
-  for (const entry of path.split(":")) {
+  for (const entry of path.split(conductorPathListDelimiter())) {
     if (!isAbsolute(entry)) return false;
     let binDirectory: string;
     try {
@@ -16988,16 +17089,22 @@ function conductorResolvedPackageCliCandidateIsTrusted(
         return false;
       }
     }
-    const candidate = join(binDirectory, commandName);
-    if (!existsSync(candidate)) {
+    const candidates = conductorExecutablePathCandidates(binDirectory, commandName);
+    if (!candidates) return false;
+    let candidate: string | undefined;
+    for (const candidatePath of candidates) {
+      if (existsSync(candidatePath)) {
+        candidate = candidatePath;
+        break;
+      }
       try {
-        lstatSync(candidate);
+        lstatSync(candidatePath);
         return false;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        return false;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
       }
     }
+    if (!candidate) continue;
     try {
       accessSync(candidate, fsConstants.X_OK);
       const trustedCli = expectedCandidate !== null && realpathSync(candidate) === expectedCandidate;
