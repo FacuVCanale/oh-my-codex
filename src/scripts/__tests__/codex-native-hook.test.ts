@@ -157,6 +157,31 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 	await writeFile(path, JSON.stringify(value, null, 2));
 }
 
+const AMBIENT_UNSAFE_NODE_RUNTIME_ENV_NAMES = [
+	"NODE_OPTIONS",
+	"OPENSSL_CONF",
+	"NODE_V8_COVERAGE",
+	"NODE_COMPILE_CACHE",
+	"NODE_REDIRECT_WARNINGS",
+	"NODE_REPORT_DIRECTORY",
+	"NODE_REPORT_FILENAME",
+] as const;
+
+async function withCleanAmbientNodeRuntimeEnvironment<T>(run: () => Promise<T>): Promise<T> {
+	const previousRuntimeEnv = Object.fromEntries(
+		AMBIENT_UNSAFE_NODE_RUNTIME_ENV_NAMES.map((name) => [name, process.env[name]]),
+	);
+	for (const name of AMBIENT_UNSAFE_NODE_RUNTIME_ENV_NAMES) delete process.env[name];
+	try {
+		return await run();
+	} finally {
+		for (const name of AMBIENT_UNSAFE_NODE_RUNTIME_ENV_NAMES) {
+			if (previousRuntimeEnv[name] === undefined) delete process.env[name];
+			else process.env[name] = previousRuntimeEnv[name];
+		}
+	}
+}
+
 async function writeCanonicalLeaderFixture(
 	stateDir: string,
 	sessionId: string,
@@ -13436,7 +13461,20 @@ exit 0
 				const workspacePackageCliForReadOnly = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
 				await symlink(workspacePackageCliForReadOnly, join(readOnlyTrustedBinDir, "omx"));
 				const inheritedReadOnlyPath = process.env.PATH;
+				const unsafeRuntimeEnvNames = [
+					"NODE_OPTIONS",
+					"OPENSSL_CONF",
+					"NODE_V8_COVERAGE",
+					"NODE_COMPILE_CACHE",
+					"NODE_REDIRECT_WARNINGS",
+					"NODE_REPORT_DIRECTORY",
+					"NODE_REPORT_FILENAME",
+				] as const;
+				const inheritedReadOnlyRuntimeEnvironment = Object.fromEntries(
+					unsafeRuntimeEnvNames.map((name) => [name, process.env[name]]),
+				);
 				process.env.PATH = `${readOnlyTrustedBinDir}:${inheritedReadOnlyPath ?? ""}`;
+				for (const name of unsafeRuntimeEnvNames) delete process.env[name];
 				try {
 					for (const [label, command] of [
 						["omx-help", "omx --help"],
@@ -13451,6 +13489,10 @@ exit 0
 				} finally {
 					if (inheritedReadOnlyPath === undefined) delete process.env.PATH;
 					else process.env.PATH = inheritedReadOnlyPath;
+					for (const name of unsafeRuntimeEnvNames) {
+						if (inheritedReadOnlyRuntimeEnvironment[name] === undefined) delete process.env[name];
+						else process.env[name] = inheritedReadOnlyRuntimeEnvironment[name];
+					}
 					await rm(readOnlyTrustedBinDir, { recursive: true, force: true });
 				}
 			}
@@ -13500,7 +13542,7 @@ exit 0
 		}
 	});
 
-	it("allows only the canonical leader's authenticated standalone deep-interview complete terminal state write", async () => {
+	it("allows only the canonical leader's authenticated standalone deep-interview complete terminal state write", async () => withCleanAmbientNodeRuntimeEnvironment(async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-deep-interview-terminal-write-"));
 		try {
 			const stateDir = join(cwd, ".omx", "state");
@@ -13683,7 +13725,7 @@ exit 0
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
-	});
+	}));
 	it("issue #3313/#3314 permits standalone deep-interview lifecycle reachability and read-only discovery without relaxing write guards", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-issue-3313-3314-di-"));
 		try {
@@ -13738,6 +13780,19 @@ exit 0
 			await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
 			const inheritedPath = process.env.PATH;
 			process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+			const unsafeRuntimeEnvironmentNames = [
+				"NODE_OPTIONS",
+				"OPENSSL_CONF",
+				"NODE_V8_COVERAGE",
+				"NODE_COMPILE_CACHE",
+				"NODE_REDIRECT_WARNINGS",
+				"NODE_REPORT_DIRECTORY",
+				"NODE_REPORT_FILENAME",
+			] as const;
+			const inheritedUnsafeRuntimeEnvironment = Object.fromEntries(
+				unsafeRuntimeEnvironmentNames.map((name) => [name, process.env[name]]),
+			);
+			for (const name of unsafeRuntimeEnvironmentNames) delete process.env[name];
 			const sparkshellImplementationEnvironmentNames = [
 				"OMX_SPARKSHELL_BIN",
 				"OMX_NATIVE_CACHE_DIR",
@@ -14005,6 +14060,10 @@ exit 0
 				await assertBlocked("PATH-prefix smuggled omx cancel stays blocked", `PATH="${trustedBinDir}" omx cancel`, /PATH|write intent/);
 			} finally {
 				if (inheritedPath === undefined) delete process.env.PATH; else process.env.PATH = inheritedPath;
+				for (const name of unsafeRuntimeEnvironmentNames) {
+					if (inheritedUnsafeRuntimeEnvironment[name] === undefined) delete process.env[name];
+					else process.env[name] = inheritedUnsafeRuntimeEnvironment[name];
+				}
 				for (const name of sparkshellImplementationEnvironmentNames) {
 					const previous = (inheritedSparkshellImplementationEnvironment as Record<string, string | undefined>)[name];
 					if (previous === undefined) delete process.env[name];
@@ -14057,6 +14116,19 @@ exit 0
 			await symlink(workspacePackageCli, join(trustedBinDir, "omx"));
 			const inheritedPath = process.env.PATH;
 			process.env.PATH = `${trustedBinDir}:${dirname(process.execPath)}:/usr/bin:/bin`;
+			const unsafeRuntimeEnvironmentNames = [
+				"NODE_OPTIONS",
+				"OPENSSL_CONF",
+				"NODE_V8_COVERAGE",
+				"NODE_COMPILE_CACHE",
+				"NODE_REDIRECT_WARNINGS",
+				"NODE_REPORT_DIRECTORY",
+				"NODE_REPORT_FILENAME",
+			] as const;
+			const inheritedUnsafeRuntimeEnvironment = Object.fromEntries(
+				unsafeRuntimeEnvironmentNames.map((name) => [name, process.env[name]]),
+			);
+			for (const name of unsafeRuntimeEnvironmentNames) delete process.env[name];
 			const sparkshellImplementationEnvironmentNames = [
 				"OMX_SPARKSHELL_BIN",
 				"OMX_NATIVE_CACHE_DIR",
@@ -14167,6 +14239,10 @@ exit 0
 				);
 			} finally {
 				if (inheritedPath === undefined) delete process.env.PATH; else process.env.PATH = inheritedPath;
+				for (const name of unsafeRuntimeEnvironmentNames) {
+					if (inheritedUnsafeRuntimeEnvironment[name] === undefined) delete process.env[name];
+					else process.env[name] = inheritedUnsafeRuntimeEnvironment[name];
+				}
 				for (const name of sparkshellImplementationEnvironmentNames) {
 					const previous = (inheritedSparkshellImplementationEnvironment as Record<string, string | undefined>)[name];
 					if (previous === undefined) delete process.env[name];
@@ -14228,7 +14304,7 @@ exit 0
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
-	it("allows canonical leader deep-interview artifact and state writes while blocking implementation Bash writes", async () => {
+	it("allows canonical leader deep-interview artifact and state writes while blocking implementation Bash writes", async () => withCleanAmbientNodeRuntimeEnvironment(async () => {
 		const cwd = realpathSync(await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-deep-interview-artifact-"),
 		));
@@ -18620,9 +18696,9 @@ exit 0
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
-	});
+	}));
 
-	it("allows canonical leader ralplan complete terminal state writes while blocking partial deactivation writes", async () => {
+	it("allows canonical leader ralplan complete terminal state writes while blocking partial deactivation writes", async () => withCleanAmbientNodeRuntimeEnvironment(async () => {
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-pretool-ralplan-state-input-file-"),
 		);
@@ -19187,7 +19263,7 @@ exit 0
 		} finally {
 			await rm(cwd, { recursive: true, force: true });
 		}
-	});
+	}));
 
 	it("emits hook-specific deny ralplan PreToolUse JSON for wrapped implementation writes on the live CLI path", async () => {
 		const cwd = await mkdtemp(
@@ -33602,7 +33678,7 @@ PY`,
     }
   });
 
-  it("uses hook-native agent_id as child provenance without borrowing Team or legacy identity", async () => {
+  it("uses hook-native agent_id as child provenance without borrowing Team or legacy identity", async () => withCleanAmbientNodeRuntimeEnvironment(async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-agent-id-"));
     const originalTeamWorker = process.env.OMX_TEAM_WORKER;
     const originalInternalTeamWorker = process.env.OMX_TEAM_INTERNAL_WORKER;
@@ -34318,7 +34394,7 @@ PY`,
       else process.env.GJC_SESSION_ID = originalGjcSessionId;
       await rm(cwd, { recursive: true, force: true });
     }
-  });
+  }));
 
   it("keeps active Ralph starting phase behind the PreToolUse write guard", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-starting-pretool-"));
@@ -35648,8 +35724,19 @@ PY`,
   it("blocks non-shell direct writes in Main-root conductor states", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-conductor-bash-mutations-"));
     const previousPath = process.env.PATH;
+    const unsafeRuntimeEnvNames = [
+      "NODE_OPTIONS",
+      "OPENSSL_CONF",
+      "NODE_V8_COVERAGE",
+      "NODE_COMPILE_CACHE",
+      "NODE_REDIRECT_WARNINGS",
+      "NODE_REPORT_DIRECTORY",
+      "NODE_REPORT_FILENAME",
+    ] as const;
+    const previousRuntimeEnv = Object.fromEntries(unsafeRuntimeEnvNames.map((name) => [name, process.env[name]]));
     try {
       process.env.PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
+      for (const name of unsafeRuntimeEnvNames) delete process.env[name];
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-conductor-bash-mutations";
       await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
@@ -35742,6 +35829,10 @@ PY`,
     } finally {
       if (typeof previousPath === "string") process.env.PATH = previousPath;
       else delete process.env.PATH;
+      for (const name of unsafeRuntimeEnvNames) {
+        if (previousRuntimeEnv[name] === undefined) delete process.env[name];
+        else process.env[name] = previousRuntimeEnv[name];
+      }
       await rm(cwd, { recursive: true, force: true });
     }
   });
