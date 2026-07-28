@@ -1,6 +1,6 @@
 // @ts-nocheck
 import assert from 'node:assert/strict';
-import { access, chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -714,24 +714,40 @@ test('packed lifecycle fails before probing the 33rd unique PATH candidate', asy
   if (process.platform === 'win32') return;
   const root = await mkdtemp(join(tmpdir(), 'omx-codex-candidate-budget-'));
   const candidateDirs = Array.from({ length: 33 }, (_value, index) => join(root, `candidate-${index}`));
-  const thirtyThirdProbe = join(root, '33rd-candidate-was-probed');
+  // Duplicate the first PATH entry twice to demonstrate that PATH de-duplication
+  // (by resolved candidate path) does not consume extra candidate-budget slots,
+  // while still preserving first-occurrence probing order.
+  const pathValue = [candidateDirs[0], candidateDirs[0], ...candidateDirs].join(delimiter);
+  const spawnedExecutables: string[] = [];
+  const spawnSyncImpl = ((command: string) => {
+    spawnedExecutables.push(command);
+    return { status: 1, stdout: '', stderr: '', error: undefined };
+  }) as never;
   try {
     await Promise.all(candidateDirs.map((dir) => mkdir(dir, { recursive: true })));
-    await Promise.all(candidateDirs.map(async (dir, index) => {
+    await Promise.all(candidateDirs.map(async (dir) => {
       const executable = join(dir, 'codex');
-      await writeFile(
-        executable,
-        index === candidateDirs.length - 1
-          ? `#!/bin/sh\n: > ${JSON.stringify(thirtyThirdProbe)}\nprintf '%s\\n' 'codex-cli 0.142.5'\n`
-          : '#!/bin/sh\nexit 1\n',
-      );
+      // These candidates are never actually executed: spawnSyncImpl is a
+      // deterministic seam that returns an immediate nonzero result without
+      // starting a real shell process. Only filesystem presence is real.
+      await writeFile(executable, '#!/bin/sh\nexit 1\n');
       await chmod(executable, 0o755);
     }));
     assert.throws(
-      () => probeCodexVersion(root, { PATH: candidateDirs.join(delimiter) }),
+      () => probeCodexVersion(root, { PATH: pathValue }, { spawnSyncImpl }),
       /32-candidate PATH budget/,
     );
-    await assert.rejects(access(thirtyThirdProbe));
+    assert.equal(spawnedExecutables.length, 32, 'must probe exactly 32 unique candidates before the budget error');
+    assert.deepEqual(
+      spawnedExecutables,
+      candidateDirs.slice(0, 32).map((dir) => join(dir, 'codex')),
+      'must probe unique candidates in PATH order, with the duplicated first entry counted only once',
+    );
+    const thirtyThirdExecutable = join(candidateDirs[32], 'codex');
+    assert.ok(
+      !spawnedExecutables.includes(thirtyThirdExecutable),
+      'the 33rd unique candidate must never be spawned',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
