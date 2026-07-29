@@ -33861,25 +33861,30 @@ PY`,
     }
   });
 
-  it("allows session-scoped omx cancel under active ultragoal conductor while impostors stay blocked", async () => {
+  it("hook-owns session-scoped omx cancel under active ultragoal conductor while impostors stay blocked", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultragoal-conductor-cancel-"));
     try {
       const stateDir = join(cwd, ".omx", "state");
       const sessionId = "sess-ultragoal-conductor-cancel";
       const leaderThreadId = "thread-ultragoal-conductor-cancel";
-      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      const sessionDir = join(stateDir, "sessions", sessionId);
+      const ultragoalPath = join(sessionDir, "ultragoal-state.json");
+      await mkdir(sessionDir, { recursive: true });
       await writeJson(join(stateDir, "session.json"), {
         session_id: sessionId,
         native_session_id: leaderThreadId,
       });
       await writeJson(join(stateDir, "subagent-tracking.json"), { schemaVersion: 1, sessions: { [sessionId]: { session_id: sessionId, leader_thread_id: leaderThreadId, threads: { [leaderThreadId]: { thread_id: leaderThreadId, kind: "leader" } } } } });
-      await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
-      await writeJson(join(stateDir, "sessions", sessionId, "ultragoal-state.json"), {
-        active: true,
-        mode: "ultragoal",
-        current_phase: "planning",
-        session_id: sessionId,
-      });
+      const resetUltragoal = async () => {
+        await writeSessionSkillActiveState(stateDir, sessionId, "ultragoal", "planning");
+        await writeJson(ultragoalPath, {
+          active: true,
+          mode: "ultragoal",
+          current_phase: "planning",
+          session_id: sessionId,
+        });
+      };
+      await resetUltragoal();
 
       const bash = (command: string) => dispatchCodexNativeHook({
         hook_event_name: "PreToolUse",
@@ -33890,40 +33895,35 @@ PY`,
         tool_name: "Bash",
         tool_input: { command },
       }, { cwd });
-
-      const workspacePackageCli = realpathSync(resolve(process.cwd(), "dist", "cli", "omx.js"));
-      const trustedPackageBin = join(cwd, "node_modules", ".bin", "omx");
-      await mkdir(dirname(trustedPackageBin), { recursive: true });
-      await symlink(workspacePackageCli, trustedPackageBin);
-      const trustedPackagePath = `${dirname(trustedPackageBin)}:${dirname(process.execPath)}`;
-      const bashTrusted = async (command: string) => {
-        const inheritedPath = process.env.PATH;
-        process.env.PATH = trustedPackagePath;
-        try {
-          return await bash(command);
-        } finally {
-          if (inheritedPath === undefined) delete process.env.PATH;
-          else process.env.PATH = inheritedPath;
-        }
+      const assertHandled = async (command: string, label: string) => {
+        await resetUltragoal();
+        const result = await bash(command);
+        assert.equal(result.outputJson?.decision, "block", label);
+        assert.match(JSON.stringify(result.outputJson), /cancelled_exact_session/, label);
+        assert.equal(JSON.parse(await readFile(ultragoalPath, "utf8")).active, false, label);
       };
 
-      const cleanPositives = await withCleanRunnerNodeEnvironment(async () => ({
-        plain: await bashTrusted("omx cancel"),
-        force: await bashTrusted("omx cancel --force"),
-      }));
-      assert.equal(cleanPositives.plain.outputJson, null);
-      assert.equal(cleanPositives.force.outputJson, null);
-      const inheritedCaPositives = await withCleanRunnerNodeEnvironment(async () => {
-        process.env.NODE_EXTRA_CA_CERTS = "/nonexistent/enterprise-ca.pem";
-        return {
-          plain: await bashTrusted("omx cancel"),
-          force: await bashTrusted("omx cancel --force"),
-        };
+      await withCleanRunnerNodeEnvironment(async () => {
+        await assertHandled("omx cancel", "plain cancellation");
+        await assertHandled("omx cancel --force", "force cancellation");
       });
-      assert.equal(inheritedCaPositives.plain.outputJson, null);
-      assert.equal(inheritedCaPositives.force.outputJson, null);
-      assert.equal((await bash("omx cancel")).outputJson?.decision, "block",
-        "ambient non-package omx resolution is not trusted");
+      for (const [label, envName, envValue] of [
+        ["inherited bash startup file", "BASH_ENV", "/tmp/prelude.sh"],
+        ["imported omx function shadow", "BASH_FUNC_omx%%", "() { printf owned > src/pwned.ts; }"],
+        ["inherited node loader override", "NODE_OPTIONS", "--require=./payload.cjs"],
+        ["inherited openssl config", "OPENSSL_CONF", "/tmp/evil.cnf"],
+        ["inherited dynamic loader preload", "LD_PRELOAD", "/tmp/payload.so"],
+        ["inherited node coverage output", "NODE_V8_COVERAGE", "/tmp/coverage-out"],
+      ] as const) {
+        const previousValue = process.env[envName];
+        process.env[envName] = envValue;
+        try {
+          await assertHandled("omx cancel --force", label);
+        } finally {
+          if (previousValue === undefined) delete process.env[envName];
+          else process.env[envName] = previousValue;
+        }
+      }
 
       for (const [label, command] of [
         ["openssl config injection", "OPENSSL_CONF=/tmp/evil.cnf omx cancel"],
@@ -33935,49 +33935,14 @@ PY`,
         ["carriage-return suffix lookalike", "omx cancel\r"],
         ["unicode nbsp separator", "omx\u00a0cancel"],
       ] as const) {
-        const impostor = await bashTrusted(command);
+        await resetUltragoal();
+        const impostor = await bash(command);
         assert.equal(impostor.outputJson?.decision, "block", label);
+        assert.doesNotMatch(JSON.stringify(impostor.outputJson), /cancelled_exact_session/, label);
+        assert.equal(JSON.parse(await readFile(ultragoalPath, "utf8")).active, true, label);
       }
 
-      for (const [label, envName, envValue] of [
-        ["inherited bash startup file", "BASH_ENV", "/tmp/prelude.sh"],
-        ["imported omx function shadow", "BASH_FUNC_omx%%", "() { printf owned > src/pwned.ts; }"],
-        ["inherited node loader override", "NODE_OPTIONS", "--require=./payload.cjs"],
-        ["inherited openssl config", "OPENSSL_CONF", "/tmp/evil.cnf"],
-        ["inherited dynamic loader preload", "LD_PRELOAD", "/tmp/payload.so"],
-        ["inherited node coverage output", "NODE_V8_COVERAGE", "/tmp/coverage-out"],
-      ] as const) {
-        const previousValue = process.env[envName];
-        process.env[envName] = envValue;
-        const previousCa = process.env.NODE_EXTRA_CA_CERTS;
-        process.env.NODE_EXTRA_CA_CERTS = "/nonexistent/enterprise-ca.pem";
-        try {
-          const poisoned = await bashTrusted("omx cancel");
-          assert.equal(poisoned.outputJson?.decision, "block", `${label} with inherited CA`);
-        } finally {
-          if (previousValue === undefined) delete process.env[envName];
-          else process.env[envName] = previousValue;
-          if (previousCa === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
-          else process.env.NODE_EXTRA_CA_CERTS = previousCa;
-        }
-      }
-
-      const shadowBinDir = join(cwd, "shadow-bin");
-      await mkdir(shadowBinDir, { recursive: true });
-      await writeFile(join(shadowBinDir, "omx"), "#!/bin/sh\ntouch src/path-shadow-owned.ts\n", "utf-8");
-      await chmod(join(shadowBinDir, "omx"), 0o755);
-      {
-        const inheritedPath = process.env.PATH;
-        process.env.PATH = `${shadowBinDir}:${trustedPackagePath}`;
-        try {
-          const shadowed = await bash("omx cancel");
-          assert.equal(shadowed.outputJson?.decision, "block", "PATH-shadowed omx executable");
-        } finally {
-          if (inheritedPath === undefined) delete process.env.PATH;
-          else process.env.PATH = inheritedPath;
-        }
-      }
-
+      await resetUltragoal();
       const stateClear = await bash("omx state clear --force --mode ultragoal --json");
       assert.equal(stateClear.outputJson?.decision, "block");
     } finally {

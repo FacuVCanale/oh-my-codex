@@ -39,6 +39,7 @@ import {
   resolveWorkerTeamStateRootPath,
 } from "../team/state-root.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
+import { syncRegularFile } from "../utils/file-durability.js";
 import {
   appendPromptSessionProvenanceRejection,
   appendToLog,
@@ -3895,36 +3896,129 @@ function hookCancelObject(bytes: Buffer): Record<string, unknown> | null {
   try { const value = JSON.parse(bytes.toString("utf8")); return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null; } catch { return null; }
 }
 function hookCancelString(value: unknown): string { return typeof value === "string" ? value.trim() : ""; }
-function hookCancelCwdMatches(value: Record<string, unknown>, canonicalCwd: string): boolean {
-  const recorded = hookCancelString(value.cwd) || hookCancelString(value.workingDirectory);
-  try { return !recorded || sameFilePath(recorded, canonicalCwd); } catch { return false; }
+type HookCancelIdentityPolicy = {
+  allowMissingCwd: boolean;
+  allowSupervisedAutopilotMirror: boolean;
+};
+const STRICT_HOOK_CANCEL_IDENTITY: HookCancelIdentityPolicy = {
+  allowMissingCwd: false,
+  allowSupervisedAutopilotMirror: false,
+};
+const AUTHENTICATED_HOOK_CANCEL_IDENTITY: HookCancelIdentityPolicy = {
+  allowMissingCwd: true,
+  allowSupervisedAutopilotMirror: true,
+};
+function hookCancelRequiredStringAliasesMatch(
+  value: Record<string, unknown>,
+  aliases: readonly string[],
+  matches: (candidate: string) => boolean,
+  allowMissing = false,
+): boolean {
+  let found = false;
+  for (const alias of aliases) {
+    if (!Object.prototype.hasOwnProperty.call(value, alias)) continue;
+    const raw = value[alias];
+    if (typeof raw !== "string" || raw.trim() === "") return false;
+    found = true;
+    if (!matches(raw.trim())) return false;
+  }
+  return found || allowMissing;
 }
-function hookCancelSessionMatches(value: Record<string, unknown>, sessionId: string, cwd: string): boolean {
-  const recorded = hookCancelString(value.session_id);
-  return (!recorded || recorded === sessionId) && hookCancelCwdMatches(value, cwd);
+function hookCancelCwdMatches(value: Record<string, unknown>, canonicalCwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
+  try {
+    return hookCancelRequiredStringAliasesMatch(
+      value,
+      ["cwd", "workingDirectory"],
+      (candidate) => sameFilePath(candidate, canonicalCwd),
+      policy.allowMissingCwd,
+    );
+  } catch { return false; }
 }
-function hookCancelAutopilotMatches(value: Record<string, unknown>, sessionId: string, cwd: string): boolean {
-  return value.active === true && hookCancelString(value.mode).toLowerCase() === "autopilot" && normalizeAutopilotPhase(hookCancelString(value.current_phase)) === "deep-interview" && hookCancelSessionMatches(value, sessionId, cwd);
+function hookCancelSessionMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
+  return hookCancelRequiredStringAliasesMatch(value, ["session_id", "sessionId"], (candidate) => candidate === sessionId)
+    && hookCancelCwdMatches(value, cwd, policy);
 }
-function hookCancelSkillMatches(value: Record<string, unknown>, sessionId: string, cwd: string): boolean {
-  if (!hookCancelSessionMatches(value, sessionId, cwd)) return false;
+function hookCancelAutopilotIsActive(value: Record<string, unknown>): boolean {
+  return value.active === true
+    && hookCancelString(value.mode).toLowerCase() === "autopilot"
+    && normalizeAutopilotPhase(hookCancelString(value.current_phase)) === "deep-interview";
+}
+function hookCancelAutopilotMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
+  return hookCancelAutopilotIsActive(value) && hookCancelSessionMatches(value, sessionId, cwd, policy);
+}
+function hookCancelSupervisingAutopilotMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy: HookCancelIdentityPolicy): boolean {
+  return value.active === true
+    && hookCancelString(value.mode).toLowerCase() === "autopilot"
+    && normalizeAutopilotPhase(hookCancelString(value.current_phase)) === "ultragoal"
+    && hookCancelSessionMatches(value, sessionId, cwd, policy);
+}
+function hookCancelUltragoalIsActive(value: Record<string, unknown>): boolean {
+  const phase = hookCancelString(value.current_phase).toLowerCase();
+  return value.active === true
+    && hookCancelString(value.mode).toLowerCase() === "ultragoal"
+    && phase !== "completing"
+    && isNonTerminalPhase(phase);
+}
+function hookCancelUltragoalMatches(value: Record<string, unknown>, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
+  return hookCancelUltragoalIsActive(value) && hookCancelSessionMatches(value, sessionId, cwd, policy);
+}
+function hookCancelSkillEntryIsActive(value: unknown): boolean {
+  return value === undefined || value === true;
+}
+function hookCancelSkillEntryMatches(entry: Record<string, unknown>, workflow: HookCancelWorkflow, policy: HookCancelIdentityPolicy): boolean {
+  const skill = hookCancelString(entry.skill).toLowerCase();
+  return skill === workflow
+    || (policy.allowSupervisedAutopilotMirror
+      && workflow === "ultragoal"
+      && skill === "autopilot"
+      && hookCancelString(entry.phase).toLowerCase() === "ultragoal");
+}
+function hookCancelUsesSupervisedAutopilotMirror(value: Record<string, unknown>, sessionId: string, cwd: string, policy: HookCancelIdentityPolicy): boolean {
+  if (!policy.allowSupervisedAutopilotMirror
+    || !hookCancelSkillEntryIsActive(value.active)
+    || hookCancelString(value.skill).toLowerCase() !== "autopilot"
+    || hookCancelString(value.phase).toLowerCase() !== "ultragoal"
+    || !hookCancelSessionMatches(value, sessionId, cwd, policy)) return false;
   const entries = Array.isArray(value.active_skills) ? value.active_skills : [value];
   return entries.some((candidate) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
     const entry = candidate as Record<string, unknown>;
     return hookCancelString(entry.skill).toLowerCase() === "autopilot"
-      && entry.active !== false
-      && (!hookCancelString(entry.session_id) || hookCancelString(entry.session_id) === sessionId)
-      && hookCancelCwdMatches(entry, cwd);
+      && hookCancelString(entry.phase).toLowerCase() === "ultragoal"
+      && hookCancelSkillEntryIsActive(entry.active)
+      && hookCancelSessionMatches(entry, sessionId, cwd, policy);
   });
 }
+function hookCancelSkillMatches(value: Record<string, unknown>, workflow: HookCancelWorkflow, sessionId: string, cwd: string, policy = STRICT_HOOK_CANCEL_IDENTITY): boolean {
+  if (!hookCancelSkillEntryIsActive(value.active) || !hookCancelSessionMatches(value, sessionId, cwd, policy)) return false;
+  const entries = Array.isArray(value.active_skills) ? value.active_skills : [value];
+  return entries.some((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const entry = candidate as Record<string, unknown>;
+    return hookCancelSkillEntryMatches(entry, workflow, policy)
+      && hookCancelSkillEntryIsActive(entry.active)
+      && hookCancelSessionMatches(entry, sessionId, cwd, policy);
+  });
+}
+function hookCancelPlatform(): NodeJS.Platform {
+  const testPlatform = process.env.NODE_ENV === "test" ? process.env.OMX_NATIVE_HOOK_TEST_PLATFORM : undefined;
+  return testPlatform === "win32" ? "win32" : process.platform;
+}
+function hookCancelOwnerMatches(stat: Awaited<ReturnType<typeof lstat>>): boolean {
+  // Windows exposes no uid. The authenticated canonical session path, ACL-gated
+  // open, single-link regular-file shape, and lstat/open identity checks below
+  // form the platform ownership proof instead of silently disabling the path.
+  if (hookCancelPlatform() === "win32") return true;
+  return typeof process.getuid === "function" && stat.uid === process.getuid();
+}
 async function hookCancelFsyncDirectory(path: string): Promise<void> {
+  if (hookCancelPlatform() === "win32") return;
   const handle = await open(path, "r"); try { await handle.sync(); } finally { await handle.close(); }
 }
 async function hookCancelPinnedRead(path: string): Promise<HookCancelPinnedFile | null> {
   let before: Awaited<ReturnType<typeof lstat>>;
   try { before = await lstat(path); } catch { return null; }
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.uid !== process.getuid?.()) return null;
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || !hookCancelOwnerMatches(before)) return null;
   let handle: Awaited<ReturnType<typeof open>>;
   try { handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW); } catch { return null; }
   try {
@@ -3936,44 +4030,80 @@ async function hookCancelPinnedRead(path: string): Promise<HookCancelPinnedFile 
     const value = hookCancelObject(bytes); return value ? { path, bytes, identity: hookCancelIdentity(after), value } : null;
   } catch { return null; } finally { await handle.close(); }
 }
-function hookCancelPreparedAutopilot(value: Record<string, unknown>, nowIso: string): Record<string, unknown> {
+function hookCancelPreparedWorkflow(value: Record<string, unknown>, nowIso: string): Record<string, unknown> {
   return { ...value, active: false, current_phase: "cancelled", completed_at: nowIso, last_turn_at: nowIso };
 }
-function hookCancelPreparedSkill(value: Record<string, unknown>, sessionId: string, nowIso: string): Record<string, unknown> {
+function hookCancelPreparedSkill(value: Record<string, unknown>, workflow: HookCancelWorkflow, sessionId: string, cwd: string, nowIso: string, policy = STRICT_HOOK_CANCEL_IDENTITY): Record<string, unknown> {
   const sourceEntries = Array.isArray(value.active_skills) ? value.active_skills : [value]; let cancelled = false;
   const entries = sourceEntries.map((candidate) => {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
     const entry = candidate as Record<string, unknown>;
-    const matches = hookCancelString(entry.skill).toLowerCase() === "autopilot"
-      && entry.active !== false
-      && (!hookCancelString(entry.session_id) || hookCancelString(entry.session_id) === sessionId);
+    const matches = hookCancelSkillEntryMatches(entry, workflow, policy)
+      && hookCancelSkillEntryIsActive(entry.active)
+      && hookCancelSessionMatches(entry, sessionId, cwd, policy);
     if (!matches) return entry; cancelled = true; return { ...entry, active: false, phase: "cancelled", updated_at: nowIso };
   });
   if (!cancelled) return value;
-  const activeEntries = entries.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry) && (entry as Record<string, unknown>).active !== false) as Record<string, unknown>[];
+  const activeEntries = entries.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry) && hookCancelSkillEntryIsActive((entry as Record<string, unknown>).active)) as Record<string, unknown>[];
   const primary = activeEntries[0];
-  return { ...value, active: activeEntries.length > 0, skill: primary ? hookCancelString(primary.skill) : "autopilot", phase: primary ? hookCancelString(primary.phase) : "cancelled", updated_at: nowIso, active_skills: entries };
+  const terminalSkill = hookCancelString(value.skill).toLowerCase() || workflow;
+  return { ...value, active: activeEntries.length > 0, skill: primary ? hookCancelString(primary.skill) : terminalSkill, phase: primary ? hookCancelString(primary.phase) : "cancelled", updated_at: nowIso, active_skills: entries };
 }
 function hookCancelInjectFailure(boundary: string): void {
   if (process.env.NODE_ENV === "test" && process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER === boundary) throw new Error("test-induced hook cancellation transaction failure");
 }
-async function hookCancelWriteExact(handle: Awaited<ReturnType<typeof open>>, bytes: Buffer): Promise<void> { await handle.write(bytes, 0, bytes.length, 0); await handle.truncate(bytes.length); await handle.sync(); }
-async function hookCancelWriteTarget(path: string, identity: HookCancelTargetIdentity, expected: Buffer, next: Buffer): Promise<void> {
+async function hookCancelWriteExact(handle: Awaited<ReturnType<typeof open>>, bytes: Buffer): Promise<void> {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+    if (bytesWritten <= 0) throw new Error("target write made no progress");
+    offset += bytesWritten;
+  }
+  await handle.truncate(bytes.length);
+  await syncRegularFile(handle, hookCancelPlatform());
+}
+class HookCancelTargetRollbackError extends Error {}
+async function hookCancelWriteTarget(path: string, identity: HookCancelTargetIdentity, expected: Buffer, next: Buffer, boundary: string): Promise<void> {
   const handle = await open(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
-  try { const current = await handle.stat(); if (!current.isFile() || !hookCancelTargetMatches(identity, hookCancelIdentity(current))) throw new Error("target identity changed"); const bytes = await handle.readFile(); if (!bytes.equals(expected)) throw new Error("target content changed"); await hookCancelWriteExact(handle, next); } finally { await handle.close(); }
+  let writeStarted = false;
+  try {
+    const current = await handle.stat();
+    if (!current.isFile() || !hookCancelTargetMatches(identity, hookCancelIdentity(current))) throw new Error("target identity changed");
+    const bytes = await handle.readFile();
+    if (!bytes.equals(expected)) throw new Error("target content changed");
+    writeStarted = true;
+    if (process.env.NODE_ENV === "test" && process.env.OMX_NATIVE_HOOK_TEST_CANCEL_TRANSACTION_FAIL_AFTER === `partial-${boundary}`) {
+      const partialLength = Math.max(1, Math.floor(next.length / 2));
+      await handle.write(next, 0, partialLength, 0);
+      await syncRegularFile(handle, hookCancelPlatform());
+      throw new Error("test-induced partial target write");
+    }
+    await hookCancelWriteExact(handle, next);
+  } catch (error) {
+    if (writeStarted) {
+      try { await hookCancelWriteExact(handle, expected); } catch { throw new HookCancelTargetRollbackError(); }
+    }
+    throw error;
+  } finally { try { await handle.close(); } catch {} }
 }
 async function hookCancelRestoreTarget(path: string, identity: HookCancelTargetIdentity, original: Buffer): Promise<void> {
   const handle = await open(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
   try { const current = await handle.stat(); if (!current.isFile() || !hookCancelTargetMatches(identity, hookCancelIdentity(current))) throw new Error("rollback identity changed"); await hookCancelWriteExact(handle, original); } finally { await handle.close(); }
 }
+function hookCancelSessionIdIsSafe(value: string): boolean {
+  return value !== "" && value !== "." && value !== ".." && basename(value) === value;
+}
 export async function readHookCancelTransactionRecoveryState(input: { stateDir: string; canonicalSessionId: string }): Promise<HookCancelTransactionFailureReason | null> {
-  if (!input.canonicalSessionId || basename(input.canonicalSessionId) !== input.canonicalSessionId) return "invalid_target";
+  if (!hookCancelSessionIdIsSafe(input.canonicalSessionId)) return "invalid_target";
   try { const journal = hookCancelObject(await readFile(join(input.stateDir, "sessions", input.canonicalSessionId, HOOK_CANCEL_JOURNAL_FILE))); return journal?.phase === "prepared" ? "recovery_required" : "cleanup_failed"; } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? null : "cleanup_failed"; }
 }
-export async function terminalizeExactAutopilotSessionForHookCancel(input: { stateDir: string; canonicalSessionId: string; cwd: string; nowIso: string }): Promise<HookCancelTransactionResult> {
+type HookCancelWorkflow = "autopilot" | "ultragoal";
+type HookCancelWorkflowInput = { stateDir: string; canonicalSessionId: string; cwd: string; nowIso: string };
+
+async function terminalizeExactWorkflowSessionForHookCancel(input: HookCancelWorkflowInput, workflow: HookCancelWorkflow, policy = STRICT_HOOK_CANCEL_IDENTITY): Promise<HookCancelTransactionResult> {
   let canonicalStateDir: string; let canonicalCwd: string;
   try { canonicalStateDir = realpathSync(input.stateDir); canonicalCwd = realpathSync(input.cwd); } catch { return { ok: false, reason: "invalid_target" }; }
-  if (!input.canonicalSessionId || basename(input.canonicalSessionId) !== input.canonicalSessionId) return { ok: false, reason: "invalid_target" };
+  if (!hookCancelSessionIdIsSafe(input.canonicalSessionId)) return { ok: false, reason: "invalid_target" };
   const sessionsDir = join(canonicalStateDir, "sessions"); const sessionDir = join(sessionsDir, input.canonicalSessionId);
   try {
     const [sessionsStats, sessionStats, resolvedSessionDir] = await Promise.all([lstat(sessionsDir), lstat(sessionDir), import("fs/promises").then(({ realpath }) => realpath(sessionDir))]);
@@ -3981,33 +4111,93 @@ export async function terminalizeExactAutopilotSessionForHookCancel(input: { sta
   } catch { return { ok: false, reason: "invalid_target" }; }
   const recovery = await readHookCancelTransactionRecoveryState({ stateDir: canonicalStateDir, canonicalSessionId: input.canonicalSessionId }); if (recovery) return { ok: false, reason: recovery };
   const lockPath = join(sessionDir, HOOK_CANCEL_LOCK_FILE); const journalPath = join(sessionDir, HOOK_CANCEL_JOURNAL_FILE); let lock: Awaited<ReturnType<typeof open>>;
-  try { lock = await open(lockPath, "wx", 0o600); await lock.sync(); await hookCancelFsyncDirectory(sessionDir); } catch { return { ok: false, reason: "lock_held" }; }
+  try { lock = await open(lockPath, "wx", 0o600); } catch { return { ok: false, reason: "lock_held" }; }
+  try { hookCancelInjectFailure("lock-acquire"); await syncRegularFile(lock, hookCancelPlatform()); await hookCancelFsyncDirectory(sessionDir); }
+  catch {
+    try { await lock.close(); await unlink(lockPath); await hookCancelFsyncDirectory(sessionDir); } catch {}
+    return { ok: false, reason: "lock_held" };
+  }
   try {
-    const [autopilot, skill] = await Promise.all([hookCancelPinnedRead(join(sessionDir, "autopilot-state.json")), hookCancelPinnedRead(join(sessionDir, "skill-active-state.json"))]);
-    if (!autopilot || !skill) return { ok: false, reason: "preflight_failed" };
-    if (!hookCancelAutopilotMatches(autopilot.value, input.canonicalSessionId, canonicalCwd) || !hookCancelSkillMatches(skill.value, input.canonicalSessionId, canonicalCwd)) return { ok: false, reason: "state_mismatch" };
-    const nextAutopilot = Buffer.from(JSON.stringify(hookCancelPreparedAutopilot(autopilot.value, input.nowIso), null, 2)); const nextSkill = Buffer.from(JSON.stringify(hookCancelPreparedSkill(skill.value, input.canonicalSessionId, input.nowIso), null, 2));
-    const journal = Buffer.from(JSON.stringify({ version: 1, session_id: input.canonicalSessionId, phase: "prepared", targets: { autopilot: { identity: autopilot.identity, old_sha256: hookCancelDigest(autopilot.bytes), new_sha256: hookCancelDigest(nextAutopilot) }, skill_active: { identity: skill.identity, old_sha256: hookCancelDigest(skill.bytes), new_sha256: hookCancelDigest(nextSkill) } } }));
+    const workflowStateFile = workflow === "autopilot" ? "autopilot-state.json" : "ultragoal-state.json";
+    const [workflowState, skill, parentAutopilot] = await Promise.all([
+      hookCancelPinnedRead(join(sessionDir, workflowStateFile)),
+      hookCancelPinnedRead(join(sessionDir, "skill-active-state.json")),
+      workflow === "ultragoal" ? hookCancelPinnedRead(join(sessionDir, "autopilot-state.json")) : Promise.resolve(null),
+    ]);
+    if (!workflowState || !skill) return { ok: false, reason: "preflight_failed" };
+    const workflowMatches = workflow === "autopilot"
+      ? hookCancelAutopilotMatches(workflowState.value, input.canonicalSessionId, canonicalCwd, policy)
+      : hookCancelUltragoalMatches(workflowState.value, input.canonicalSessionId, canonicalCwd, policy);
+    const supervisedAutopilot = workflow === "ultragoal"
+      && hookCancelUsesSupervisedAutopilotMirror(skill.value, input.canonicalSessionId, canonicalCwd, policy);
+    if (!workflowMatches || !hookCancelSkillMatches(skill.value, workflow, input.canonicalSessionId, canonicalCwd, policy)) return { ok: false, reason: "state_mismatch" };
+    if (supervisedAutopilot && (!parentAutopilot || !hookCancelSupervisingAutopilotMatches(parentAutopilot.value, input.canonicalSessionId, canonicalCwd, policy))) {
+      return { ok: false, reason: "state_mismatch" };
+    }
+    const nextWorkflowState = Buffer.from(JSON.stringify(hookCancelPreparedWorkflow(workflowState.value, input.nowIso), null, 2));
+    const nextSkill = Buffer.from(JSON.stringify(hookCancelPreparedSkill(skill.value, workflow, input.canonicalSessionId, canonicalCwd, input.nowIso, policy), null, 2));
+    const targets: Array<{ journalKey: string; file: HookCancelPinnedFile; next: Buffer; boundary: string }> = [];
+    if (supervisedAutopilot && parentAutopilot) {
+      targets.push({
+        journalKey: "parent_autopilot",
+        file: parentAutopilot,
+        next: Buffer.from(JSON.stringify(hookCancelPreparedWorkflow(parentAutopilot.value, input.nowIso), null, 2)),
+        boundary: "parent-data-write",
+      });
+    }
+    targets.push(
+      { journalKey: "workflow_state", file: workflowState, next: nextWorkflowState, boundary: "first-data-write" },
+      { journalKey: "skill_active", file: skill, next: nextSkill, boundary: "second-data-write" },
+    );
+    const journalTargets = Object.fromEntries(targets.map((target) => [target.journalKey, {
+      identity: target.file.identity,
+      old_sha256: hookCancelDigest(target.file.bytes),
+      new_sha256: hookCancelDigest(target.next),
+    }]));
+    const journal = Buffer.from(JSON.stringify({ version: 1, session_id: input.canonicalSessionId, workflow, phase: "prepared", targets: journalTargets }));
     if (journal.length > HOOK_CANCEL_MAX_STATE_BYTES) return { ok: false, reason: "journal_failed" };
-    const journalHandle = await open(journalPath, "wx", 0o600); try { await journalHandle.writeFile(journal); await journalHandle.sync(); } finally { await journalHandle.close(); }
+    const journalHandle = await open(journalPath, "wx", 0o600); try { await journalHandle.writeFile(journal); await syncRegularFile(journalHandle, hookCancelPlatform()); } finally { await journalHandle.close(); }
     await hookCancelFsyncDirectory(sessionDir); hookCancelInjectFailure("journal-fsync");
-    let autopilotWritten = false; let skillWritten = false;
-    try { await hookCancelWriteTarget(autopilot.path, autopilot.identity, autopilot.bytes, nextAutopilot); autopilotWritten = true; hookCancelInjectFailure("first-data-write"); await hookCancelWriteTarget(skill.path, skill.identity, skill.bytes, nextSkill); skillWritten = true; hookCancelInjectFailure("second-data-write"); }
-    catch {
-      try { if (skillWritten) await hookCancelRestoreTarget(skill.path, skill.identity, skill.bytes); if (autopilotWritten) await hookCancelRestoreTarget(autopilot.path, autopilot.identity, autopilot.bytes); await hookCancelFsyncDirectory(sessionDir); } catch { return { ok: false, reason: "rollback_failed" }; }
+    const written: typeof targets = [];
+    try {
+      for (const target of targets) {
+        await hookCancelWriteTarget(target.file.path, target.file.identity, target.file.bytes, target.next, target.boundary);
+        written.push(target);
+        hookCancelInjectFailure(target.boundary);
+      }
+    } catch (error) {
+      try {
+        for (const target of [...written].reverse()) await hookCancelRestoreTarget(target.file.path, target.file.identity, target.file.bytes);
+        await hookCancelFsyncDirectory(sessionDir);
+      } catch { return { ok: false, reason: "rollback_failed" }; }
+      if (error instanceof HookCancelTargetRollbackError) return { ok: false, reason: "rollback_failed" };
       await unlink(journalPath); await hookCancelFsyncDirectory(sessionDir); return { ok: false, reason: "write_failed" };
     }
-    const [verifiedAutopilot, verifiedSkill] = await Promise.all([readFile(autopilot.path), readFile(skill.path)]);
-    if (!verifiedAutopilot.equals(nextAutopilot) || !verifiedSkill.equals(nextSkill)) return { ok: false, reason: "verification_failed" };
+    const verified = await Promise.all(targets.map((target) => readFile(target.file.path))).catch(() => null);
+    if (!verified || verified.some((bytes, index) => !bytes.equals(targets[index]?.next))) {
+      try {
+        for (const target of [...targets].reverse()) await hookCancelRestoreTarget(target.file.path, target.file.identity, target.file.bytes);
+        await hookCancelFsyncDirectory(sessionDir); await unlink(journalPath); await hookCancelFsyncDirectory(sessionDir);
+      } catch { return { ok: false, reason: "rollback_failed" }; }
+      return { ok: false, reason: "verification_failed" };
+    }
     hookCancelInjectFailure("verification");
     const committed = Buffer.from(JSON.stringify({ ...JSON.parse(journal.toString("utf8")), phase: "committed" })); const committedHandle = await open(journalPath, fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW);
-    try { await committedHandle.write(committed, 0, committed.length, 0); await committedHandle.truncate(committed.length); await committedHandle.sync(); } finally { await committedHandle.close(); }
+    try { await committedHandle.write(committed, 0, committed.length, 0); await committedHandle.truncate(committed.length); await syncRegularFile(committedHandle, hookCancelPlatform()); } finally { await committedHandle.close(); }
     hookCancelInjectFailure("journal-commit"); await unlink(journalPath); await hookCancelFsyncDirectory(sessionDir); hookCancelInjectFailure("unlink");
     return { ok: true };
   } catch { return { ok: false, reason: "journal_failed" }; }
   finally {
     try { await lock.close(); await unlink(lockPath); await hookCancelFsyncDirectory(sessionDir); hookCancelInjectFailure("lock-release"); } catch {}
   }
+}
+
+export async function terminalizeExactAutopilotSessionForHookCancel(input: HookCancelWorkflowInput): Promise<HookCancelTransactionResult> {
+  return terminalizeExactWorkflowSessionForHookCancel(input, "autopilot");
+}
+
+export async function terminalizeExactUltragoalSessionForHookCancel(input: HookCancelWorkflowInput): Promise<HookCancelTransactionResult> {
+  return terminalizeExactWorkflowSessionForHookCancel(input, "ultragoal");
 }
 
 
@@ -9502,35 +9692,60 @@ function directCancelOutput(reason: string, handled = false): Record<string, unk
 
 async function handleDirectOmxCancel(input: {
   command: string; rawCommand: string; cwd: string; stateDir: string;
-  canonicalSessionId: string; payload: CodexHookPayload; allowForce: boolean;
-  activeState: Record<string, unknown>;
+  canonicalSessionId: string; payload: CodexHookPayload;
+  activeStates: Record<HookCancelWorkflow, Record<string, unknown>>;
+  skillState: Record<string, unknown>;
 }): Promise<DirectCancelResult> {
   const cancelLike = /^[ \t]*omx[ \t]+cancel\b/.test(input.command);
   if (!cancelLike) return { kind: "not-direct-cancel" };
-  // IR2: hook-owned cancellation is exclusive to active Autopilot
-  // deep-interview. Every other workflow falls through to its pre-#3293
-  // executable-trust path unchanged.
-  if (!hookCancelAutopilotMatches(input.activeState, input.canonicalSessionId, resolve(input.cwd))) {
-    return { kind: "not-direct-cancel" };
+  const canonicalCwd = resolve(input.cwd);
+  const autopilotActive = hookCancelAutopilotIsActive(input.activeStates.autopilot);
+  const ultragoalActive = hookCancelUltragoalIsActive(input.activeStates.ultragoal);
+  const autopilotLifecycleMatches = hookCancelAutopilotMatches(input.activeStates.autopilot, input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
+  const ultragoalLifecycleMatches = hookCancelUltragoalMatches(input.activeStates.ultragoal, input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
+  const autopilotSkillMatches = hookCancelSkillMatches(input.skillState, "autopilot", input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
+  const ultragoalSkillMatches = hookCancelSkillMatches(input.skillState, "ultragoal", input.canonicalSessionId, canonicalCwd, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
+  if (ultragoalActive && (!ultragoalLifecycleMatches || !ultragoalSkillMatches)) {
+    return { kind: "denied", reason: "active_state", output: directCancelOutput("active_state") };
   }
-  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: input.allowForce })) {
+  const autopilotCandidate = autopilotLifecycleMatches && autopilotSkillMatches;
+  const workflow: HookCancelWorkflow | null = ultragoalLifecycleMatches
+    ? "ultragoal"
+    : autopilotCandidate
+      ? "autopilot"
+      : null;
+  if (!workflow && autopilotActive) {
+    return { kind: "denied", reason: "active_state", output: directCancelOutput("active_state") };
+  }
+  // Hook-owned cancellation requires both an active matching lifecycle and its
+  // canonical skill mirror. Stale files alone retain the normal executable path.
+  if (!workflow) return { kind: "not-direct-cancel" };
+  if (input.rawCommand !== input.command || !isDirectOmxCancelCommand(input.command, { allowForce: workflow === "ultragoal" })) {
     return { kind: "denied", reason: "invalid_command", output: directCancelOutput("invalid_command") };
   }
-  const aliases = payloadAliasValues(input.payload, ["session_id", "sessionId"]);
-  if (!input.canonicalSessionId || aliases.length !== 1 || aliases[0] !== input.canonicalSessionId || payloadHasConflictingIdentityAliases(input.payload)) {
+  if (
+    !hookCancelSessionIdIsSafe(input.canonicalSessionId)
+    || !hookCancelRequiredStringAliasesMatch(
+      input.payload as Record<string, unknown>,
+      ["session_id", "sessionId"],
+      (candidate) => candidate === input.canonicalSessionId,
+    )
+    || payloadHasConflictingIdentityAliases(input.payload)
+  ) {
     return { kind: "denied", reason: "session_binding", output: directCancelOutput("session_binding") };
   }
+  if (hasSubagentThreadSpawnProvenance(input.payload)) return { kind: "denied", reason: "actor_authority", output: directCancelOutput("actor_authority") };
   const actor = await resolvePreToolUseWriteActor(input.payload, input.cwd, input.stateDir, input.canonicalSessionId);
   if (actor !== "main-root") return { kind: "denied", reason: "actor_authority", output: directCancelOutput("actor_authority") };
 
   const recovery = await readHookCancelTransactionRecoveryState({ stateDir: input.stateDir, canonicalSessionId: input.canonicalSessionId });
   if (recovery) return { kind: "denied", reason: recovery, output: directCancelOutput(recovery) };
-  const transaction = await terminalizeExactAutopilotSessionForHookCancel({
+  const transaction = await terminalizeExactWorkflowSessionForHookCancel({
     stateDir: input.stateDir,
     canonicalSessionId: input.canonicalSessionId,
     cwd: input.cwd,
     nowIso: new Date().toISOString(),
-  });
+  }, workflow, AUTHENTICATED_HOOK_CANCEL_IDENTITY);
   if (!transaction.ok) {
     const reason = transaction.reason ?? "preflight_failed";
     return { kind: "denied", reason, output: directCancelOutput(reason) };
@@ -22192,6 +22407,13 @@ export async function dispatchCodexNativeHook(
       ? readPreToolUseCommand(payload)
       : "";
     if (/^[ \t]*omx[ \t]+cancel\b/.test(directCancelCommand)) {
+      const [autopilotState, ultragoalState, skillState] = sessionBinding.valid
+        ? await Promise.all([
+          readStopSessionPinnedState("autopilot-state.json", policyCwd, sessionBinding.canonicalSessionId, stateDir),
+          readStopSessionPinnedState("ultragoal-state.json", policyCwd, sessionBinding.canonicalSessionId, stateDir),
+          readStopSessionPinnedState("skill-active-state.json", policyCwd, sessionBinding.canonicalSessionId, stateDir),
+        ])
+        : [null, null, null];
       const directCancel = await handleDirectOmxCancel({
         command: directCancelCommand,
         rawCommand: readPreToolUseRawCommand(payload),
@@ -22199,10 +22421,11 @@ export async function dispatchCodexNativeHook(
         stateDir,
         canonicalSessionId: sessionBinding.valid ? sessionBinding.canonicalSessionId : "",
         payload,
-        allowForce: false,
-        activeState: sessionBinding.valid
-          ? (await readStopSessionPinnedState("autopilot-state.json", policyCwd, sessionBinding.canonicalSessionId, stateDir) ?? {})
-          : {},
+        activeStates: {
+          autopilot: autopilotState ?? {},
+          ultragoal: ultragoalState ?? {},
+        },
+        skillState: skillState ?? {},
       });
       if (directCancel.kind !== "not-direct-cancel") outputJson = directCancel.output;
     }
