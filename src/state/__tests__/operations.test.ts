@@ -961,6 +961,27 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('excludes derived run-state.json from active mode enumeration while preserving genuine mode state files', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-derived-run-state-'));
+    try {
+      const sessionId = 'sess-derived-run-state';
+      const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(wd, '.omx', 'state', 'session.json'), JSON.stringify({ session_id: sessionId }, null, 2));
+      await writeFile(join(sessionDir, 'run-state.json'), JSON.stringify({ active: true, mode: 'derived' }, null, 2));
+      await writeFile(join(sessionDir, 'autopilot-state.json'), JSON.stringify({ active: true, current_phase: 'executing' }, null, 2));
+
+      const response = await executeStateOperation('state_list_active', {
+        workingDirectory: wd,
+        session_id: sessionId,
+      });
+
+      assert.deepEqual(response.payload, { active_modes: ['autopilot'] });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not list a mode active when terminal canonical visibility contradicts an active detail state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-terminal-canonical-wins-'));
     try {
@@ -1809,7 +1830,7 @@ describe('state operations directory initialization', () => {
 
         const beforeList = await executeStateOperation('state_list_active', { workingDirectory: wd });
         const beforeTeam = await executeStateOperation('state_read', { workingDirectory: wd, mode: 'team' });
-        assert.deepEqual(beforeList.payload, { active_modes: ['run'] });
+        assert.deepEqual(beforeList.payload, { active_modes: [] });
         assert.deepEqual(beforeTeam.payload, teamState);
 
         const response = await executeStateOperation('state_write', {
@@ -1832,7 +1853,7 @@ describe('state operations directory initialization', () => {
           foreignSkillState,
         );
         const afterList = await executeStateOperation('state_list_active', { workingDirectory: wd });
-        assert.deepEqual(afterList.payload, { active_modes: ['deep-interview', 'run'] });
+        assert.deepEqual(afterList.payload, { active_modes: ['deep-interview'] });
       } finally {
         await rm(wd, { recursive: true, force: true });
       }

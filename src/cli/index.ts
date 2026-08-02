@@ -73,6 +73,7 @@ import {
   getBaseStateDir,
   getBaseStateDirWithSource,
   getStateDir,
+  isModeStateFilename,
   listModeStateFilesWithScopePreference,
   resolveWritableStateScope,
   type ModeStateFileRef,
@@ -5587,7 +5588,7 @@ export async function cleanupPostLaunchModeStateFiles(
     preserveSkillActiveForReviewPendingAutopilot ||= preserveReviewPendingAutopilot;
 
     for (const file of files) {
-      if (!file.endsWith("-state.json") || file === "session.json") continue;
+      if (!isModeStateFilename(file)) continue;
       const path = join(stateDir, file);
       const mode = file.slice(0, -"-state.json".length);
       const result = await readPostLaunchModeStateFile(path, dependencies);
@@ -7584,7 +7585,7 @@ async function listHookVisibleRunDirStateRefs(cwd: string): Promise<ModeStateFil
     for (const dir of candidateDirs) {
       const files = await readdir(dir).catch(() => [] as string[]);
       for (const file of files) {
-        if (!file.endsWith("-state.json") || file === "session.json") continue;
+        if (!isModeStateFilename(file)) continue;
         const path = join(dir, file);
         if (seenPaths.has(path)) continue;
         seenPaths.add(path);
@@ -7666,7 +7667,7 @@ async function selectAuthorizedHookVisibleRunDirState(cwd: string): Promise<Auth
   const refs: ModeStateFileRef[] = [];
   const stateFiles = await readdir(sessionDir).catch(() => [] as string[]);
   for (const file of stateFiles) {
-    if (!file.endsWith("-state.json") || file === "session.json") continue;
+    if (!isModeStateFilename(file)) continue;
     const path = join(sessionDir, file);
     try {
       const fileStat = lstatSync(path);
@@ -7977,7 +7978,7 @@ async function cancelModes(
 
     const preferredRefs: ModeStateFileRef[] = writableScope.source === "root"
       ? (await readdir(writableScope.stateDir).catch(() => [] as string[]))
-        .filter((file) => file.endsWith("-state.json") && file !== "session.json")
+        .filter((file) => isModeStateFilename(file))
         .map((file) => ({
           mode: file.slice(0, -"-state.json".length),
           path: join(writableScope.stateDir, file),

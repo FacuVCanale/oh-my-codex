@@ -980,7 +980,7 @@ export async function getAllScopedStateDirs(workingDirectory?: string): Promise<
 }
 
 export function isModeStateFilename(filename: string): boolean {
-  return filename.endsWith(STATE_FILE_SUFFIX) && filename !== 'session.json';
+  return filename.endsWith(STATE_FILE_SUFFIX) && filename !== 'session.json' && filename !== 'run-state.json';
 }
 
 async function listModeStateFilesInDir(dir: string, scope: StateFileScope): Promise<ModeStateFileRef[]> {

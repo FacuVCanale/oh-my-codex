@@ -667,7 +667,7 @@ export async function listStateStatuses(
     if (!existsSync(stateDir)) continue;
     const files = await readdir(stateDir);
     for (const file of files) {
-      if (!file.endsWith('-state.json')) continue;
+      if (!file.endsWith('-state.json') || file === 'run-state.json') continue;
       const currentMode = file.replace('-state.json', '');
       if (!mode && currentMode === SKILL_ACTIVE_STATE_MODE) continue;
       if (mode && currentMode !== mode) continue;
