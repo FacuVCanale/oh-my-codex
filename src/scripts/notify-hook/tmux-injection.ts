@@ -37,6 +37,10 @@ import {
 } from '../tmux-hook-engine.js';
 import type { ResolvedPromptTurnContext } from '../../hooks/prompt-session-provenance.js';
 
+export function isNotifyModeStateFilename(file: string): boolean {
+  return file.endsWith('-state.json') && file !== 'tmux-hook-state.json' && file !== 'run-state.json';
+}
+
 function isHudPaneStartCommand(startCommand: any): boolean {
   return /\bomx\b.*\bhud\b.*--watch/i.test(safeString(startCommand));
 }
@@ -483,7 +487,7 @@ export async function handleTmuxInjection({ payload, cwd, stateDir, logsDir, con
 
       const files = await readdir(scopedDir).catch(() => []);
       for (const file of files) {
-        if (!file.endsWith('-state.json') || file === 'tmux-hook-state.json') continue;
+        if (!isNotifyModeStateFilename(file)) continue;
         const path = join(scopedDir, file);
         const parsed = JSON.parse(await readFile(path, 'utf-8'));
         if (parsed && parsed.active) {

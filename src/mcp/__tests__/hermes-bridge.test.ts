@@ -81,6 +81,25 @@ describe("Hermes MCP bridge core", () => {
     }
   });
 
+  it("excludes derived run-state.json while listing genuine session modes", async () => {
+    const cwd = await tempWorkspace("omx-hermes-derived-run-state-");
+    try {
+      const sessionDir = join(cwd, ".omx", "state", "sessions", "sess-derived");
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(sessionDir, "run-state.json"), JSON.stringify({ active: true, mode: "run" }));
+      await writeFile(join(sessionDir, "ralph-state.json"), JSON.stringify({ active: true, mode: "ralph" }));
+
+      const result = await hermesListSessions({ workingDirectory: cwd });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.data?.sessions, [
+        { session_id: "sess-derived", active: false, source: "session_state_dir", modes: ["ralph"] },
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
 
   it("projects status without leaking raw internal mode state", async () => {
     const cwd = await tempWorkspace("omx-hermes-status-");

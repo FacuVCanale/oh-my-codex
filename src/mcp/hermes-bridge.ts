@@ -15,6 +15,7 @@ import type { QuestionAnswerEntry, QuestionRecord } from "../question/types.js";
 import {
   getAllSessionScopedStateDirs,
   getBaseStateDir,
+  isModeStateFilename,
   listModeStateFilesWithScopePreference,
   resolveWorkingDirectoryForState,
   validateSessionId,
@@ -288,7 +289,7 @@ async function listModeNamesInStateDir(stateDir: string): Promise<string[]> {
   if (!existsSync(stateDir)) return [];
   const entries = await readdir(stateDir, { withFileTypes: true }).catch(() => []);
   return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith("-state.json"))
+    .filter((entry) => entry.isFile() && isModeStateFilename(entry.name))
     .map((entry) => entry.name.slice(0, -"-state.json".length))
     .sort();
 }
