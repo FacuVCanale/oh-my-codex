@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { readVisibleAllowedModes } from '../notify-hook/tmux-injection.js';
+import { isNotifyModeStateFilename, readVisibleAllowedModes } from '../notify-hook/tmux-injection.js';
 
 describe('notify-hook tmux injection canonical skill gating', () => {
   it('reads canonical skill-active state from authoritative team state root', async () => {
@@ -97,5 +97,11 @@ describe('notify-hook tmux injection canonical skill gating', () => {
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
+  });
+
+  it('filters only derived run-state while retaining genuine state filenames', () => {
+    assert.equal(isNotifyModeStateFilename('run-state.json'), false);
+    assert.equal(isNotifyModeStateFilename('ralph-state.json'), true);
+    assert.equal(isNotifyModeStateFilename('tmux-hook-state.json'), false);
   });
 });
