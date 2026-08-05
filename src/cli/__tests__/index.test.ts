@@ -3500,6 +3500,58 @@ describe("project launch scope helpers", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it("walks upward to find a project-scoped setup for launch resolution", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      const nested = join(wd, "packages", "app", "src");
+      await mkdir(nested, { recursive: true });
+      assert.equal(resolveCodexHomeForLaunch(nested, {}), join(wd, ".codex"));
+      assert.equal(
+        resolveCodexConfigPathForLaunch(nested, {}),
+        join(wd, ".codex", "config.toml"),
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not redirect a launch outside any setup root into project CODEX_HOME", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "project" }),
+      );
+      const outside = join(wd, "..", `outside-${Date.now()}`);
+      await mkdir(outside, { recursive: true });
+      assert.equal(resolveCodexHomeForLaunch(outside, {}), undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a user-scope setup on the user config when launching from a subdirectory", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-launch-scope-"));
+    try {
+      await mkdir(join(wd, ".omx"), { recursive: true });
+      await writeFile(
+        join(wd, ".omx", "setup-scope.json"),
+        JSON.stringify({ scope: "user" }),
+      );
+      const nested = join(wd, "sub");
+      await mkdir(nested, { recursive: true });
+      assert.equal(resolveCodexHomeForLaunch(nested, {}), undefined);
+      assert.equal(resolveProjectLocalCodexHomeForLaunch(nested, {}), undefined);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("pointer launch aborts", () => {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { mkdir, rename, rm, writeFile } from "fs/promises";
-import { join } from "path";
+import { dirname, join, resolve } from "path";
 import {
 	isSetupTeamMode,
 	type SetupTeamMode,
@@ -182,4 +182,35 @@ export function readPersistedSetupScopeSync(
 	projectRoot: string,
 ): SetupScope | undefined {
 	return readPersistedSetupPreferencesSync(projectRoot)?.scope;
+}
+export interface NearestPersistedSetupScope {
+	projectRoot: string;
+	scope: SetupScope;
+}
+
+/**
+ * Resolve the nearest persisted setup scope by walking upward from `startDir`.
+ *
+ * Launch-time scope resolution is cwd-sensitive: a project-scoped setup must
+ * keep launches inside its tree on the project-local Codex config, so the
+ * walk stops at the first ancestor (including `startDir` itself) that has a
+ * `.omx/setup-scope.json`. A marker that cannot be parsed stops the walk and
+ * yields no scope rather than skipping a nearer setup marker. Returns
+ * `undefined` when no marker exists anywhere above `startDir`.
+ */
+export function resolveNearestPersistedSetupScopeSync(
+	startDir: string,
+): NearestPersistedSetupScope | undefined {
+	let current = resolve(startDir);
+	while (true) {
+		const scopePath = getSetupScopeFilePath(current);
+		if (existsSync(scopePath)) {
+			const scope = readPersistedSetupScopeSync(current);
+			if (scope === undefined) return undefined;
+			return { projectRoot: current, scope };
+		}
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
 }

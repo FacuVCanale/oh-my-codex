@@ -1299,6 +1299,7 @@ describe("config generator idempotency (#384)", () => {
         '[user.before]',
         'name = "kept-before"',
         "",
+        '# OMX MCP Team Run Server',
         '[mcp_servers.omx_team_run]',
         'command = "node"',
         'args = ["/tmp/team-server.js"]',
@@ -1314,13 +1315,19 @@ describe("config generator idempotency (#384)", () => {
       assert.equal(didRepair, true, "legacy team-run config should be repaired");
 
       const toml = await readFile(configPath, "utf-8");
-      assertSingleOmxBlock(toml);
       assert.doesNotMatch(toml, /^\[mcp_servers\.omx_team_run\]$/m);
       assert.doesNotMatch(toml, /team-server\.js/);
       assert.match(toml, /^\[user\.before\]$/m);
       assert.match(toml, /^name = "kept-before"$/m);
       assert.match(toml, /^\[user\.after\]$/m);
       assert.match(toml, /^name = "kept-after"$/m);
+      // Surgical repair: the retired table is dropped, but no OMX managed
+      // block is injected into a config that never had one (issue #3447).
+      assert.doesNotMatch(toml, /oh-my-codex \(OMX\) Configuration/);
+      assert.doesNotMatch(toml, /^\[tui\]$/m);
+      assert.doesNotMatch(toml, /^notify\s*=/m);
+      assert.doesNotMatch(toml, /^model_reasoning_effort\s*=/m);
+      assert.doesNotThrow(() => TOML.parse(toml));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
@@ -1388,7 +1395,7 @@ describe("config generator idempotency (#384)", () => {
     }
   });
 
-  it("fails closed without rewriting managed hook trust when launch repair cannot prove it", async () => {
+  it("preserves managed hook trust bytes untouched during launch repair", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const { configPath, hooksPath, config: setupConfig, trustState } =
@@ -1402,49 +1409,38 @@ describe("config generator idempotency (#384)", () => {
       );
       await writeFile(configPath, conflicting);
 
-      await assert.rejects(
-        repairConfigIfNeeded(configPath, wd),
-        (error: unknown) =>
-          error instanceof ManagedCodexHooksPlanError &&
-          error.code === "managed_trust_key_conflict",
+      // Surgical repair never rewrites managed hook trust, so it cannot
+      // clobber a conflicting user edit: it only dedupes the duplicate [tui]
+      // and leaves every other byte (including the conflict) untouched.
+      const conflictTrustBlock = conflicting.match(
+        /# OMX-owned Codex hook trust state\n[\s\S]*?# End OMX-owned Codex hook trust state/,
+      )?.[0];
+      assert.ok(
+        conflictTrustBlock,
+        "conflicting fixture must contain fenced managed hook trust",
       );
-      assert.equal(await readFile(configPath, "utf-8"), conflicting);
+      assert.equal(await repairConfigIfNeeded(configPath, wd), true);
+      const repaired = await readFile(configPath, "utf-8");
+      assert.equal(count(repaired, /^\[tui\]$/gm), 1);
+      assert.ok(
+        repaired.includes(conflictTrustBlock),
+        "repair must preserve conflicting trust bytes verbatim",
+      );
 
-      const unprovenHooks = [
-        ["invalid", "{ not valid JSON"],
-        [
-          "ambiguous",
-          JSON.stringify({
-            hooks: {
-              SessionStart: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      command: `NODE ${join(wd, "dist", "scripts", "codex-native-hook.js")}`,
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
-        ],
-        ["missing", null],
-      ] as const;
-      for (const [name, hooksContent] of unprovenHooks) {
+      // An unreadable or missing hooks artifact cannot block the surgical
+      // repair, because the repair never rewrites hook trust state.
+      for (const hooksContent of ["{ not valid JSON", null] as const) {
         await writeFile(configPath, repairTarget);
         if (hooksContent === null) {
           await rm(hooksPath);
         } else {
           await writeFile(hooksPath, hooksContent);
         }
-
-        await assert.rejects(
-          repairConfigIfNeeded(configPath, wd),
-          (error: unknown) => error instanceof ManagedCodexHooksPlanError,
-          name,
+        assert.equal(await repairConfigIfNeeded(configPath, wd), true);
+        assert.equal(
+          count(await readFile(configPath, "utf-8"), /^\[tui\]$/gm),
+          1,
         );
-        assert.equal(await readFile(configPath, "utf-8"), repairTarget, name);
       }
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -2705,6 +2701,166 @@ describe("config generator idempotency (#384)", () => {
 
       assert.equal(repaired, true);
       assert.match(config, /^startup_timeout_sec = 15$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+  it("repairConfigIfNeeded preserves custom notify and model_reasoning_effort without injecting the OMX block", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const preOmx = [
+        'model = "gpt-5.6-sol"',
+        'model_reasoning_effort = "high"',
+        'notify = ["node", "/opt/computer-use/client.mjs", "--event", "turn-ended"]',
+        "",
+        "[mcp_servers.filesystem]",
+        'command = "npx"',
+        'args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]',
+        "",
+        "[mcp_servers.memory]",
+        'command = "uvx"',
+        'args = ["mcp-server-memory"]',
+        "",
+      ].join("\n");
+      await writeFile(configPath, preOmx);
+
+      const repaired = await repairConfigIfNeeded(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.equal(repaired, true, "timeout gap should trigger a repair");
+      assert.equal((toml.match(/^startup_timeout_sec = 15$/gm) ?? []).length, 2);
+      // User-owned values survive byte-for-byte (issue #3447).
+      assert.match(toml, /^model_reasoning_effort = "high"$/m);
+      assert.match(
+        toml,
+        /^notify = \["node", "\/opt\/computer-use\/client\.mjs", "--event", "turn-ended"\]$/m,
+      );
+      // No OMX managed block is injected into a config that never had one.
+      assert.doesNotMatch(toml, /oh-my-codex \(OMX\) Configuration/);
+      assert.doesNotMatch(toml, /^developer_instructions\s*=/m);
+      assert.doesNotMatch(toml, /USE_OMX_EXPLORE_CMD/);
+      assert.doesNotMatch(toml, /^\[tui\]$/m);
+      assert.doesNotMatch(toml, /notify-hook\.js/);
+
+      // Repairing again is a no-op: the timeout backfill is idempotent.
+      assert.equal(await repairConfigIfNeeded(configPath, wd), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+  it("repairConfigIfNeeded dedupes [tui] inside the OMX block without dropping the end marker", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const duplicated = [
+        'model = "managed-model"',
+        "",
+        "# ============================================================",
+        "# oh-my-codex (OMX) Configuration",
+        "# Managed by omx setup - manual edits preserved on next setup",
+        "# ============================================================",
+        "",
+        "[mcp_servers.managed]",
+        'command = "node"',
+        'args = ["managed.js"]',
+        "startup_timeout_sec = 9",
+        "",
+        "[tui]",
+        "# first tui payload",
+        'status_line = ["first"]',
+        "",
+        "[tui]",
+        "# duplicate tui payload",
+        'status_line = ["duplicate"]',
+        "",
+        "# ============================================================",
+        "# End oh-my-codex",
+        "",
+        "[user.after]",
+        'name = "kept"',
+        "",
+      ].join("\n");
+      await writeFile(configPath, duplicated);
+
+      assert.equal(await repairConfigIfNeeded(configPath, wd), true);
+      const repaired = await readFile(configPath, "utf-8");
+
+      assert.equal(count(repaired, /^\[tui\]$/gm), 1);
+      assert.match(repaired, /# oh-my-codex \(OMX\) Configuration/);
+      assert.match(repaired, /# End oh-my-codex/);
+      assert.match(repaired, /^\[user\.after\]$/m);
+      assert.match(repaired, /^name = "kept"$/m);
+      assert.doesNotMatch(repaired, /duplicate tui payload/);
+      assert.doesNotThrow(() => TOML.parse(repaired));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("repairConfigIfNeeded removes a legacy omx_team_run table inside the OMX block without dropping the end marker", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const legacy = [
+        "# ============================================================",
+        "# oh-my-codex (OMX) Configuration",
+        "# Managed by omx setup - manual edits preserved on next setup",
+        "# ============================================================",
+        "",
+        "[mcp_servers.managed]",
+        'command = "node"',
+        'args = ["managed.js"]',
+        "startup_timeout_sec = 9",
+        "",
+        "[mcp_servers.omx_team_run]",
+        'command = "node"',
+        'args = ["/tmp/team-server.js"]',
+        "enabled = true",
+        "",
+        "# ============================================================",
+        "# End oh-my-codex",
+        "",
+        "[user.after]",
+        'name = "kept"',
+        "",
+      ].join("\n");
+      await writeFile(configPath, legacy);
+
+      assert.equal(await repairConfigIfNeeded(configPath, wd), true);
+      const repaired = await readFile(configPath, "utf-8");
+
+      assert.doesNotMatch(repaired, /^\[mcp_servers\.omx_team_run\]$/m);
+      assert.doesNotMatch(repaired, /team-server\.js/);
+      assert.match(repaired, /# oh-my-codex \(OMX\) Configuration/);
+      assert.match(repaired, /# End oh-my-codex/);
+      assert.match(repaired, /^\[user\.after\]$/m);
+      assert.doesNotThrow(() => TOML.parse(repaired));
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("repairConfigIfNeeded preserves CRLF line endings", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const crlfConfig = [
+        '[mcp_servers.filesystem]',
+        'command = "npx"',
+        'args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]',
+        "",
+      ].join("\r\n");
+      await writeFile(configPath, crlfConfig);
+
+      assert.equal(await repairConfigIfNeeded(configPath, wd), true);
+      const repaired = await readFile(configPath, "utf-8");
+
+      assert.match(repaired, /^startup_timeout_sec = 15$/m);
+      // The repair must not convert the config to LF (issue #3447).
+      assert.equal(count(repaired, /\r\n/g), 4);
+      assert.equal(count(repaired, /(?<!\r)\n/g), 0);
+      assert.doesNotThrow(() => TOML.parse(repaired));
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
