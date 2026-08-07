@@ -4,6 +4,7 @@ import type { spawnSync } from "node:child_process";
 import {
   probeInstalledCodexFeatureList,
   probeInstalledCodexVersion,
+  probeInstalledCodexVersionDetailed,
 } from "../codex-feature-probe.js";
 
 interface SpawnCall {
@@ -60,5 +61,73 @@ describe("codex feature probe", () => {
 
     assert.equal(probeInstalledCodexFeatureList(fakeSpawn), null);
     assert.equal(probeInstalledCodexVersion(fakeSpawn), null);
+  });
+
+  it("classifies detailed version probes with timeout-first precedence", () => {
+    const timeoutSpawn = (() => ({
+      error: Object.assign(new Error("spawnSync codex ETIMEDOUT"), { code: "ETIMEDOUT" }),
+      output: [],
+      pid: 123,
+      signal: "SIGKILL",
+      status: null,
+      stderr: "",
+      stdout: "",
+    })) as unknown as typeof spawnSync;
+    const unavailableSpawn = (() => ({
+      error: Object.assign(new Error("spawnSync codex ENOENT"), { code: "ENOENT" }),
+      output: [],
+      pid: 0,
+      signal: null,
+      status: null,
+      stderr: "",
+      stdout: "",
+    })) as unknown as typeof spawnSync;
+    const failedSpawn = (() => ({
+      error: undefined,
+      output: [],
+      pid: 123,
+      signal: null,
+      status: 2,
+      stderr: "failed",
+      stdout: "",
+    })) as unknown as typeof spawnSync;
+
+    assert.deepEqual(probeInstalledCodexVersionDetailed(timeoutSpawn), { status: "timeout" });
+    assert.deepEqual(probeInstalledCodexVersionDetailed(unavailableSpawn), { status: "start-unavailable" });
+    assert.deepEqual(probeInstalledCodexVersionDetailed(failedSpawn), { status: "exit-failure" });
+  });
+
+  it("bounds detailed version output by bytes and lines", () => {
+    const oversized = `codex-cli 0.145.0\n${"x".repeat(4_096)}`;
+    const fakeSpawn = (() => ({
+      error: undefined,
+      output: [],
+      pid: 123,
+      signal: null,
+      status: 0,
+      stderr: "",
+      stdout: oversized,
+    })) as unknown as typeof spawnSync;
+    const result = probeInstalledCodexVersionDetailed(fakeSpawn);
+
+    assert.equal(result.status, "ok");
+    if (result.status !== "ok") return;
+    assert.equal(result.collected.truncated, true);
+    assert.equal(Buffer.byteLength(result.collected.output, "utf8") <= 4_096, true);
+
+    const nineLinesSpawn = (() => ({
+      error: undefined,
+      output: [],
+      pid: 123,
+      signal: null,
+      status: 0,
+      stderr: "",
+      stdout: Array.from({ length: 9 }, (_, index) => index === 0 ? "codex-cli 0.145.0" : `line-${index}`).join("\n"),
+    })) as unknown as typeof spawnSync;
+    const nineLines = probeInstalledCodexVersionDetailed(nineLinesSpawn);
+    assert.equal(nineLines.status, "ok");
+    if (nineLines.status !== "ok") return;
+    assert.equal(nineLines.collected.lineLimitExceeded, true);
+    assert.equal(nineLines.collected.output.split("\n").length, 8);
   });
 });

@@ -9,7 +9,7 @@ import { getExplicitSkillDefinition } from '../hooks/keyword-registry.js';
 import { resolveInstalledRoleName } from '../subagents/tracker.js';
 
 export const UNSUPPORTED_DOCUMENTED_LEADER_PROOF = 'unsupported_documented_leader_proof' as const;
-export const UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE = Object.freeze({ hookSpecificOutput: Object.freeze({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.' }) });
+export const UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE = Object.freeze({ hookSpecificOutput: Object.freeze({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan.' }) });
 export const UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE = Object.freeze({ hookSpecificOutput: Object.freeze({ hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Ralplan role-intent denied: unknown_role.' }) });
 type PreToolUseDenial = typeof UNSUPPORTED_DOCUMENTED_LEADER_PRE_TOOL_USE | typeof UNKNOWN_RALPLAN_ROLE_PRE_TOOL_USE;
 export interface Codex01445PreToolUseDependencies { resolveInstalledRoleName: typeof resolveInstalledRoleName; platform: NodeJS.Platform; }

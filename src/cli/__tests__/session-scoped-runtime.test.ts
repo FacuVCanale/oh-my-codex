@@ -14,6 +14,14 @@ import { cancelModesForTest } from '../index.js';
 
 const tmpdir = (): string => realpathSync(osTmpdir());
 
+async function createFakeCodexBin(root: string, output: string): Promise<string> {
+  const binDir = join(root, 'bin');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(join(binDir, 'codex'), `#!/bin/sh\nprintf '%s\\n' '${output}'\n`);
+  await chmod(join(binDir, 'codex'), 0o755);
+  return binDir;
+}
+
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(testDir, '..', '..', '..');
 const omxBin = join(repoRoot, 'dist', 'cli', 'omx.js');
@@ -755,6 +763,7 @@ describe('CLI session-scoped state parity', () => {
 
   it('fails Ralplan preflight without mutating unproven session state', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralplan-preflight-scope-'));
+    const codexBin = await createFakeCodexBin(wd, 'codex-cli 0.147.0');
     try {
       const stateDir = join(wd, '.omx', 'state');
       const sessionId = 'sess-unproven-owner';
@@ -770,11 +779,16 @@ describe('CLI session-scoped state parity', () => {
 
       await writeFile(ralplanPath, ralplanState);
 
-      const preflightResult = runOmx(wd, 'ralplan', 'preflight', '--json');
+      const preflightResult = runOmxWithEnv(wd, { PATH: `${codexBin}:${process.env.PATH}` }, 'ralplan', 'preflight', '--json');
       assert.equal(preflightResult.status, 1, preflightResult.stderr || preflightResult.stdout);
       assert.deepEqual(JSON.parse(preflightResult.stdout), {
         ok: false,
         reason: 'unsupported_documented_leader_proof',
+        diagnostics: {
+          probe_status: 'ok',
+          detected_version: '0.147.0',
+          documented_root_identity: { status: 'unknown' },
+        },
       });
       assert.equal(await readFile(ralplanPath, 'utf-8'), ralplanState);
     } finally {
@@ -784,6 +798,7 @@ describe('CLI session-scoped state parity', () => {
 
   it('keeps exact-owner routing-only Ralplan active after preflight denial', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-cli-ralplan-preflight-owner-'));
+    const codexBin = await createFakeCodexBin(wd, 'codex-cli 0.147.0');
     try {
       const stateDir = join(wd, '.omx', 'state');
       const sessionId = 'sess-proven-owner';
@@ -816,11 +831,16 @@ describe('CLI session-scoped state parity', () => {
       await writeFile(rootStopPath, rootStop);
       const sessionEntries = await readdir(sessionDir);
 
-      const preflightResult = runOmxWithEnv(wd, { OMX_SESSION_ID: sessionId }, 'ralplan', 'preflight', '--json');
+      const preflightResult = runOmxWithEnv(wd, { OMX_SESSION_ID: sessionId, PATH: `${codexBin}:${process.env.PATH}` }, 'ralplan', 'preflight', '--json');
       assert.equal(preflightResult.status, 1, preflightResult.stderr || preflightResult.stdout);
       assert.deepEqual(JSON.parse(preflightResult.stdout), {
         ok: false,
         reason: 'unsupported_documented_leader_proof',
+        diagnostics: {
+          probe_status: 'ok',
+          detected_version: '0.147.0',
+          documented_root_identity: { status: 'unknown' },
+        },
       });
       assert.equal(await readFile(ralplanPath, 'utf-8'), ralplanState);
       assert.equal(await readFile(sessionSkillPath, 'utf-8'), sessionSkillState);

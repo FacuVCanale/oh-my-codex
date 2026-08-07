@@ -1,10 +1,10 @@
-# ADR 3194: Documented leader proof for Codex 0.144.5–0.145.0
+# ADR 3194: Documented leader proof for Codex 0.144.5–0.146.1
 
 **Status:** Accepted
 
 ## Decision
 
-Treat adapted Ralplan role routing on Codex CLI 0.144.5 and authorization-sensitive Team launch on Codex CLI 0.145.0 as unsupported on their documented hook surfaces. Neither surface provides a documented, positive root-to-`PreToolUse` identity proof. Run the existing explicit fail-closed Ralplan CLI preflight only when native role routing reports `role_routing_unavailable` and the caller attempts adapted Ralplan Planner, Architect, or Critic authority, adapted role-intent, or adapted consensus authority. Keep Team launch denied unless a future official host verifier satisfies the enablement criterion below.
+Treat adapted Ralplan role routing on reviewed Codex CLI 0.144.5–0.146.1 surfaces and authorization-sensitive Team launch on Codex CLI 0.145.0 as unsupported on their documented hook surfaces. None provides a documented, positive root-to-`PreToolUse` identity proof. Run the existing explicit fail-closed Ralplan CLI preflight only when native role routing reports `role_routing_unavailable` and the caller attempts adapted Ralplan Planner, Architect, or Critic authority, adapted role-intent, or adapted consensus authority. Keep Team launch denied unless a future official host verifier satisfies the enablement criterion below.
 
 Keep typed native routing as the preferred path where the native spawn surface exposes `agent_type`: callers select an installed OMX role explicitly. Typed routing and lifecycle fields are non-authoritative. On a role-routing-unavailable surface, the adapted role path is unavailable rather than silently weakened. Do not substitute prompt labels, inferred identities, or unvalidated carriers.
 
@@ -17,9 +17,9 @@ Keep typed native routing as the preferred path where the native spawn surface e
 
 ## Official evidence and version boundary
 
-This ADR covers the documented Codex CLI **0.144.5** hook contract evaluated for #3194 and the official Codex CLI **0.145.0** source contract re-evaluated for #3358. Neither version binds a `PreToolUse` event to the root identity required by adapted authority. This is not a claim that no other Codex surface can provide such proof, nor a claim about future versions. Enablement requires official documentation for the actual surface, not behavior observed in a particular run.
+This ADR covers the documented Codex CLI **0.144.5** hook contract evaluated for #3194 and the official Codex CLI **0.145.0** and **0.146.1** source contracts re-evaluated for #3358 and #3452. None binds a `PreToolUse` event to the root identity required by adapted authority. This is not a claim that no other Codex surface can provide such proof, nor a claim about future versions. Enablement requires official documentation for the actual surface, not behavior observed in a particular run.
 
-`session_id` is parent-shared and does not prove root identity. The official Codex 0.144.5 and 0.145.0 source contracts expose `turn_id`, while optional `agent_id` and `agent_type` identify only a `ThreadSpawn` subagent when that context exists. Session files, resolved session aliases, pointers, transcripts, cwd, task text, and absence of child fields are all non-authoritative. They cannot be combined into a leader proof.
+`session_id` is parent-shared and does not prove root identity. The reviewed Codex 0.144.5–0.146.1 source contracts expose `turn_id`, while optional `agent_id` and `agent_type` identify only a `ThreadSpawn` subagent when that context exists. Session files, resolved session aliases, pointers, transcripts, cwd, task text, versions, and absence of child fields are all non-authoritative. They cannot be combined into a leader proof.
 
 ### Codex 0.145.0 source revalidation
 
@@ -31,22 +31,28 @@ The official `rust-v0.145.0` tag at commit [`25af12f7e61572b0bc18ddb1008be543b91
 
 The payload has no issuer, version-bound root claim, canonical root-thread field, nonce, replay protection, or host-verifiable receipt. Missing `agent_id`/`agent_type` is therefore an omission shared by more than one session-source class, not positive Main-root proof. Exact Team launch remains denied before Team state, worktree, tmux, mailbox, worker, or process effects. Local OMX state may restrict scope or diagnose a denial; it cannot authorize Team.
 
+### Codex 0.146.1 source revalidation
+
+The official [`rust-v0.146.1` hook runtime](https://github.com/openai/codex/blob/rust-v0.146.1/codex-rs/core/src/hook_runtime.rs) constructs `PreToolUseRequest` with `session_id`, `turn_id`, and optional thread-spawn subagent context (`agent_id`/`agent_type`). It adds no documented issuer, nonce, canonical root/Main identity, replay binding, or host consensus receipt. The 0.146.1 version is therefore diagnostic evidence of a reviewed missing capability, not authority.
+
 ## Trust boundaries
 
 Structural routing carriers are routing/lifecycle data, not authority. The unsupported boundary requires both the native task surface reporting `role_routing_unavailable` and an attempt to use adapted Ralplan Planner, Architect, or Critic authority, adapted role-intent, or adapted consensus authority; it is not inferred from hook payload shape. Typed native `agent_type` routing remains enabled and unchanged, but cannot authorize consensus. Ordinary native planning, lifecycle, state, status, health, HUD, runtime, setup, install, sync, and unrelated delegation are outside this preflight boundary and remain governed by their existing controls.
 
 ## Exact output contract
 
-When both boundary conditions apply, the explicit `omx ralplan preflight --json` result is exactly:
+When both boundary conditions apply, `omx ralplan preflight --json` retains the stable failure reason and adds bounded diagnostics. For a successful reviewed-version probe it emits:
 
 ```json
-{"ok":false,"reason":"unsupported_documented_leader_proof"}
+{"ok":false,"reason":"unsupported_documented_leader_proof","diagnostics":{"probe_status":"ok","detected_version":"0.146.1","documented_root_identity":{"status":"missing"}}}
 ```
+
+`probe_status` is `ok`, `start-unavailable`, `exit-failure`, or `timeout`. `detected_version` is a bounded normalized version or `null`; `documented_root_identity.status` is `missing` only for reviewed 0.144.5, 0.145.0, and 0.146.1 output, otherwise `unknown`. These fields are diagnostic only and never authorize.
 
 A canonical standalone `omx ralplan role-intent write --role <role> --parent-thread "$CODEX_THREAD_ID" --json` request for an installed role is denied by `PreToolUse` with exactly:
 
 ```text
-unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.
+unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan.
 ```
 
 Its CLI JSON result is exactly:

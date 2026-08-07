@@ -39927,7 +39927,7 @@ describe('native UserPromptSubmit payload provenance', () => {
 			hookSpecificOutput: {
 				hookEventName: "PreToolUse",
 				permissionDecision: "deny",
-				permissionDecisionReason: "unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.",
+				permissionDecisionReason: "unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan.",
 			},
 		};
 		const payload = {

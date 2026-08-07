@@ -24,7 +24,7 @@ describe('#3194 role-intent native-hook e2e', () => {
       assert.deepEqual(result.outputJson, {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse', permissionDecision: 'deny',
-          permissionDecisionReason: 'unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.',
+          permissionDecisionReason: 'unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan.',
         },
       });
       assert.deepEqual(await readSubagentTrackingState(cwd), before);
@@ -43,7 +43,7 @@ describe('#3194 role-intent native-hook e2e', () => {
       assert.deepEqual(result.outputJson, {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse', permissionDecision: 'deny',
-          permissionDecisionReason: 'unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.',
+          permissionDecisionReason: 'unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan.',
         },
       });
       assert.equal(existsSync(join(cwd, '.omx', 'state')), false);
@@ -82,7 +82,7 @@ describe('#3194 role-intent native-hook e2e', () => {
       assert.deepEqual(result.outputJson, {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse', permissionDecision: 'deny',
-          permissionDecisionReason: 'unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan.',
+          permissionDecisionReason: 'unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan.',
         },
       });
       assert.equal(await readFile(pointerPath, 'utf8'), pointer);

@@ -2395,7 +2395,7 @@ function runPackedTransportRegressions(hookScript: string, smokeCwd: string): vo
   const g2cPayload = { ...PACKED_CODEX_01445_NO_POINTER_NO_TRACKER_FIXTURE, cwd: g2cCwd };
   const g2cResult = invoke(g2cCwd, buildPackedRegressionEnvironment({ name: 'g2c-01445' }), g2cPayload);
   const g2cStdout = String(g2cResult.stdout || '');
-  const g2cExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan."}}\n';
+  const g2cExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan."}}\n';
   if (g2cStdout !== g2cExpected) throw new Error('packed Codex 0.144.5 fixture returned unexpected PreToolUse bytes');
   if (existsSync(join(g2cCwd, '.omx', 'state'))) throw new Error('packed Codex 0.144.5 fixture created pointer or tracker state');
 }
@@ -4596,7 +4596,7 @@ PY`],
         tool_input: { command: 'omx ralplan role-intent write --role architect --parent-thread "$CODEX_THREAD_ID" --json' },
       }),
     });
-    const preToolUseExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex 0.144.5 hooks do not expose documented root identity required for adapted Ralplan."}}\n';
+    const preToolUseExpected = '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"unsupported_documented_leader_proof: Codex hooks do not expose a documented, non-user-mintable root identity required for adapted Ralplan."}}\n';
     if (String(preToolUseResult.stdout || '') !== preToolUseExpected) {
       throw new Error('installed #3212 PreToolUse did not emit the exact unsupported denial');
     }
