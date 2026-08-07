@@ -271,7 +271,7 @@ function runTmuxStructured(args: string[]): { ok: true; stdout: string } | { ok:
 
 }
 
-type SourcePaneAuthority = {
+export type SourcePaneAuthority = {
   paneId: string;
   panePid: number;
   sessionName: string;
@@ -346,10 +346,10 @@ function bindSplitReceiptToPaneCommand(command: string, receipt: string): string
 }
 
 /** Queue an effect in the source pane's tmux server only when its exact pane/session/window incarnation still matches. */
-function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: string, receipt: string = sourceTransactionReceipt()): string {
+export function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: string, receipt: string = sourceTransactionReceipt()): string {
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    `${effect} \\; display-message -p ${shellQuoteSingle(receipt)}`,
+    `${effect} ; display-message -p ${shellQuoteSingle(receipt)}`,
     "display-message -p ''",
   ]);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);

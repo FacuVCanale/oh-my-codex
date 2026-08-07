@@ -756,7 +756,7 @@ if [ "\${1:-}" = "if-shell" ] && [ "\${2:-}" = "-F" ] && [ "\${3:-}" = "-t" ]; t
   log_command "$@"
   if [ "\${effect#*split-window}" != "$effect" ]; then
     receipt="$(printf '%s' "$effect" | sed -n 's/.*\\(omx_source_[A-Za-z0-9_]*\\).*/\\1/p')"
-    effect_command="\${effect%% \\; display-message*}"
+    effect_command="\${effect%% ; display-message*}"
     eval "set -- $effect_command"
     split_output="$("$0" "$@")" || exit 1
     created_pane="$(printf '%s\\n' "$split_output" | awk -F '\\t' 'NR == 1 { print $1 }')"

@@ -266,6 +266,7 @@ ${standaloneGlobalPaneProofFallback}
 fi
 ` : ''}
 if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "-t" ]; then
+  original_command="${'$'}*"
   source="${'$'}4"
   predicate="${'$'}5"
   success="${'$'}6"
@@ -284,8 +285,9 @@ if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "
       *) printf '' ; exit 0 ;;
     esac
   fi
+  printf '%s\n' "${'$'}original_command" >> ${JSON.stringify(logPath)}
   receipt="$(printf '%s' "$success" | sed -n "s/.*\\(omx_source_[A-Za-z0-9_]*\\).*/\\1/p")"
-  effect="${'$'}{success%% \\; display-message*}"
+  effect="${'$'}{success%% ; display-message*}"
   eval "set -- $effect"
   output="$($0 "${'$'}@")" || exit 1
   case "${'$'}1" in
@@ -340,7 +342,7 @@ esac
         const captured = spawnSync('tmux', ['display-message', '-p', '-t', '%1', '#{session_name}\t#{session_id}\t#{session_created}\t#{window_index}\t#{window_id}\t#{pane_id}\t#{pane_pid}'], { encoding: 'utf8' });
         assert.equal(captured.status, 0);
         assert.equal(captured.stdout, 'recycled\t$1\t1\t0\t@0\t%1\t101\n');
-        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}\tomx_source_recycled' \\; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
+        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}\tomx_source_recycled' ; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
         assert.equal(guarded.stdout, '');
         assert.equal(fs.existsSync(`${logPath}.split`), false);
@@ -374,7 +376,7 @@ esac
         const guarded = spawnSync('tmux', [
           'if-shell', '-F', '-t', '%1',
           '#{&&:#{==:#{pane_dead},0},#{&&:#{==:#{pane_id},%1},#{&&:#{==:#{pane_pid},101},#{&&:#{==:#{session_id},$1},#{&&:#{==:#{session_created},1},#{&&:#{==:#{window_id},@0},#{==:#{@omx_team_pane_owner_id},team:original}}}}}}',
-          `split-window -h -t %1 -P -F '#{pane_id}\\t${receipt}' \\; display-message -p '${receipt}'`,
+          `split-window -h -t %1 -P -F '#{pane_id}\\t${receipt}' ; display-message -p '${receipt}'`,
           "display-message -p ''",
         ], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
@@ -5164,13 +5166,13 @@ esac
           const redrawTransactions = commands
             .map((command, index) => ({ command, index }))
             .filter(({ command }) => command.includes('send-keys -t %1 C-l')
-              && command.includes('display-message -p omx_source_'));
+              && command.includes("display-message -p 'omx_source_"));
           assert.equal(redrawTransactions.length, 1);
           const redrawIndex = redrawTransactions[0]!.index;
           assert.ok(redrawIndex > 0);
           assert.match(
             redrawTransactions[0]!.command,
-            /send-keys -t %1 C-l.*display-message -p omx_source_/,
+            /send-keys -t %1 C-l.*display-message -p 'omx_source_/,
             'leader Codex pane redraw must carry the exact guarded transaction receipt',
           );
 
@@ -5367,7 +5369,7 @@ esac
           const commands = tmuxLog.trim().split('\n').filter(Boolean);
           const globalExactPanePidProof = /^list-panes -a -F #\{pane_id\}\t#\{pane_dead\}\t#\{pane_pid\}$/;
           const targetScopedExactPaneSetProof = /^list-panes -t shared:0 -F #\{pane_id\}\t#\{pane_current_command\}\t#\{pane_start_command\}$/;
-          const exactPaneEffects = /^(set-option -p -t %|split-window .* -t %|resize-pane -t %|select-pane -t %|send-keys -t %|if-shell -F -t %)/;
+          const exactPaneEffects = /^(split-window .* -t %|resize-pane -t %|select-pane -t %|send-keys -t %|if-shell -F -t %)/;
           for (const [index, command] of commands.entries()) {
             if (!exactPaneEffects.test(command)) continue;
             const immediatelyPrevious = commands[index - 1] ?? '';
@@ -5385,7 +5387,10 @@ esac
               || (targetScopedExactPaneSetProof.test(immediatelyPrevious)
                 && globalExactPanePidProof.test(previousProof))
               || guardedAuthorityTransaction
-              || command.includes('display-message -p omx_source_');
+              || (immediatelyPrevious.startsWith('if-shell -F -t %')
+                && immediatelyPrevious.includes("display-message -p 'omx_source_"))
+              || command.includes("display-message -p 'omx_source_")
+              || (command.startsWith('split-window ') && command.includes('omx_source_'));
             assert.equal(
               hasAdjacentAuthority,
               true,
