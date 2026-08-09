@@ -3351,6 +3351,37 @@ describe("omx setup install mode behavior", () => {
 		}
 	});
 
+	it("rejects Windows mode drift after a stable hook read-back", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-post-read-mode-drift-"));
+		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
+		const tempPath = (path: string, purpose: "write" | "delete") =>
+			join(dirname(path), `.${basename(path)}.post-read-${purpose}.tmp`);
+		const resetTemporaryPath = setNativeHookTransactionTemporaryPathForTest(tempPath);
+		let injected = false;
+		const resetFailureInjector = setNativeHookTransactionFailureInjectorForTest((stage, artifact) => {
+			if (stage !== "before_rename" || artifact.kind !== "hooks" || injected) return;
+			injected = true;
+			chmodSync(tempPath(artifact.path, "write"), 0o666);
+		});
+		try {
+			await withIsolatedUserHome(wd, async (codexHomeDir) => {
+				await withTempCwd(wd, async () => {
+					await assert.rejects(
+						setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true }),
+						/read-back changed/,
+					);
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), false);
+				});
+			});
+			assert.equal(injected, true);
+		} finally {
+			resetFailureInjector();
+			resetTemporaryPath();
+			resetPlatform();
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects Windows writable-bit drift with unchanged bytes and file identity", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-readonly-drift-"));
 		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
