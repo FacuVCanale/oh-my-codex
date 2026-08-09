@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
 	clearNativeHookClaimJournal as clearNativeHookClaimJournalWithDurability,
 	createNativeHookClaimJournalDurability,
+	setNativeHookClaimJournalOpenForTest,
 	persistNativeHookClaimJournal as persistNativeHookClaimJournalWithDurability,
 	recoverNativeHookClaimJournal as recoverNativeHookClaimJournalWithDurability,
 } from "../native-hook-claim-journal.js";
@@ -27,6 +28,28 @@ async function markJournalOwnerDead(root: string): Promise<void> {
 	journal.ownerPid = 2_147_483_647;
 	await writeFile(path, `${JSON.stringify(journal, null, 2)}\n`, "utf-8");
 }
+
+test("native Windows directory fsync classifies EPERM and closes the handle", async () => {
+	const failure = Object.assign(new Error("EPERM: operation not permitted, fsync"), { code: "EPERM" });
+	let closed = false;
+	const restoreOpen = setNativeHookClaimJournalOpenForTest(async (path, flags) => {
+		assert.equal(path, "C:\\Users\\tester\\.codex\\.omx");
+		assert.equal(flags, "r");
+		return {
+			sync: async () => { throw failure; },
+			close: async () => { closed = true; },
+		};
+	});
+	try {
+		const outcome = await createNativeHookClaimJournalDurability("win32").syncDirectory(
+			"C:\\Users\\tester\\.codex\\.omx",
+		);
+		assert.equal(outcome, "unsupported-windows-eperm");
+		assert.equal(closed, true);
+	} finally {
+		restoreOpen();
+	}
+});
 
 test("claim journal restores an exact original after rename-away interruption", async () => {
 	const root = await mkdtemp(join(tmpdir(), "omx-claim-recovery-"));

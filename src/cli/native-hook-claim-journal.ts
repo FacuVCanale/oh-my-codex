@@ -52,11 +52,27 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
+type NativeHookClaimJournalOpen = (
+	path: string,
+	flags: "r",
+) => Promise<Pick<FileHandle, "sync" | "close">>;
+
+let nativeHookClaimJournalOpen: NativeHookClaimJournalOpen = (path, flags) => open(path, flags);
+
+/** @internal Test seam for deterministic native directory-fsync coverage. */
+export function setNativeHookClaimJournalOpenForTest(openFn: NativeHookClaimJournalOpen): () => void {
+	const previous = nativeHookClaimJournalOpen;
+	nativeHookClaimJournalOpen = openFn;
+	return () => {
+		nativeHookClaimJournalOpen = previous;
+	};
+}
+
 async function fsyncDirectory(
 	path: string,
 	platform: NodeJS.Platform,
 ): Promise<DirectorySyncOutcome> {
-	const handle = await open(path, "r");
+	const handle = await nativeHookClaimJournalOpen(path, "r");
 	try {
 		return await syncDirectory(handle, platform);
 	} finally {
