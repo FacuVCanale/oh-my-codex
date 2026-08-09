@@ -20,7 +20,7 @@ import {
 
 import { join, dirname, relative, basename, isAbsolute, sep, win32 } from "path";
 
-import { constants, existsSync } from "fs";
+import { constants, existsSync, type Stats } from "fs";
 import { spawnSync } from "child_process";
 import { createInterface } from "readline/promises";
 import { homedir } from "os";
@@ -552,8 +552,9 @@ let nativeHookTransactionRegularFileSyncOverride:
 	| ((platform: NodeJS.Platform) => Promise<void>)
 	| undefined;
 let nativeHookClaimJournalDurabilityOverride: NativeHookClaimJournalDurability | undefined;
-
-
+let nativeHookTransactionArtifactLstatOverride:
+	| ((path: string) => Promise<Stats>)
+	| undefined;
 
 /** @internal Test seam for deterministic atomic-write and rollback coverage. */
 export function setNativeHookTransactionFailureInjectorForTest(
@@ -616,6 +617,17 @@ export function setNativeHookTransactionRegularFileSyncForTest(
 	nativeHookTransactionRegularFileSyncOverride = sync;
 	return () => {
 		nativeHookTransactionRegularFileSyncOverride = previous;
+	};
+}
+
+/** @internal Test seam for deterministic artifact read-back coverage. */
+export function setNativeHookTransactionArtifactLstatForTest(
+	artifactLstat: ((path: string) => Promise<Stats>) | undefined,
+): () => void {
+	const previous = nativeHookTransactionArtifactLstatOverride;
+	nativeHookTransactionArtifactLstatOverride = artifactLstat;
+	return () => {
+		nativeHookTransactionArtifactLstatOverride = previous;
 	};
 }
 
@@ -707,7 +719,7 @@ function nativeHookTransactionTopologyEqual(
 		: left.mode === right.mode;
 }
 
-function nativeHookTransactionTopologyMatchesAcrossOpen(
+function nativeHookTransactionTopologyMatchesDuringReadback(
 	left: NativeHookTransactionTopology,
 	right: NativeHookTransactionTopology,
 ): boolean {
@@ -715,13 +727,13 @@ function nativeHookTransactionTopologyMatchesAcrossOpen(
 		nativeHookPlatform() === "win32" &&
 		left.kind === "regular_file" &&
 		right.kind === "regular_file" &&
-		((left.mode === 0o600 && right.mode === 0o666) ||
-			(left.mode === 0o666 && right.mode === 0o600))
+		left.mode === 0o600 &&
+		right.mode === 0o666
 	) {
-		// Windows synthesizes the requested new-file mode 0o600 as 0o666 from
-		// the read-only attribute. Keep this exception exact so writable/read-only
-		// drift remains an ownership failure; bytes, dev, ino, and nlink are
-		// still compared in the full snapshot.
+		// Windows can synthesize a requested new-file mode of 0o600 as 0o666
+		// when the same file is reopened for read-back. Accept only that one-way
+		// transition inside a single identity-checked snapshot; later snapshots
+		// remain mode-strict so real permission drift still fails closed.
 		return true;
 	}
 	return nativeHookTransactionTopologyEqual(left, right);
@@ -892,7 +904,7 @@ async function captureNativeHookTransactionArtifact(
 ): Promise<NativeHookTransactionArtifactSnapshot> {
 	let before;
 	try {
-		before = await lstat(path);
+		before = await (nativeHookTransactionArtifactLstatOverride?.(path) ?? lstat(path));
 	} catch (error) {
 		if (isMissingPathError(error)) {
 			return { bytes: null, topology: { kind: "absent" } };
@@ -905,7 +917,7 @@ async function captureNativeHookTransactionArtifact(
 		);
 	}
 	const bytes = await readFile(path);
-	const after = await lstat(path);
+	const after = await (nativeHookTransactionArtifactLstatOverride?.(path) ?? lstat(path));
 	const beforeTopology = {
 		kind: "regular_file" as const,
 		mode: before.mode & 0o7777,
@@ -917,7 +929,7 @@ async function captureNativeHookTransactionArtifact(
 	if (
 		!after.isFile() ||
 		after.nlink !== 1 ||
-		!nativeHookTransactionTopologyEqual(beforeTopology, afterTopology) ||
+		!nativeHookTransactionTopologyMatchesDuringReadback(beforeTopology, afterTopology) ||
 		before.dev !== after.dev ||
 		before.ino !== after.ino ||
 		before.nlink !== after.nlink
@@ -928,7 +940,7 @@ async function captureNativeHookTransactionArtifact(
 	}
 	return {
 		bytes,
-		topology: beforeTopology,
+		topology: afterTopology,
 		device: before.dev,
 		inode: before.ino,
 		links: before.nlink,
@@ -941,7 +953,7 @@ function nativeHookTransactionSnapshotsEqual(
 ): boolean {
 	return (
 		hookTransactionBytesEqual(left.bytes, right.bytes) &&
-		nativeHookTransactionTopologyMatchesAcrossOpen(left.topology, right.topology) &&
+		nativeHookTransactionTopologyEqual(left.topology, right.topology) &&
 		left.device === right.device &&
 		left.inode === right.inode &&
 		left.links === right.links
@@ -954,7 +966,7 @@ function nativeHookTransactionSnapshotMatchesExpected(
 ): boolean {
 	return (
 		hookTransactionBytesEqual(snapshot.bytes, expected.bytes) &&
-		nativeHookTransactionTopologyMatchesAcrossOpen(snapshot.topology, expected.topology)
+		nativeHookTransactionTopologyMatchesDuringReadback(expected.topology, snapshot.topology)
 	);
 }
 

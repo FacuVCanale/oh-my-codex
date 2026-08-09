@@ -20,6 +20,7 @@ import { parse as parseToml } from "@iarna/toml";
 import {
 	decideWindowsNativeHookShimReference,
 	setNativeHookClaimJournalDurabilityForTest,
+	setNativeHookTransactionArtifactLstatForTest,
 	setNativeHookTransactionFailureInjectorForTest,
 	setSetupLatePhaseFailureInjectorForTest,
 	setNativeHookTransactionPlatformForTest,
@@ -3316,36 +3317,35 @@ describe("omx setup install mode behavior", () => {
 		});
 	}
 
-	it("accepts Windows synthetic mode drift while retaining file identity", async () => {
-		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-mode-drift-"));
+	it("accepts Windows mode synthesis during a newly created hook read-back", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-windows-mode-readback-"));
 		const resetPlatform = setNativeHookTransactionPlatformForTest("win32");
-		const tempPath = (path: string, purpose: "write" | "delete") =>
-			join(dirname(path), `.${basename(path)}.mode-${purpose}.tmp`);
-		const resetTemporaryPath = setNativeHookTransactionTemporaryPathForTest(tempPath);
-		let checkedIdentity = 0;
-		const resetFailureInjector = setNativeHookTransactionFailureInjectorForTest((stage, artifact) => {
-			if (stage !== "before_rename") return;
-			const temporaryPath = tempPath(artifact.path, "write");
-			const before = lstatSync(temporaryPath);
-			chmodSync(temporaryPath, 0o666);
-			const after = lstatSync(temporaryPath);
-			assert.equal(after.dev, before.dev);
-			assert.equal(after.ino, before.ino);
-			checkedIdentity += 1;
+		const successfulStatsByPath = new Map<string, number>();
+		const synthesizedPaths = new Set<string>();
+		const resetArtifactLstat = setNativeHookTransactionArtifactLstatForTest(async (path) => {
+			const status = await lstat(path);
+			if (!basename(path).includes("hooks.json")) return status;
+			const successfulStats = successfulStatsByPath.get(path) ?? 0;
+			successfulStatsByPath.set(path, successfulStats + 1);
+			const mode = successfulStats === 0 ? 0o600 : 0o666;
+			if (successfulStats === 1) synthesizedPaths.add(path);
+			return new Proxy(status, {
+				get(target, property, receiver) {
+					if (property === "mode") return (target.mode & ~0o7777) | mode;
+					return Reflect.get(target, property, receiver);
+				},
+			});
 		});
 		try {
 			await withIsolatedUserHome(wd, async (codexHomeDir) => {
 				await withTempCwd(wd, async () => {
-					const configPath = join(codexHomeDir, "config.toml");
-					await writeFile(configPath, 'notify = ["node", "/tmp/user-notify.js"]\n');
-					chmodSync(configPath, 0o600);
 					await setup({ scope: "user", installMode: "legacy", skipNativeAgentRefresh: true });
+					assert.equal(existsSync(join(codexHomeDir, "hooks.json")), true);
 				});
 			});
-			assert.ok(checkedIdentity >= 4);
+			assert.ok(synthesizedPaths.size >= 2);
 		} finally {
-			resetFailureInjector();
-			resetTemporaryPath();
+			resetArtifactLstat();
 			resetPlatform();
 			await rm(wd, { recursive: true, force: true });
 		}
