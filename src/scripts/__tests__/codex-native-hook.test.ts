@@ -12313,7 +12313,7 @@ esac
 			);
 			assert.match(
 				tmuxCalls,
-				/dist\/cli\/omx\.js' hud --watch '--preset=focused'/,
+				/dist\/cli\/omx\.js'\\'' hud --watch '\\''--preset=focused'\\'''/,
 			);
 			assert.doesNotMatch(tmuxCalls, /\/tmp\/codex-host-binary' hud --watch/);
 		} finally {

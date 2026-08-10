@@ -9,6 +9,7 @@ import {
   buildHudResizeHookSlot,
   buildHudWatchCommand,
   createHudWatchPane,
+  findHudSplitOperationMarkerPaneId,
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
   hudPaneMatchesOwner,
@@ -142,6 +143,10 @@ describe('HUD resize hook helpers', () => {
     for (const token of ['pane_id', '%1', 'pane_pid', '101', 'session_id', '$7', 'window_id', '@3']) {
       assert.match(split?.[4] ?? '', new RegExp(token.replace('$', '\\$')));
     }
+    assert.match(split?.[5] ?? '', /'OMX_TMUX_SPLIT_OPERATION_MARKER='\\''[^']+'\\'' node omx\.js hud --watch'/);
+    assert.match(split?.[5] ?? '', / ; display-message -p __omx_hud_split_/);
+    assert.doesNotMatch(split?.[5] ?? '', /\\; /);
+    assert.doesNotMatch(split?.[5] ?? '', /; export OMX_TMUX_SPLIT_OPERATION_MARKER/);
     assert.match(split?.[6] ?? '', /__omx_hud_split_rejected_/);
   });
 
@@ -820,5 +825,94 @@ describe('dead HUD pane reaper', () => {
 
     assert.deepEqual(killed, ['%2']);
     assert.deepEqual(result, { reaped: ['%2'], preserved: ['%3'] });
+  });
+});
+
+describe('HUD split operation marker round-trip', () => {
+  const markerListPanes = (startCommands: string[]): string =>
+    startCommands.map((command, index) => `%${index + 1}\t${command}`).join('\n') + '\n';
+
+  const execReturning = (output: string): ((args: string[]) => string) => (args) => {
+    assert.deepEqual(args, ['list-panes', '-a', '-F', '#{pane_id}\t#{pane_start_command}']);
+    return output;
+  };
+
+  it('round-trips the tmux 3.2a double-quoted command-scoped assignment form', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        '"sleep 300"',
+        `"OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}' node omx.js hud --watch"`,
+      ])),
+    );
+    assert.equal(paneId, '%2');
+  });
+
+  it('round-trips the tmux 3.2a double-quoted old export form', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        `"OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}'; export OMX_TMUX_SPLIT_OPERATION_MARKER; exec env OMX_TMUX_HUD_OWNER=1 node omx.js hud --watch"`,
+      ])),
+    );
+    assert.equal(paneId, '%1');
+  });
+
+  it('keeps matching the bare semicolon export form', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        `OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}'; export OMX_TMUX_SPLIT_OPERATION_MARKER; exec env node omx.js hud --watch`,
+      ])),
+    );
+    assert.equal(paneId, '%1');
+  });
+
+  it('keeps matching the bare command-scoped assignment form', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        `OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}' node omx.js hud --watch`,
+      ])),
+    );
+    assert.equal(paneId, '%1');
+  });
+
+  it('rejects a marker mentioned mid-command', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        `"echo OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}' ; node omx.js hud --watch"`,
+      ])),
+    );
+    assert.equal(paneId, null);
+  });
+
+  it('rejects a longer marker value sharing the same prefix', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        `"OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}-extended' node omx.js hud --watch"`,
+      ])),
+    );
+    assert.equal(paneId, null);
+  });
+
+  it('returns null when two panes carry the same marker', () => {
+    const marker = 'omx-split-marker';
+    const paneId = findHudSplitOperationMarkerPaneId(
+      marker,
+      execReturning(markerListPanes([
+        `"OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}' sleep 1"`,
+        `"OMX_TMUX_SPLIT_OPERATION_MARKER='${marker}' sleep 2"`,
+      ])),
+    );
+    assert.equal(paneId, null);
   });
 });
