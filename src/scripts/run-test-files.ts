@@ -80,6 +80,7 @@ function shouldScrubRuntimeEnvKey(key: string): boolean {
   return (
     key.startsWith('OMX_') ||
     key.startsWith('OMXBOX_') ||
+    key.startsWith('GJC_') ||
     key.startsWith('CODEX_') ||
     key === 'USE_OMX_EXPLORE_CMD' ||
     key === 'SESSION_ID' ||
