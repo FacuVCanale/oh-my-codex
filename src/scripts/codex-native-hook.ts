@@ -9467,11 +9467,25 @@ function isStandaloneParsedOmxStateWriteTransport(cwd: string, command: string, 
   const stateWriteOperation = stateWriteOperations[0];
   if (!stateWriteOperation) return false;
   const payload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-  if (!payload
-    || safeString(payload.session_id).trim() !== authoritativeSessionId
-    || !suppliedSessionAliasesMatch(payload, authoritativeSessionId)
-    || safeString(payload.workingDirectory).trim() === ""
-    || !sameFilePath(safeString(payload.workingDirectory), cwd)) return false;
+  if (!payload) return false;
+  const payloadSessionId = safeString(payload.session_id).trim();
+  const payloadWorkingDirectory = safeString(payload.workingDirectory).trim();
+  const payloadHasExplicitBinding = payloadSessionId !== "" || payloadWorkingDirectory !== "";
+  const inheritedSessionSelectors = [...new Set(["OMX_SESSION_ID", "GJC_SESSION_ID"]
+    .map((name) => safeString(process.env[name]).trim())
+    .filter(Boolean))];
+  const inheritedSelectorsAreCanonical = inheritedSessionSelectors.length === 1
+    && inheritedSessionSelectors[0] === authoritativeSessionId;
+  if (
+    payloadHasExplicitBinding
+      ? (
+        payloadSessionId !== authoritativeSessionId
+        || !suppliedSessionAliasesMatch(payload, authoritativeSessionId)
+        || payloadWorkingDirectory === ""
+        || !sameFilePath(payloadWorkingDirectory, cwd)
+      )
+      : !inheritedSelectorsAreCanonical
+  ) return false;
   const usesInputFile = readStateWriteFlagValue(stateWriteOperation.args, "--input-file") !== undefined;
   if (usesInputFile && splitStateScanSegments(canonicalCommand).length !== 1) return false;
   if (extractDeepInterviewCommandRedirectTargets(command).length > 0) return false;
@@ -10319,6 +10333,10 @@ function isAllowedOmxReadOnlyCommand(command: string, cwd: string): boolean {
   if (args[0] === "state" && OMX_STATE_READ_ONLY_OPERATIONS.has(args[1] ?? "")) {
     return stateReadTrailingArgsAreSafe(args.slice(2));
   }
+  if (args[0] === "state" && args[1] === "list-active") {
+    return args.slice(2).every((arg) => arg === "--json");
+  }
+  if (args[0] === "doctor" && args.length === 1) return true;
   return isAllowedOmxCleanupDryRunCommand(command);
 }
 
@@ -10339,6 +10357,10 @@ function isAllowedTrustedAbsoluteOmxReadOnlyCommand(command: string, cwd: string
   if (args.length === 1 && (args[0] === "--help" || args[0] === "-h" || args[0] === "--version" || args[0] === "-v")) return true;
   if (args.length === 1 && (args[0] === "help" || args[0] === "status" || args[0] === "version")) return true;
   if (isAllowedOmxNestedHelpForm(args)) return true;
+  if (args.length === 1 && args[0] === "doctor") return true;
+  if (args[0] === "state" && args[1] === "list-active") {
+    return args.slice(2).every((arg) => arg === "--json");
+  }
   return args.length === 3
     && args[0] === "ultragoal"
     && args[1] === "status"
@@ -16674,6 +16696,11 @@ const CONDUCTOR_KNOWN_OMX_RUNTIME_ENVIRONMENT_NAMES = new Set([
 const CONDUCTOR_BENIGN_ORCHESTRATION_RUNTIME_ENVIRONMENT_NAMES = new Set([
   "GJC_SESSION_CWD", "GJC_SESSION_FILE", "GJC_SESSION_ID",
   "OMX_OPENCLAW", "OMX_OPENCLAW_COMMAND", "OMX_OPENCLAW_DEBUG", "OMX_TEST_RELAX_TMUX_TIMEOUT",
+  // Documented Team worker-launch configuration inputs (skills/team): they
+  // select the worker CLI/model, never roots, output destinations, or helper
+  // commands, so they are benign prefix/inherited environment for the static
+  // `omx team [N:role] "<task>"` orchestration lane.
+  "OMX_TEAM_WORKER_CLI", "OMX_TEAM_WORKER_CLI_MAP", "OMX_TEAM_WORKER_LAUNCH_ARGS",
 ]);
 
 function conductorOrchestrationRuntimeEnvironmentNameIsPermitted(name: string): boolean {
@@ -16965,7 +16992,14 @@ function isStaticallyRecognizedConductorOrchestrationMutation(
     .filter((word) => word && !word.startsWith("-"));
   const command = operands[0] ?? "";
   const subcommand = operands[1] ?? "";
-  if (!invocationWords.every(conductorOrchestrationWordIsStatic) || argumentProducing || !hasExactConductorOrchestrationOptionSchema(commandName, words, commandIndex) && commandName !== "gh") return false;
+  const teamLaunch = (commandName === "omx" || commandName === "gjc")
+    && command === "team"
+    && isStaticallyValidatedOmxTeamLaunchInvocation(words, commandIndex);
+  if (
+    !invocationWords.every(conductorOrchestrationWordIsStatic)
+    || argumentProducing
+    || (commandName !== "gh" && !hasExactConductorOrchestrationOptionSchema(commandName, words, commandIndex) && !teamLaunch)
+  ) return false;
   if (
     (commandName === "omx" || commandName === "gjc")
     && command === "ultragoal"
@@ -16980,6 +17014,7 @@ function isStaticallyRecognizedConductorOrchestrationMutation(
       && ghCommandHasMutationIntent(words, commandIndex);
   }
   if (commandName !== "omx" && commandName !== "gjc") return false;
+  if (teamLaunch) return true;
   return hasExactConductorOrchestrationOptionSchema(commandName, words, commandIndex);
 }
 
@@ -17002,6 +17037,26 @@ function isDirectTrustedAbsoluteUltragoalCheckpoint(command: string, rootCwd: st
     && hasSafeConductorOrchestrationRuntimeEnvironment(words, 0, commandIndex, rootCwd, state)
     && isStaticallyRecognizedConductorOrchestrationMutation(commandName, words, commandIndex, false);
 }
+// Strict static recognition of the documented Team implementation lane
+// `omx team [N:agent-type] "<task description>"` (and the `gjc` alias). The
+// launch is a bounded orchestration mutation: it spawns tmux worker panes and
+// writes Team state under `.omx/state/team/...`; worker-pane product writes
+// are authorized separately by Team-worker provenance, so allowing the launch
+// never grants the Main-root direct product-write authority. Only static,
+// literal invocations qualify; dynamic task text, command substitution,
+// redirects, and unknown flags stay fail-closed.
+function isStaticallyValidatedOmxTeamLaunchInvocation(words: string[], commandIndex: number): boolean {
+  const invocationWords = collectConductorInvocationWords(words, commandIndex);
+  if (invocationWords.length < 2 || !invocationWords.every(conductorOrchestrationWordIsStatic)) return false;
+  const args = invocationWords.map(shellWordLiteral);
+  if ((args[0] ?? "") !== "team") return false;
+  const taskWords = (args[1] ?? "") !== "" && /^[1-9][0-9]*(?::[a-z][a-z0-9-]*)?$/i.test(args[1] ?? "")
+    ? args.slice(2)
+    : args.slice(1);
+  const task = taskWords.join(" ").trim();
+  return task !== "";
+}
+
 
 
 function findConductorIsolatedInvocationBoundary(words: string[], commandStartIndex: number): number {
@@ -20488,13 +20543,6 @@ function conductorStateWriteTransportIsBoundToActiveSession(
   if (!hasStateWrite) return true;
   if (!authoritativeSessionId) return false;
   const statePayload = readStateWriteInputPayload(cwd, canonicalCommand, command);
-  if (
-    !statePayload
-    || safeString(statePayload.session_id).trim() !== authoritativeSessionId
-    || !suppliedSessionAliasesMatch(statePayload, authoritativeSessionId)
-    || safeString(statePayload.workingDirectory).trim() === ""
-    || !sameFilePath(safeString(statePayload.workingDirectory), cwd)
-  ) return false;
   // Inherited hook environment is process-authenticated; model-controlled shell
   // assignments must match the session resolved for this PreToolUse payload.
   const inheritedSessionSelectors = [...new Set(["OMX_SESSION_ID", "GJC_SESSION_ID"]
@@ -20502,6 +20550,27 @@ function conductorStateWriteTransportIsBoundToActiveSession(
     .filter(Boolean))];
   const inheritedSelectorsAreCanonical = inheritedSessionSelectors.length === 1
     && inheritedSessionSelectors[0] === authoritativeSessionId;
+  if (!statePayload) return false;
+  const payloadSessionId = safeString(statePayload.session_id).trim();
+  const payloadWorkingDirectory = safeString(statePayload.workingDirectory).trim();
+  const payloadHasExplicitBinding = payloadSessionId !== "" || payloadWorkingDirectory !== "";
+  // The documented session-bound `omx state write --input '{"mode":...}' --json`
+  // form (no explicit session_id/workingDirectory in the payload) stays bound to
+  // the active session through the inherited OMX_SESSION_ID/GJC_SESSION_ID that
+  // the OMX runtime sets for the hook process. Accept it only when exactly one
+  // inherited selector equals the authoritative session; any explicit payload
+  // binding, prefix assignment, unset, or env-clear below still requires the
+  // existing strict canonical match.
+  if (payloadHasExplicitBinding) {
+    if (
+      payloadSessionId !== authoritativeSessionId
+      || !suppliedSessionAliasesMatch(statePayload, authoritativeSessionId)
+      || payloadWorkingDirectory === ""
+      || !sameFilePath(payloadWorkingDirectory, cwd)
+    ) return false;
+  } else if (!inheritedSelectorsAreCanonical) {
+    return false;
+  }
   for (const segment of splitShellCommandSegments(stripHeredocBodiesForCommandScan(command))) {
     const segmentHasStateWrite = /\b(?:omx|gjc)\s+state\s+write\b/.test(segment);
     const clearsInheritedEnvironment = /\b(?:env\s+(?:(?:-[A-Za-z]*i[A-Za-z]*|--ignore-environment)\s+|--ignore-environment\s+)|exec\s+-[A-Za-z]*c[A-Za-z]*)/.test(segment);
@@ -20928,8 +20997,24 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     }
   } else if (mutationTransport === "orchestration" || mutationTransport === "goal-lifecycle") {
     nativeChildMutationAttempt = true;
-    blocked = true;
-    blockedDetail = `${toolName} requires documented host-authenticated Main-root authority that Codex 0.145.0 does not expose`;
+    // The spawn itself is orchestration transport (delegation), not a product
+    // write: accepting a typed spawn on a positively-supported native surface
+    // lets the Main-root Conductor delegate while the delegated child's own
+    // writes remain governed by the native-child OWNER_CONFIRMATION_REQUIRED
+    // contract below. Every other orchestration/goal-lifecycle tool stays
+    // fail-closed, and denial wording reports the detected capability instead
+    // of a fixed upstream version.
+    const requestedSpawnRole = readRequestedSpawnRole(payload);
+    const typedNativeSpawnOnSupportedSurface = isNativeSubagentSpawnToolName(toolName)
+      && requestedSpawnRole !== ""
+      && resolveInstalledRoleName(requestedSpawnRole, undefined, cwd) !== null
+      && nativeSubagentSupport.status === "supported";
+    if (typedNativeSpawnOnSupportedSurface) {
+      blocked = false;
+    } else {
+      blocked = true;
+      blockedDetail = buildConductorOrchestrationBlockedDetail(toolName, nativeSubagentSupport.status);
+    }
   } else if (mutationTransport === "path") {
     nativeChildMutationAttempt = true;
     const toolPathCandidates = collectImplementationToolPathCandidates(payload, toolName, pathCandidates);
@@ -21004,6 +21089,13 @@ export async function buildConductorPreToolUseWriteGuardOutput(
     },
   };
 
+}
+function buildConductorOrchestrationBlockedDetail(toolName: string, nativeSubagentStatus: string): string {
+  const canonicalToolName = canonicalizeNativeCollaborationToolName(toolName);
+  if (isNativeSubagentSpawnToolName(canonicalToolName)) {
+    return `${toolName} requires documented host-authenticated Main-root authority that this host surface does not positively expose (detected native subagent capability: ${nativeSubagentStatus || "unknown"})`;
+  }
+  return `${toolName} requires documented host-authenticated Main-root authority that this host surface does not expose (detected native subagent capability: ${nativeSubagentStatus || "unknown"})`;
 }
 function isInPlaceEditorCommand(word: string, commandName: string): boolean {
   if (commandName === "sed") return word === "--in-place" || /^--in-place(?:=.+)?$/.test(word) || /^-[^-\s]*i(?:.*)?$/.test(word);
