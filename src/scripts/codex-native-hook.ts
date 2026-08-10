@@ -4627,6 +4627,179 @@ async function readStopSessionPinnedState(
     : getStateFilePath(fileName, cwd, sessionId || undefined);
   return readJsonIfExists(statePath);
 }
+/** Fail-closed session-id alias check for Stop recovery: session_id/sessionId must
+ * be strings when present and must normalize to the same exact session id. */
+function readStrictStopPayloadSessionId(payload: CodexHookPayload): string | null {
+  const snake = payload.session_id;
+  const camel = payload.sessionId;
+  if (snake !== undefined && typeof snake !== "string") return null;
+  if (camel !== undefined && typeof camel !== "string") return null;
+  const snakeNormalized = typeof snake === "string" ? normalizeSessionId(snake) : undefined;
+  const camelNormalized = typeof camel === "string" ? normalizeSessionId(camel) : undefined;
+  if (snakeNormalized && camelNormalized && snakeNormalized !== camelNormalized) return null;
+  return snakeNormalized ?? camelNormalized ?? null;
+}
+
+/** Fail-closed transcript alias check for Stop recovery: transcript_path and
+ * transcriptPath must be strings when present and must agree when both exist. */
+function readStrictStopPayloadTranscriptPath(payload: CodexHookPayload): string | null {
+  const snake = payload.transcript_path;
+  const camel = payload.transcriptPath;
+  if (snake !== undefined && typeof snake !== "string") return null;
+  if (camel !== undefined && typeof camel !== "string") return null;
+  const snakePath = typeof snake === "string" ? snake.trim() : "";
+  const camelPath = typeof camel === "string" ? camel.trim() : "";
+  if (snakePath && camelPath && snakePath !== camelPath) return null;
+  return snakePath || camelPath || null;
+}
+
+interface TranscriptSessionMetaBinding {
+  sessionId: string;
+  cwd: string;
+}
+
+/** Parse the bounded first session_meta record and bind payload.id,
+ * payload.session_id, and the resolved payload.cwd. */
+function parseTranscriptSessionMetaBinding(
+  firstLine: string,
+  transcriptPath: string,
+): TranscriptSessionMetaBinding | null {
+  const trimmed = firstLine.trim();
+  if (!trimmed) return null;
+  let record: unknown;
+  try {
+    record = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  const safe = safeObject(record);
+  if (safeString(safe.type) !== "session_meta") return null;
+  const payload = safeObject(safe.payload);
+  const id = normalizeSessionId(payload.id);
+  const sessionId = normalizeSessionId(payload.session_id);
+  if (!id || !sessionId || id !== sessionId) return null;
+  const rawCwd = safeString(payload.cwd).trim();
+  if (!rawCwd) return null;
+  const resolvedCwd = isAbsolute(rawCwd) ? rawCwd : resolve(dirname(transcriptPath), rawCwd);
+  return { sessionId, cwd: resolvedCwd };
+}
+
+/** Bounded first-line read from an already-opened transcript handle. */
+async function readBoundedFirstLineFromHandle(
+  handle: Awaited<ReturnType<typeof open>>,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  const buffer = Buffer.alloc(8192);
+  let position = 0;
+  let totalBytesRead = 0;
+  while (totalBytesRead < MAX_SESSION_META_LINE_BYTES) {
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+    if (bytesRead <= 0) break;
+    totalBytesRead += bytesRead;
+    const newlineOffset = buffer.subarray(0, bytesRead).indexOf(0x0a);
+    if (newlineOffset >= 0) {
+      chunks.push(Buffer.from(buffer.subarray(0, newlineOffset)));
+      break;
+    }
+    chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+    position += bytesRead;
+  }
+  return Buffer.concat(chunks).toString("utf-8").replace(/\r$/, "");
+}
+
+/**
+ * Stop-only transcript-backed recovery for an exact stale-dead selected
+ * pointer with no usable matching owner sidecar (issue #3427). Every check
+ * fails closed. The recovered authority is ephemeral and session-scoped for
+ * this Stop evaluation only; the singleton selected pointer is never
+ * rewritten and no other state is mutated.
+ */
+async function recoverStaleDeadStopTranscriptSession(
+  cwd: string,
+  stateDir: string,
+  payload: CodexHookPayload,
+): Promise<string | null> {
+  try {
+    if (payloadHasConflictingIdentityAliases(payload)) return null;
+    if (payloadHasOwnerIdentityClaim(payload)) return null;
+    if (hasSubagentThreadSpawnProvenance(payload)) return null;
+    if (isTypedAgentRolePayload(payload, cwd)) return null;
+    if (safeString(payload.agent_id).trim() || safeString(payload.agentId).trim()) return null;
+
+    const sessionId = readStrictStopPayloadSessionId(payload);
+    if (!sessionId) return null;
+
+    const transcriptPath = readStrictStopPayloadTranscriptPath(payload);
+    if (!transcriptPath) return null;
+    if (!isAbsolute(transcriptPath)) return null;
+    if (!basename(transcriptPath).includes(sessionId)) return null;
+
+    const payloadCwd = payload.cwd;
+    if (payloadCwd !== undefined) {
+      if (typeof payloadCwd !== "string" || !payloadCwd.trim() || !isAbsolute(payloadCwd.trim())) {
+        return null;
+      }
+      if (!sameFilePath(cwd, payloadCwd.trim())) return null;
+    }
+
+    // Transcript must be a regular non-symlink file pinned by device+inode
+    // across lstat/open/read with O_NOFOLLOW where the platform provides it.
+    let before: Awaited<ReturnType<typeof lstat>>;
+    try {
+      before = await lstat(transcriptPath);
+    } catch {
+      return null;
+    }
+    if (before.isSymbolicLink() || !before.isFile()) return null;
+
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(transcriptPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch {
+      return null;
+    }
+    try {
+      const opened = await handle.stat();
+      if (opened.isSymbolicLink() || !opened.isFile()
+        || opened.dev !== before.dev || opened.ino !== before.ino) {
+        return null;
+      }
+
+      const firstLine = await readBoundedFirstLineFromHandle(handle);
+      const after = await handle.stat();
+      if (after.dev !== opened.dev || after.ino !== opened.ino) return null;
+
+      let afterPath: Awaited<ReturnType<typeof lstat>>;
+      try {
+        afterPath = await lstat(transcriptPath);
+      } catch {
+        return null;
+      }
+      if (afterPath.isSymbolicLink() || !afterPath.isFile()
+        || afterPath.dev !== opened.dev || afterPath.ino !== opened.ino) {
+        return null;
+      }
+
+      const meta = parseTranscriptSessionMetaBinding(firstLine, transcriptPath);
+      if (!meta || meta.sessionId !== sessionId) return null;
+      if (!sameFilePath(cwd, meta.cwd)) return null;
+    } finally {
+      await handle.close().catch(() => {});
+    }
+
+    // The canonical session-scoped state directory must exist.
+    try {
+      const sessionDirStat = await lstat(join(stateDir, "sessions", sessionId));
+      if (sessionDirStat.isSymbolicLink() || !sessionDirStat.isDirectory()) return null;
+    } catch {
+      return null;
+    }
+
+    return sessionId;
+  } catch {
+    return null;
+  }
+}
 
 const DEEP_INTERVIEW_ALLOWED_WRITE_PREFIXES = [
   ".omx/context",
@@ -22659,18 +22832,36 @@ export async function dispatchCodexNativeHook(
         allowGlobalSideEffects = false;
         stopAuthorizationFailure = null;
       } else {
-        canonicalSessionId = "";
-        allowImplicitSessionSideEffects = false;
-        if (declaredTeamWorker && !authorizedWorkerStopSessionId) {
-          stopAuthorizationFailure = {
-            stopReason: "session_scope_unmatched",
-            reason: "OMX cannot authorize Team worker Stop without exactly one valid explicit session id.",
-          };
-        } else if (!stopAuthorizationFailure) {
-          stopAuthorizationFailure = {
-            stopReason: "session_scope_unmatched",
-            reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
-          };
+        // Issue #3427: an exact stale-dead selected pointer with no usable
+        // matching owner sidecar may still authorize this Stop through the
+        // payload transcript's strict session_meta identity boundary. The
+        // recovered authority is ephemeral and session-scoped for this Stop
+        // evaluation only; the singleton pointer is never rewritten.
+        const recoveredTranscriptSessionId = !declaredTeamWorker
+          && pointer.status === "stale-dead"
+          && Boolean(stopPayloadSessionId)
+          ? await recoverStaleDeadStopTranscriptSession(cwd, stateDir, payload)
+          : null;
+        if (recoveredTranscriptSessionId) {
+          canonicalSessionId = recoveredTranscriptSessionId;
+          resolvedNativeSessionId = stopPayloadSessionId;
+          allowImplicitSessionSideEffects = true;
+          allowGlobalSideEffects = false;
+          stopAuthorizationFailure = null;
+        } else {
+          canonicalSessionId = "";
+          allowImplicitSessionSideEffects = false;
+          if (declaredTeamWorker && !authorizedWorkerStopSessionId) {
+            stopAuthorizationFailure = {
+              stopReason: "session_scope_unmatched",
+              reason: "OMX cannot authorize Team worker Stop without exactly one valid explicit session id.",
+            };
+          } else if (!stopAuthorizationFailure) {
+            stopAuthorizationFailure = {
+              stopReason: "session_scope_unmatched",
+              reason: `OMX cannot authorize Stop for unmatched session id ${stopPayloadSessionId}; the selected session pointer remains authoritative.`,
+            };
+          }
         }
       }
     } else if (stopCanonicalSessionId) {

@@ -40354,3 +40354,520 @@ describe("native Team notice ledger reconciliation", () => {
     }
   });
 });
+describe("Stop transcript-backed recovery for a stale-dead selected pointer (issue #3427)", { concurrency: false }, () => {
+  async function writeStaleDeadStopFixture(
+    cwd: string,
+    sessionId: string,
+    options: { transcript?: boolean; sessionDir?: boolean; pointer?: Record<string, unknown> } = {},
+  ): Promise<{ stateDir: string; transcriptPath: string; pointerBefore: string }> {
+    const stateDir = join(cwd, ".omx", "state");
+    await mkdir(stateDir, { recursive: true });
+    await writeJson(join(stateDir, "session.json"), {
+      session_id: sessionId,
+      cwd,
+      pid: 2_147_483_647,
+      ...options.pointer,
+    });
+    const pointerBefore = await readFile(join(stateDir, "session.json"), "utf-8");
+    const transcriptPath = join(cwd, `rollout-${sessionId}.jsonl`);
+    if (options.transcript !== false) {
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: sessionId, session_id: sessionId, cwd, timestamp: "2026-08-03T00:00:00.000Z" },
+        })}\n`,
+      );
+    }
+    if (options.sessionDir !== false) {
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+    }
+    return { stateDir, transcriptPath, pointerBefore };
+  }
+
+  async function writeSessionScopedModeState(cwd: string, sessionId: string, mode: string): Promise<void> {
+    const stateDir = join(cwd, ".omx", "state");
+    await writeJson(join(stateDir, "sessions", sessionId, `${mode}-state.json`), {
+      active: true,
+      mode,
+      current_phase: "executing",
+      session_id: sessionId,
+      workingDirectory: cwd,
+    });
+  }
+
+  it("authorizes an exact stale-dead Stop through the payload transcript and evaluates session-scoped state", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-transcript-recovery-"));
+    try {
+      const sessionId = "live-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+      await writeSessionScopedModeState(cwd, sessionId, "autopilot");
+
+      const first = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        turn_id: "3427-stop-turn",
+      }, { cwd });
+
+      assert.equal(first.outputJson?.decision, "block");
+      assert.equal(first.outputJson?.stopReason, "autopilot_executing");
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+      assert.equal(existsSync(join(stateDir, "native-stop-state.json")), false);
+
+      // The recovery is read-only, so a repeated Stop is idempotent.
+      const second = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        turn_id: "3427-stop-turn-2",
+      }, { cwd });
+      assert.equal(second.outputJson?.stopReason, "autopilot_executing");
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("authorizes the exact stale-dead Stop as a clean no-op when no session-scoped state is active", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-transcript-clean-stop-"));
+    try {
+      const sessionId = "clean-live-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for a foreign transcript cwd", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-foreign-cwd-"));
+    try {
+      const sessionId = "foreign-cwd-session-3427";
+      const foreignCwd = join(tmpdir(), "omx-3427-unrelated-repo");
+      await mkdir(foreignCwd, { recursive: true });
+      const { stateDir, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { sessionDir: false });
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      const transcriptPath = join(cwd, `rollout-${sessionId}.jsonl`);
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: sessionId, session_id: sessionId, cwd: foreignCwd },
+        })}\n`,
+      );
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the transcript session_meta id does not match the payload session", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-mismatched-id-"));
+    try {
+      const sessionId = "mismatch-session-3427";
+      const { stateDir, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { sessionDir: false });
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      const transcriptPath = join(cwd, `rollout-${sessionId}.jsonl`);
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: "some-other-session", session_id: sessionId, cwd },
+        })}\n`,
+      );
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the transcript filename is not bound to the session id", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-filename-binding-"));
+    try {
+      const sessionId = "filename-bound-session-3427";
+      const { stateDir, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { sessionDir: false });
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+      const transcriptPath = join(cwd, "rollout-unrelated.jsonl");
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: { id: sessionId, session_id: sessionId, cwd },
+        })}\n`,
+      );
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for a relative transcript path", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-relative-transcript-"));
+    try {
+      const sessionId = "relative-transcript-session-3427";
+      const { stateDir, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { sessionDir: false });
+      await mkdir(join(stateDir, "sessions", sessionId), { recursive: true });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: `rollout-${sessionId}.jsonl`,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for conflicting session_id/sessionId aliases", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-conflicting-aliases-"));
+    try {
+      const sessionId = "alias-conflict-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        sessionId: "other-alias-session-3427",
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for non-string transcript aliases", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-nonstring-transcript-"));
+    try {
+      const sessionId = "nonstring-transcript-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: 42,
+        transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when transcript_path and transcriptPath disagree", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-transcript-alias-conflict-"));
+    try {
+      const sessionId = "transcript-alias-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+      const otherPath = join(cwd, `rollout-${sessionId}-other.jsonl`);
+      await writeFile(otherPath, `${JSON.stringify({
+        type: "session_meta",
+        payload: { id: sessionId, session_id: sessionId, cwd },
+      })}\n`);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        transcriptPath: otherPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for owner identity claims", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-owner-claim-"));
+    try {
+      const sessionId = "owner-claim-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        owner_codex_session_id: sessionId,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for subagent thread-spawn provenance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-subagent-provenance-"));
+    try {
+      const sessionId = "subagent-provenance-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        source: { subagent: { thread_spawn: { parent_thread_id: "some-parent", depth: 1 } } },
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it("fails closed for a payload with agent_id subagent provenance", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-agent-id-provenance-"));
+    try {
+      const sessionId = "agent-id-provenance-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        agent_id: "child-agent-thread",
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for a typed agent-role subagent payload", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-agent-role-provenance-"));
+    try {
+      const sessionId = "agent-role-provenance-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        agent_type: "executor",
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the session-scoped state directory is missing", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-missing-session-dir-"));
+    try {
+      const sessionId = "missing-session-dir-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { sessionDir: false });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for a symlink transcript", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-symlink-transcript-"));
+    try {
+      const sessionId = "symlink-transcript-session-3427";
+      const { stateDir, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { transcript: false });
+      const realTranscript = join(cwd, `real-${sessionId}.jsonl`);
+      await writeFile(realTranscript, `${JSON.stringify({
+        type: "session_meta",
+        payload: { id: sessionId, session_id: sessionId, cwd },
+      })}\n`);
+      const transcriptPath = join(cwd, `rollout-${sessionId}.jsonl`);
+      await symlink(realTranscript, transcriptPath);
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the transcript first record is not session_meta", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-non-meta-transcript-"));
+    try {
+      const sessionId = "non-meta-transcript-session-3427";
+      const { stateDir, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, { transcript: false });
+      const transcriptPath = join(cwd, `rollout-${sessionId}.jsonl`);
+      await writeFile(
+        transcriptPath,
+        `${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "hi" } })}\n`,
+      );
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for an identity-indeterminate pointer even with a valid transcript", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-indeterminate-pointer-"));
+    try {
+      const sessionId = "indeterminate-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId, {
+        pointer: { identity_schema_version: 1 },
+      });
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson, null);
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("never rewrites the singleton selected pointer during transcript recovery", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-pointer-immutable-"));
+    try {
+      const sessionId = "pointer-immutable-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+      await writeSessionScopedModeState(cwd, sessionId, "autopilot");
+
+      const result = await dispatchCodexNativeHook({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd });
+
+      assert.equal(result.outputJson?.decision, "block");
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+      assert.equal(existsSync(join(stateDir, "sessions", "stale-dead", "session.json")), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("covers the built distribution entrypoint for the transcript-backed recovery", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-dist-recovery-"));
+    try {
+      const sessionId = "dist-recovery-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+      await writeSessionScopedModeState(cwd, sessionId, "autopilot");
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+      }, { cwd }));
+
+      assert.equal(output.decision, "block");
+      assert.equal(output.stopReason, "autopilot_executing");
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed in the built distribution entrypoint for a conflicting alias", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "omx-3427-dist-failclosed-"));
+    try {
+      const sessionId = "dist-failclosed-session-3427";
+      const { stateDir, transcriptPath, pointerBefore } = await writeStaleDeadStopFixture(cwd, sessionId);
+
+      const output = parseSingleJsonStdout(runNativeHookCli({
+        hook_event_name: "Stop",
+        cwd,
+        session_id: sessionId,
+        sessionId: "dist-other-session-3427",
+        transcript_path: transcriptPath,
+      }, { cwd }));
+
+      assert.deepEqual(output, {});
+      assert.equal(await readFile(join(stateDir, "session.json"), "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
