@@ -13414,6 +13414,10 @@ function nestedShellHasUnsafeStartup(words: string[], commandIndex: number, comm
   for (let index = commandIndex + 1; index < words.length; index += 1) {
     const word = shellWordLiteral(words[index] ?? "");
     if (!word || isShellCommandSeparator(word)) break;
+    // `--` ends option parsing; any following `-f`/`--norc`/etc. is a positional
+    // operand, not a shell option, so it must not satisfy the fast-startup or
+    // no-startup-files flags below.
+    if (word === "--") break;
     if (word === "--login" || /^-[^-]*l/.test(word)) login = true;
     if (word === "--interactive" || /^-[^-]*i/.test(word)) interactive = true;
     if (word === "--noprofile") noProfile = true;
