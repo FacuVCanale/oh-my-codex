@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.20.5] - 2026-08-10
+
+Patch release for the exact 68-commit range `v0.20.4..13c08f84cb6c27750b8f5c4a4d5105faad074196`. No intentional breaking CLI or package-layout changes.
+
+### Fixed
+
+- **Darwin detached finalization** — bind readiness and metadata to live launch authority, tear down exact HUD/leader panes, and return control only after finalization (#3472).
+- **Session and hook authority** — finalize exact indeterminate bindings, revalidate directory capabilities, expose trusted lock diagnostics, silence indeterminate Stop handling, and prevent authorization-failure reinjection (#3416, #3421, #3471, #3472).
+- **Ralplan lifecycle and diagnostics** — preserve preflight state, report detected versions structurally, clear stale owner state, permit typed consensus delegation, and recognize Codex 0.148 alpha versions (#3450, #3455, #3456, #3473).
+- **Windows/setup durability** — tolerate directory `fsync` and mode-synthesis platform differences while preserving user launch preferences and project scope (#3448, #3449, #3467, #3468).
+- **Team/tmux boundaries** — explain foreign pane topology and preserve source-authority separator argv boundaries (#3434, #3460).
+- **Plugin/runtime packaging** — make packed runtime/cwd checks deterministic, bind detached state to launch context, and validate native process identity readiness (#3395, #3436, #3454, #3461, #3470).
+
+### Changed
+
+- Updated `windows-sys` from 0.59 to 0.61.2, `tar-stream` from 2.2.0 to 3.2.0, `@types/tar-stream` from 2.2.3 to 3.1.4, `@biomejs/biome` from 2.5.4 to 2.5.6, and `@types/node` from 26.1.1 to 26.1.2 (#3429–#3432).
+
 ## [0.20.4] - 2026-07-28
 
 Patch release for the reliability, workflow-safety, and native-hook trust work in `v0.20.3..73cb50c125c11aca0654b8841e690f011eb5f43f`, plus one additive, backward-compatible feature. No intentional breaking CLI or package-layout changes.

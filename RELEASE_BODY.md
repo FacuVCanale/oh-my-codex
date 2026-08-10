@@ -1,39 +1,23 @@
-# oh-my-codex 0.20.4
+# oh-my-codex 0.20.5
 
-`0.20.4` is a patch release for the reliability, workflow-safety, and native-hook trust work in the exact range `v0.20.3..73cb50c125c11aca0654b8841e690f011eb5f43f`, plus one additive, backward-compatible feature.
+`0.20.5` is a patch release for the exact range `v0.20.4..13c08f84cb6c27750b8f5c4a4d5105faad074196` (68 commits, 35 merged PRs). It contains no intentional breaking CLI or package-layout changes.
 
 ## Highlights
 
-- Dead session-pointer lock recovery with identity-revalidated, no-clobber reversible claims, resumable checkpoints, and atomic quarantine (#3261, #3262; issue #3256).
-- Team startup rollback bound to exact owned panes with split-proof reconciliation, worker liveness pinning, leader session pointer ownership, stale notice invalidation, terminal follow-up boundary guards, and fail-closed managed Codex bypass rejection (#3265; #3231, #3228, #3229, #3230, #3232; issue #3224).
-- Native hook trust and path canonicalization: exact absolute package CLI status trusted (#3333; issues #3320, #3322, #3323, #3325, #3321, #3327), conductor mutation roots and macOS policy/fixture paths canonicalized, planning state transport guards repaired (#3343, #3344, #3348, #3349, #3350, #3351, #3352, #3353).
-- Ultragoal goal-status preservation, canonical state path binding, aggregate completion persistence, and finite Codex goal tool authorization under Main-root Conductor (#3301, #3305, #3294, #3297, #3295, #3300, #3304).
-- State authoritative runtime root with session-scoped authority, authenticated fixtures, and plugin authority isolation (#3160).
-- Opt-in Herdr lifecycle/status bridge Phase 1 (#3241, #3242).
-- Ralplan review authority remains fail-closed without an official host consensus receipt, and autopilot preflight fails before deep-interview and Architect/Critic review work when the receipt verifier is unavailable (#3270).
+- **Darwin detached return-to-shell and finalization** — detached launches now bind readiness and metadata to the live pane, retain exact HUD/leader authority through teardown, release attach only after finalization, and exercise the return-to-shell path on macOS (#3472).
+- **Session and hook authority** — exact indeterminate bindings are finalized with synchronous directory-capability revalidation; trusted lock inspection is available for diagnostics; identity-indeterminate Stop handling is silent; authorization failures are no longer reinjected (#3416, #3421, #3471, #3472).
+- **Ralplan diagnostics and lifecycle** — preflight remains state-preserving, reports structured detected-version diagnostics, clears stale owner-scoped state, permits typed consensus delegation, and recognizes Codex 0.148 alpha versions (#3450, #3455, #3456, #3473).
+- **Windows and setup durability** — directory `fsync` `EPERM`, hook mode synthesis, and mode read-back are tolerated on Windows; launch repair preserves user notify/reasoning settings and project scope (#3448, #3449, #3467, #3468).
+- **Team/tmux boundaries** — foreign pane topology is explained rather than claimed, and source-authority separator argv boundaries are preserved (#3434, #3460).
+- **Plugin/runtime and packed-install fixes** — packed runtime provisioning and cwd checks are deterministic, ambient session state is scrubbed, detached OMX state is bound to launch context, and Doctor validates native process-identity readiness (#3395, #3436, #3454, #3461, #3470).
+- **Dependencies** — `windows-sys` 0.59→0.61.2, `tar-stream` 2.2.0→3.2.0, `@types/tar-stream` 2.2.3→3.1.4, `@biomejs/biome` 2.5.4→2.5.6, and `@types/node` 26.1.1→26.1.2 (#3429–#3432).
 
-> **Current status / supersession (ADR 3212):** Local leader attestation and adapted role intent no longer authorize. Typed routing/tracker evidence are lifecycle/diagnostic only. On `role_routing_unavailable` adapted Ralplan authority attempts, installed role-intent/preflight fails closed with `unsupported_documented_leader_proof`. Consensus is unavailable with `documented_host_consensus_receipt_unavailable` absent an official host receipt.
+## Compatibility
 
-## Additional fixes
-
-- Resumed session cancel ownership reconciliation (#3280, #3290, #3214).
-- Root session self-reopen prevention (#3284, #3289).
-- Identity-indeterminate pointer recovery (#3324, #3332).
-- State alias resolution and stale binding revalidation (#3308, #3272, #3298).
-- Deep-interview cancel hook ownership and PreToolUse self-lock fix (#3293, #3299, #3240).
-- HUD teardown on child exit and deferred resize guards (#3267, #3292, #3296).
-- Native Stop hook bounds: session-scoped sloppy fallback audit, pointer loop bounds, paused guidance bounds, unmatched Stop silence (#3347, #3238, #3237, #3254).
-- Native sidecar and collaboration authority scoping (#3244, #3235, #3264, #3317).
-- Standalone Conductor activation guard and unauthoritative plan bootstrap rejection (#3311, #3312, #3326).
-- Read-only discovery misclassification fix (#3313, #3314, #3318).
-- Auth metadata validation, oversized hook stdin drain, nonexistent assignment guidance removal (#3276, #3273, #3346).
-- Windows session owner PID, Bun install ownership, tmux separator argv boundaries (#3260, #3259, #3258).
-- Ralplan preflight guidance scoping and PowerShell psmux pane safety (#3255, #3145).
-- Autopilot host-receipt preflight and native cache integrity fail-closed (#3270, #3285).
-- Dependency updates: libc, serde, serde_json, @modelcontextprotocol/sdk, @biomejs/biome, c8, @types/yauzl, @types/yazl.
+Patch release with no intentional breaking contract. Publication, tag, GitHub Release, and npm availability remain pending the owner-authorized promotion lane.
 
 ## Contributors
 
-Thanks to Bellman (@Yeachan-Heo) for the majority of commits in this range, with additional contributions from @achieve0410, @bohe76, @chief-impact7, @don9x2E, @huajuan404, @ictechgy, @lux-02, @masterFoad, and @WangErgouaaaa, plus @app/dependabot for dependency updates.
+Thanks to Bellman (@Yeachan-Heo) for the majority of commits in this range, with an additional contribution from @ev78394, plus @app/dependabot for dependency updates.
 
-**Full Changelog**: [`v0.20.3...v0.20.4`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.20.3...v0.20.4)
+**Full Changelog**: [`v0.20.4...v0.20.5`](https://github.com/Yeachan-Heo/oh-my-codex/compare/v0.20.4...v0.20.5)
