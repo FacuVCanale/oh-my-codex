@@ -13817,7 +13817,16 @@ function inspectConductorRuntimeExecutions(command: string, cwd?: string, depth 
         inspection.uninspectedCommandNames.push(commandName);
       } else if (isNestedShellCommandWord(commandName)) {
         const nestedIndex = findShellCommandStringArgIndex(words, commandIndex + 1);
-        if (commandSetsShellStartup || nestedShellHasUnsafeStartup(words, commandIndex, index) || (nestedIndex === null && firstInterpreterScriptOperands(words, commandIndex).length === 0)) {
+        const nestedShellUnsafeStartup = nestedShellHasUnsafeStartup(words, commandIndex, index);
+        // A `zsh -f` (fast startup) invocation reads no startup files
+        // (.zshenv/.zprofile/.zshrc/.zlogin), so ambient BASH_ENV/ENV/ZDOTDIR
+        // cannot influence it. Ambient shell-startup variables only matter for
+        // invocation shapes that actually read them (e.g. non-interactive bash
+        // reads $BASH_ENV; zsh without -f reads $ZDOTDIR/.zshenv), so a
+        // fast-startup zsh stays positively classified instead of being denied
+        // as an uninspected runtime.
+        const zshFastStartup = commandName === "zsh" && !nestedShellUnsafeStartup;
+        if ((commandSetsShellStartup && !zshFastStartup) || nestedShellUnsafeStartup || (nestedIndex === null && firstInterpreterScriptOperands(words, commandIndex).length === 0)) {
           inspection.uninspectedOtherRuntimeCount += 1;
           inspection.uninspectedCommandNames.push(commandName);
         }
