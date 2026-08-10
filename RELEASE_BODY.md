@@ -12,6 +12,8 @@
 - **Plugin/runtime and packed-install fixes** — packed runtime provisioning and cwd checks are deterministic, ambient session state is scrubbed, detached OMX state is bound to launch context, and Doctor validates native process-identity readiness (#3395, #3436, #3454, #3461, #3470).
 - **Dependencies** — `windows-sys` 0.59→0.61.2, `tar-stream` 2.2.0→3.2.0, `@types/tar-stream` 2.2.3→3.1.4, `@biomejs/biome` 2.5.4→2.5.6, and `@types/node` 26.1.1→26.1.2 (#3429–#3432).
 
+> **Current status / supersession (ADR 3212):** Local leader attestation and adapted role intent do not authorize. Typed routing and tracker evidence are lifecycle or diagnostic evidence only. When `role_routing_unavailable` applies to an adapted Ralplan authority attempt, installed role-intent and preflight fail closed with `unsupported_documented_leader_proof`. Ralplan consensus remains unavailable with `documented_host_consensus_receipt_unavailable` because no official host receipt verifier exists; native Architect/Critic evidence alone cannot release the transition.
+
 ## Compatibility
 
 Patch release with no intentional breaking contract. Publication, tag, GitHub Release, and npm availability remain pending the owner-authorized promotion lane.
