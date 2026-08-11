@@ -9,7 +9,7 @@ export const RALPLAN_ACTIVE_PHASES = [
 ] as const;
 
 export type RalplanActivePhase = (typeof RALPLAN_ACTIVE_PHASES)[number];
-export type RalplanTerminalPhase = 'complete' | 'cancelled' | 'failed';
+export type RalplanTerminalPhase = 'complete' | 'cancelled' | 'failed' | 'awaiting_execution_handoff';
 export type RalplanReviewVerdict = 'approve' | 'iterate' | 'reject';
 export type RalplanExecutionLane = 'ultragoal' | 'team' | 'ralph' | 'conductor' | 'execution' | 'none';
 
@@ -101,7 +101,7 @@ export interface RunRalplanConsensusOptions {
 }
 
 export interface RalplanRuntimeResult {
-  status: 'completed' | 'failed' | 'cancelled';
+  status: 'completed' | 'failed' | 'cancelled' | 'awaiting_execution_handoff';
   iteration: number;
   phase: RalplanTerminalPhase;
   planningComplete: boolean;
@@ -235,15 +235,23 @@ async function hasCompletedNativeReviewEvidence(
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
-  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean } = {},
+  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean; iteration?: number } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
+  // P1-3: stamp the authoritative global Ralplan loop iteration as
+  // review_cycle on both role reviews. Never derive from per-role array
+  // lengths, which diverge on Architect revision/retry.
+  const authoritativeCycle = typeof options.iteration === 'number' ? options.iteration : 1;
+  // P1-2: stamp authoritative sequence_index (architect=1, critic=2) from
+  // the trusted runtime, so external executors that omit it still produce
+  // correctly ordered persisted artifacts. Forged/reordered persisted
+  // artifacts are caught by the gate validator.
   const ralplanArchitectReview = latestArchitect
-    ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
+    ? { ...latestArchitect, agent_role: 'architect' as const, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 1 }
     : null;
   const ralplanCriticReview = latestCritic
-    ? { ...latestCritic, agent_role: 'critic' as const, iteration: criticReviews.length }
+    ? { ...latestCritic, agent_role: 'critic' as const, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 2 }
     : null;
   return {
     required: true,
@@ -354,6 +362,7 @@ export async function runRalplanConsensus(
     cwd,
     sessionId: options.sessionId,
     requireNativeSubagents: options.requireNativeSubagents,
+    get iteration() { return iteration; },
   };
   const drafts: RalplanDraftResult[] = [];
   const architectReviews: RalplanReviewResult[] = [];
@@ -518,6 +527,42 @@ export async function runRalplanConsensus(
 
       if (consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable' || iteration >= maxIterations) {
         const hostReceiptUnavailable = consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable';
+        const reviewsApproved = hostReceiptUnavailable
+          && isApprovingReviewPair(architectReview, criticReview, options.requireNativeSubagents === true)
+          && (options.requireNativeSubagents !== true
+            || await hasCompletedNativeReviewEvidence(cwd, options.sessionId, architectReview, criticReview));
+        if (reviewsApproved) {
+          // #3463: Architect→Critic lifecycle consensus is complete. The host
+          // receipt verifier is unavailable, but the transition is reachable
+          // via a user-authorized execution handoff (ralplan_execution_handoff).
+          // Terminalize as awaiting_execution_handoff so the workflow surfaces
+          // the actionable next step instead of an unreachable hard failure.
+          await updateRalplanState(cwd, {
+            active: false,
+            iteration,
+            current_phase: 'awaiting_execution_handoff',
+            completed_at: new Date().toISOString(),
+            planning_complete: true,
+            latest_plan_path: latestPlanPath,
+            latest_critic_verdict: criticReview.verdict,
+            latest_critic_summary: criticReview.summary,
+            ralplan_consensus_gate: consensusGate,
+            review_history: reviewHistory,
+            status_message: 'Status: awaiting_execution_handoff — Architect and Critic lifecycle consensus is complete. Authorize the transition to Ultragoal with a ralplan_execution_handoff (authorized_by_user: true, session-bound, review-cycle-bound). This is a user-authorized handoff distinct from host-consensus authority.',
+          });
+          return {
+            status: 'awaiting_execution_handoff',
+            iteration,
+            phase: 'awaiting_execution_handoff',
+            planningComplete: true,
+            drafts,
+            architectReviews,
+            criticReviews,
+            ralplanConsensusGate: consensusGate,
+            latestPlanPath,
+            artifacts: aggregatedArtifacts,
+          };
+        }
         const error = hostReceiptUnavailable
           ? 'documented_host_consensus_receipt_unavailable'
           : `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
