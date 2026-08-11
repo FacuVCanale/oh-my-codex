@@ -254,7 +254,7 @@ function runTmux(args: string[], preserveStdout = false): { ok: true; stdout: st
 export function parseSplitWindowPaneId(stdout: string, expectedReceipt?: string): string | null {
   const match = expectedReceipt === undefined
     ? /^(%\d+)(?:\r?\n)?$/.exec(stdout)
-    : /^(%\d+)\t([^\r\n\t]+)(?:\r?\n)?$/.exec(stdout);
+    : /^(%\d+)(?::|\t)([^\r\n:\t]+)(?:\r?\n)?$/.exec(stdout);
   if (!match || (expectedReceipt !== undefined && match[2] !== expectedReceipt)) return null;
   return match[1];
 }
@@ -337,8 +337,26 @@ function sourceAuthorityPredicate(source: SourcePaneAuthority): string {
   ].reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
 
+const SOURCE_TRANSACTION_RECEIPT_PATTERN = /^omx_source_[A-Za-z0-9_]+$/;
+const SPLIT_WINDOW_PANE_FORMAT = "-F '#{pane_id}'";
+
 function sourceTransactionReceipt(): string {
-  return `omx_source_${process.pid}_${Date.now()}_${randomBytes(16).toString('hex')}`;
+  const receipt = `omx_source_${process.pid}_${Date.now()}_${randomBytes(16).toString('hex')}`;
+  if (!SOURCE_TRANSACTION_RECEIPT_PATTERN.test(receipt)) {
+    throw new Error('tmux_source_transaction_receipt_invalid');
+  }
+  return receipt;
+}
+
+export function bindSplitWindowReceiptFormat(effect: string, receipt: string): string {
+  if (!SOURCE_TRANSACTION_RECEIPT_PATTERN.test(receipt)) {
+    throw new Error('tmux_source_transaction_receipt_invalid');
+  }
+  const firstFormatIndex = effect.indexOf(SPLIT_WINDOW_PANE_FORMAT);
+  if (firstFormatIndex < 0 || effect.indexOf(SPLIT_WINDOW_PANE_FORMAT, firstFormatIndex + SPLIT_WINDOW_PANE_FORMAT.length) >= 0) {
+    throw new Error('tmux_split_window_format_contract_invalid');
+  }
+  return `${effect.slice(0, firstFormatIndex)}-F '#{pane_id}:${receipt}'${effect.slice(firstFormatIndex + SPLIT_WINDOW_PANE_FORMAT.length)}`;
 }
 
 function bindSplitReceiptToPaneCommand(command: string, receipt: string): string {
@@ -357,7 +375,7 @@ export function runSourceAuthorizedTmux(source: SourcePaneAuthority, effect: str
   return receipt;
 }
 
-function runSourceAuthorizedSplit(
+export function runSourceAuthorizedSplit(
   source: SourcePaneAuthority,
   buildEffect: (receipt: string) => string,
 ): string {
@@ -374,7 +392,7 @@ function runSourceAuthorizedSplit(
   const effect = buildEffect(receipt);
   const result = runTmux([
     'if-shell', '-F', '-t', source.paneId, sourceAuthorityPredicate(source),
-    effect.replace("-F '#{pane_id}'", `-F '#{pane_id}\\t${receipt}'`),
+    bindSplitWindowReceiptFormat(effect, receipt),
     "display-message -p ''",
   ], true);
   if (!result.ok) throw new Error(`tmux source authority transaction failed: ${result.stderr}`);

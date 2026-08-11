@@ -63,6 +63,7 @@ import {
   waitForWorkerReadyAsync,
   paneIsBootstrapping,
   parseSplitWindowPaneId,
+  bindSplitWindowReceiptFormat,
   classifyWorkerStartupInjectSafety,
   checkWorkerStartupInjectSafety,
   dismissTrustPromptIfPresent,
@@ -289,6 +290,12 @@ if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "
   receipt="$(printf '%s' "$success" | sed -n "s/.*\\(omx_source_[A-Za-z0-9_]*\\).*/\\1/p")"
   effect="${'$'}{success%% ; display-message*}"
   eval "set -- $effect"
+  split_format=''
+  previous=''
+  for arg in "${'$'}@"; do
+    if [ "$previous" = '-F' ]; then split_format="$arg"; break; fi
+    previous="$arg"
+  done
   output="$($0 "${'$'}@")" || exit 1
   case "${'$'}1" in
     split-window)
@@ -302,7 +309,7 @@ if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "
         mkdir -p "$source_state"
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$session" "$session_id" "$created" "$index" "$window_id" "$created_pid" > "$source_state/$created_pane"
       }
-      printf '%s\t%s\n' "$created_pane" "$receipt"
+      printf '%s\n' "$split_format" | sed "s/#{pane_id}/$created_pane/g"
       ;;
     *) printf '%s\\n' "$receipt" ;;
   esac
@@ -342,7 +349,7 @@ esac
         const captured = spawnSync('tmux', ['display-message', '-p', '-t', '%1', '#{session_name}\t#{session_id}\t#{session_created}\t#{window_index}\t#{window_id}\t#{pane_id}\t#{pane_pid}'], { encoding: 'utf8' });
         assert.equal(captured.status, 0);
         assert.equal(captured.stdout, 'recycled\t$1\t1\t0\t@0\t%1\t101\n');
-        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}\tomx_source_recycled' ; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
+        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}:omx_source_recycled' ; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
         assert.equal(guarded.stdout, '');
         assert.equal(fs.existsSync(`${logPath}.split`), false);
@@ -376,7 +383,7 @@ esac
         const guarded = spawnSync('tmux', [
           'if-shell', '-F', '-t', '%1',
           '#{&&:#{==:#{pane_dead},0},#{&&:#{==:#{pane_id},%1},#{&&:#{==:#{pane_pid},101},#{&&:#{==:#{session_id},$1},#{&&:#{==:#{session_created},1},#{&&:#{==:#{window_id},@0},#{==:#{@omx_team_pane_owner_id},team:original}}}}}}',
-          `split-window -h -t %1 -P -F '#{pane_id}\\t${receipt}' ; display-message -p '${receipt}'`,
+          `split-window -h -t %1 -P -F '#{pane_id}:${receipt}' ; display-message -p '${receipt}'`,
           "display-message -p ''",
         ], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
@@ -4430,6 +4437,9 @@ describe('createTeamSession tmux instance tagging', () => {
       ['%2', undefined, '%2'],
       ['%2\n', undefined, '%2'],
       ['%2\r\n', undefined, '%2'],
+      ['%2:omx_source_receipt', 'omx_source_receipt', '%2'],
+      ['%2:omx_source_receipt\n', 'omx_source_receipt', '%2'],
+      ['%2:omx_source_receipt\r\n', 'omx_source_receipt', '%2'],
       ['%2\tomx_source_receipt', 'omx_source_receipt', '%2'],
       ['%2\tomx_source_receipt\n', 'omx_source_receipt', '%2'],
       ['notice\n%2\n', undefined, null],
@@ -4439,11 +4449,46 @@ describe('createTeamSession tmux instance tagging', () => {
       ['%2\n\n', undefined, null],
       ['%2 warning\n', undefined, null],
       [' %2\n', undefined, null],
-      ['%2\tomx_source_other\n', 'omx_source_receipt', null],
-      ['%2\tomx_source_receipt\n%3\tomx_source_receipt\n', 'omx_source_receipt', null],
+      ['%2', 'omx_source_receipt', null],
+      ['%2\\tomx_source_receipt\n', 'omx_source_receipt', null],
+      ['%2:omx_source_other\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt:trailing\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt trailing\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt\n%3:omx_source_receipt\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt\nnotice\n', 'omx_source_receipt', null],
       ['notice only\n', undefined, null],
     ] as const) {
       assert.equal(parseSplitWindowPaneId(stdout, receipt), expected);
+    }
+  });
+
+  it('binds one exact tmux-safe split receipt format and rejects malformed construction inputs', () => {
+    const receipt = 'omx_source_123_456_deadbeef';
+    const effect = "split-window -h -P -F '#{pane_id}' -t %1 'worker command'";
+    assert.equal(
+      bindSplitWindowReceiptFormat(effect, receipt),
+      "split-window -h -P -F '#{pane_id}:omx_source_123_456_deadbeef' -t %1 'worker command'",
+    );
+    assert.throws(
+      () => bindSplitWindowReceiptFormat("split-window -h -P -t %1 'worker command'", receipt),
+      /tmux_split_window_format_contract_invalid/,
+    );
+    assert.throws(
+      () => bindSplitWindowReceiptFormat(`${effect} ${effect}`, receipt),
+      /tmux_split_window_format_contract_invalid/,
+    );
+    for (const invalidReceipt of [
+      'omx_source_bad:field',
+      'omx_source_#{pane_id}',
+      'omx_source_bad;kill-pane',
+      "omx_source_bad'quote",
+      'omx_source_bad receipt',
+      'wrong_prefix_receipt',
+    ]) {
+      assert.throws(
+        () => bindSplitWindowReceiptFormat(effect, invalidReceipt),
+        /tmux_source_transaction_receipt_invalid/,
+      );
     }
   });
 
