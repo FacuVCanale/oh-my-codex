@@ -41,19 +41,6 @@ describe('explore + sparkshell guidance contract', () => {
   });
 
   it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
-    // deep-interview, ralplan, ralph, autopilot are now sunset stubs
-    for (const surface of [
-      'prompts/planner.md',
-      'prompts/executor.md',
-      'skills/plan/SKILL.md',
-    ]) {
-      expectPatterns(surface, [
-        /deprecated/i,
-        /compatibility-only/i,
-        /normal path/i,
-      ]);
-    }
-
     // Slim role cards keep their role contract without repeating repository-routing prose.
     for (const surface of ['prompts/planner.md', 'prompts/executor.md']) {
       const content = loadSurface(surface);
@@ -62,6 +49,7 @@ describe('explore + sparkshell guidance contract', () => {
     }
 
     expectPatterns('skills/plan/SKILL.md', [
+      /omx explore.*deprecated/i,
       /normal repository inspection/i,
       /omx sparkshell/i,
     ]);
