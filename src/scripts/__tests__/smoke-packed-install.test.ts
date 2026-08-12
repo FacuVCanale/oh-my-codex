@@ -1450,7 +1450,8 @@ test('packed install removes same-user native-anchor authentication', async () =
   const hookSource = await readFile(join(process.cwd(), 'src/scripts/codex-native-hook.ts'), 'utf8');
   const cliSource = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf8');
   assert.doesNotMatch(hookSource, /isVerifiedPluginLauncherClaim|classifyNativeTranscriptProvenance|signNativeLeaderAttestation|native-anchor-auth/);
-  assert.match(hookSource, /unsupported_documented_leader_proof/);
+  assert.match(hookSource, /#3497|advisory-only|sanitizeNativeHookOutput|capability-warnings/);
+  assert.doesNotMatch(hookSource, /if \(denial\) return \{ hookEventName, omxEventName, skillState: null, outputJson: denial \}/);
   assert.match(cliSource, /execWithOverlay[\s\S]+OMX_CODEX_LAUNCH_ID[\s\S]+buildHudRuntimeEnv\(\{ sessionId/);
 });
 

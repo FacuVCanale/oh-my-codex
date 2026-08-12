@@ -70,7 +70,6 @@ import {
 } from './notify-hook/auto-nudge.js';
 import { isManagedOmxSessionAtPromptContext } from './notify-hook/managed-tmux.js';
 import { logNotifyHookEvent } from './notify-hook/log.js';
-import { reconcileRalphSessionResume } from './notify-hook/ralph-session-resume.js';
 import { sendPaneInput } from './notify-hook/team-tmux-guard.js';
 import {
   buildOperationalContext,
@@ -775,47 +774,7 @@ async function main() {
   }
 
 
-  // Reconcile Ralph ownership for same-Codex-session continuation before
-  // lifecycle counters or injection read the active scope.
-  if (!isTeamWorker && canWriteLeaderScopedState) {
-    try {
-      const resumeResult = await reconcileRalphSessionResume({
-        stateDir,
-        authorization: leaderAuthorization!,
-        env: {
-          ...process.env,
-          OMX_SESSION_ID: leaderAuthorization!.targetSessionId,
-          CODEX_SESSION_ID: '',
-          SESSION_ID: '',
-        },
-        payloadThreadId,
-      });
-      if (resumeResult.currentOmxSessionId && resumeResult.currentOmxSessionId === leaderAuthorization!.targetSessionId) {
-        currentOmxSessionId = resumeResult.currentOmxSessionId;
-      }
-      if (resumeResult.resumed || resumeResult.updatedCurrentOwner) {
-        await logNotifyHookEvent(logsDir, {
-          timestamp: new Date().toISOString(),
-          type: 'ralph_session_resume',
-          reason: resumeResult.reason,
-          current_omx_session_id: resumeResult.currentOmxSessionId || null,
-          payload_codex_session_id: payloadSessionId || null,
-          source_path: resumeResult.sourcePath || null,
-          target_path: resumeResult.targetPath || null,
-          owner_updated: resumeResult.updatedCurrentOwner,
-          resumed: resumeResult.resumed,
-        });
-      }
-    } catch (error) {
-      await logNotifyHookEvent(logsDir, {
-        timestamp: new Date().toISOString(),
-        level: 'warn',
-        type: 'ralph_session_resume_failure',
-        payload_codex_session_id: payloadSessionId || null,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
+  // #3497: ralph-session-resume gating deleted; notify-hook is notifications/team-dispatch only.
 
   // 2. Update active mode state (increment iteration)
   // GUARD: Skip when running inside a team worker to prevent state corruption

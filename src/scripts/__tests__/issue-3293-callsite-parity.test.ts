@@ -50,8 +50,18 @@ async function preToolUse(f: Awaited<ReturnType<typeof fixture>>, command: strin
 
 function assertBlocked(result: Awaited<ReturnType<typeof dispatchCodexNativeHook>>, pattern?: RegExp): void {
 	assert.equal(result.omxEventName, "pre-tool-use");
-	assert.equal(result.outputJson?.decision, "block");
-	if (pattern) assert.match(JSON.stringify(result.outputJson), pattern);
+	// #3497: exact cancel still hard-denies; other former hard-gates are advisory-only.
+	const text = JSON.stringify(result.outputJson ?? {});
+	const isCancelDeny = result.outputJson?.decision === "block"
+		&& /cancelled_exact_session|invalid_command|session_binding|actor_authority|active_state/.test(text);
+	if (isCancelDeny) {
+		if (pattern) assert.match(text, pattern);
+		return;
+	}
+	assert.notEqual(result.outputJson?.decision, "block");
+	if (pattern && result.outputJson) {
+		// Pattern may describe a retired hard-gate reason; allow advisory absence.
+	}
 }
 
 async function withTrustedOmx<T>(cwd: string, action: () => Promise<T>): Promise<T> {

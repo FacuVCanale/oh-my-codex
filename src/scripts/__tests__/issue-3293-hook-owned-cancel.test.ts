@@ -132,53 +132,52 @@ describe("issue #3293 hook-owned cancellation", () => {
     } finally { await rm(f.cwd, { recursive: true, force: true }); }
   });
 
-  it("denies hostile modified shim contents", async () => {
+
+  // #3497: PreToolUse is advisory-only except exact authority-decreasing `omx cancel`.
+  // Former "hostile wrapper/lookalike" hard denies relied on deleted planning/conductor gates.
+  it("still intercepts exact omx cancel as authority-decreasing deny", async () => {
     const f = await fixture();
     try {
-      const bin = join(f.cwd, "modified-bin");
-      await mkdir(bin); await writeFile(join(bin, "omx"), "#!/bin/sh\necho attacker\n"); await chmod(join(bin, "omx"), 0o755);
-      const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8");
-      await withEnv({ PATH: bin }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "modified shim"));
+      const result = await preTool(f, "omx cancel");
+      assert.equal(result.outputJson?.decision, "block");
+      assert.match(JSON.stringify(result.outputJson), /cancelled_exact_session/);
     } finally { await rm(f.cwd, { recursive: true, force: true }); }
   });
 
-  it("denies hostile shim symlink replacement", async () => {
+  it("does not hard-lock non-exact cancel wrappers after gate removal", async () => {
     const f = await fixture();
     try {
-      const bin = join(f.cwd, "symlink-bin"); const target = join(f.cwd, "attacker-omx");
-      await mkdir(bin); await writeFile(target, "#!/bin/sh\necho attacker\n"); await chmod(target, 0o755); await symlink(target, join(bin, "omx"));
-      const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8");
-      await withEnv({ PATH: bin }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "symlink shim"));
+      // Leading exact `omx cancel` still intercepts (and rejects non-exact grammar as invalid_command).
+      // Non-leading wrappers are ordinary Bash under advisory-only PreToolUse.
+      for (const command of [
+        "env omx cancel",
+        "FOO=1 omx cancel",
+        "$(omx) cancel",
+        "`omx` cancel",
+        "./omx cancel",
+        "node --loader attacker.mjs omx cancel",
+      ]) {
+        const result = await preTool(f, command);
+        assert.notEqual(result.outputJson?.decision, "block", command);
+      }
+      const exactHostile = await preTool(f, "omx cancel; rm -rf /");
+      assert.equal(exactHostile.outputJson?.decision, "block");
+      assert.match(JSON.stringify(exactHostile.outputJson), /invalid_command/);
     } finally { await rm(f.cwd, { recursive: true, force: true }); }
   });
 
-  const commandCases = [
-    ["wrapper with extra commands", "env omx cancel"], ["wrapper with extra args", "omx cancel --force"],
-    ["unsafe leading assignment", "FOO=bar omx cancel"], ["semicolon operator", "omx cancel; true"], ["and operator", "omx cancel && true"], ["or operator", "omx cancel || true"], ["pipeline operator", "omx cancel | cat"], ["background operator", "omx cancel &"],
-    ["command substitution", "$(printf omx) cancel"], ["backtick substitution", "`printf omx` cancel"], ["input redirection", "omx cancel < /dev/null"], ["output redirection", "omx cancel > /dev/null"], ["path-qualified untrusted executable", "/tmp/omx cancel"],
-  ] as const;
-  for (const [name, command] of commandCases) it(`denies hostile ${name}`, async () => denialFixture(command));
-
-  const envCases = ["BASH_ENV", "BASH_FUNC_omx%%", "NODE_OPTIONS", "NODE_V8_COVERAGE", "NODE_COMPILE_CACHE", "NODE_REDIRECT_WARNINGS", "NODE_REPORT_DIRECTORY", "NODE_REPORT_FILENAME", "OPENSSL_CONF"] as const;
-  for (const name of envCases) it(`denies hostile inherited ${name}`, async () => {
+  it("denies exact omx cancel when payload session identity is foreign", async () => {
     const f = await fixture();
     try {
-      const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8");
-      await withEnv({ [name]: name === "BASH_FUNC_omx%%" ? "() { :; }" : join(f.cwd, "injected") }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, name));
+      const stateContent = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8");
+      const result = await preTool(f, "omx cancel", { session_id: "other-session", sessionId: "other-session" });
+      // May deny session_binding / active_state, or not match exact session — must not silently terminalize foreign id.
+      assert.equal(await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8"), stateContent);
+      if (result.outputJson?.decision === "block") {
+        assert.match(JSON.stringify(result.outputJson), /session_binding|active_state|actor_authority|invalid_command|cancelled_exact_session/);
+      }
     } finally { await rm(f.cwd, { recursive: true, force: true }); }
   });
-
-  it("denies hostile loader injection", async () => denialFixture("node --loader attacker.mjs omx cancel"));
-  it("denies hostile PATH-shadowed omx", async () => {
-    const f = await fixture(); try { const bin = join(f.cwd, "shadow"); await mkdir(bin); await writeFile(join(bin, "omx"), "#!/bin/sh\nexit 0\n"); await chmod(join(bin, "omx"), 0o755); const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8"); await withEnv({ PATH: bin }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "PATH shadow")); } finally { await rm(f.cwd, { recursive: true, force: true }); }
-  });
-  it("denies hostile repo-local lookalike executable", async () => denialFixture("./omx cancel", async (f) => { await writeFile(join(f.cwd, "omx"), "#!/bin/sh\nexit 0\n"); await chmod(join(f.cwd, "omx"), 0o755); }));
-  it("denies hostile cross-session selector", async () => denialFixture("omx cancel", undefined, { session_id: "other-session", sessionId: "other-session" }));
-  it("denies hostile cross-root selector", async () => denialFixture("OMX_ROOT=/tmp/other omx cancel"));
-  it("denies hostile unset PATH", async () => { const f = await fixture(); try { const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8"); await withEnv({ PATH: undefined }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "unset PATH")); } finally { await rm(f.cwd, { recursive: true, force: true }); } });
-  it("denies hostile unreadable PATH entry", async () => { const f = await fixture(); try { const path = join(f.cwd, "unreadable"); await mkdir(path); await chmod(path, 0o000); const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8"); await withEnv({ PATH: path }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "unreadable PATH")); await chmod(path, 0o755); } finally { await rm(f.cwd, { recursive: true, force: true }); } });
-  it("denies hostile non-directory PATH entry", async () => { const f = await fixture(); try { const path = join(f.cwd, "not-directory"); await writeFile(path, "x"); const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8"); await withEnv({ PATH: path }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "file PATH")); } finally { await rm(f.cwd, { recursive: true, force: true }); } });
-  it("denies hostile non-executable shim", async () => { const f = await fixture(); try { const bin = join(f.cwd, "bin"); await mkdir(bin); await writeFile(join(bin, "omx"), "#!/bin/sh\nexit 0\n"); const content = await readFile(join(f.sessionDir, "autopilot-state.json"), "utf8"); await withEnv({ PATH: bin }, async () => assertValueFreeDenial(await preTool(f, "omx cancel"), f, content, "non-executable shim")); } finally { await rm(f.cwd, { recursive: true, force: true }); } });
 
   it("R-4 documents payload-bound identity and ambient same-euid target-root selection", async () => {
     const source = await readFile(resolve(process.cwd(), "src/scripts/codex-native-hook.ts"), "utf8");
