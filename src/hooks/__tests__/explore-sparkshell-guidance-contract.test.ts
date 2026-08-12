@@ -60,10 +60,8 @@ describe('explore + sparkshell guidance contract', () => {
       /normal repository inspection/i,
       /omx sparkshell/i,
     ]);
-    expectPatterns('skills/ralph/SKILL.md', [
-      /normal repository inspection/i,
-      /omx sparkshell/i,
-    ]);
+    assert.match(loadSurface('skills/ralph/SKILL.md'), /was removed/i);
+    assert.match(loadSurface('skills/ralph/SKILL.md'), /\$ultragoal/i);
     // Sunset stubs should point to successor
     for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md']) {
       const content = loadSurface(stub);

@@ -147,14 +147,14 @@ describe('ultragoal docs contract', () => {
     assert.match(nativeHooksDoc, /keyword routing still takes precedence/i);
   });
 
-  it('documents deep-interview to ralplan to ultragoal as the README default workflow', () => {
+  it('documents the lightweight independently-invocable README workflow', () => {
     const readme = loadDoc('README.md');
 
-    assert.match(readme, /canonical default workflow with `\$deep-interview`, `\$ralplan`, and `\$ultragoal`/);
-    assert.match(readme, /standard workflow built around `\$deep-interview` -> `\$ralplan` -> `\$ultragoal`/);
-    assert.match(readme, /\$deep-interview "clarify the authentication change"[\s\S]*\$ralplan "approve the auth plan and review tradeoffs"[\s\S]*\$ultragoal "turn the approved plan into durable Codex goals"/);
-    assert.match(readme, /Use `\$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work/);
-    assert.match(readme, /Use `\$ralph` as an intentional alternate completion loop/);
+    assert.match(readme, /ordinary workflow is `understand -> execute -> verify -> report`/);
+    assert.match(readme, /Each skill is independently invocable; there is no fixed mandatory sequence/);
+    assert.match(readme, /`\$plan` — optional planning; use `\$plan --interview` for clarification/);
+    assert.match(readme, /`\$ultragoal` — durable multi-goal execution/);
+    assert.match(readme, /Inside an Ultragoal story, use `\$team` only when that story benefits from coordinated parallel execution/);
   });
 
   it('documents Team as the parallel execution engine while the leader owns checkpoints', () => {
