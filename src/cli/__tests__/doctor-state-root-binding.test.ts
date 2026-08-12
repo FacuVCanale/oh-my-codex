@@ -1,8 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   checkStateRootSessionBinding,
   formatStateRootSessionBindingDiagnostic,
+  repairStateProjections,
 } from '../doctor.js';
 import {
   readCanonicalSessionBindingSnapshot,
@@ -176,6 +180,61 @@ describe('doctor state-root/session binding diagnostics', () => {
       ].join(';');
       assert.equal(message, expected, testCase.source);
       assert.ok(message.length <= 240, testCase.source);
+    }
+  });
+
+  it('archives stale projections while preserving the current scope and unrelated artifacts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-doctor-repair-state-'));
+    try {
+      const stateRoot = join(cwd, '.omx', 'state');
+      const currentSession = join(stateRoot, 'sessions', 'current-session');
+      const staleSession = join(stateRoot, 'sessions', 'stale-session');
+      await mkdir(currentSession, { recursive: true });
+      await mkdir(staleSession, { recursive: true });
+      await writeFile(join(stateRoot, 'session.json'), JSON.stringify({
+        session_id: 'current-session',
+        cwd,
+        state_root: stateRoot,
+      }));
+      await writeFile(join(stateRoot, 'root-state.json'), 'root projection');
+      await writeFile(join(currentSession, 'current-state.json'), 'current projection');
+      await writeFile(join(staleSession, 'stale-state.json'), 'stale projection');
+      await writeFile(join(cwd, '.omx', 'plans.md'), 'keep plans');
+      await writeFile(join(cwd, '.omx', 'specs.md'), 'keep specs');
+      await writeFile(join(cwd, '.omx', 'context.md'), 'keep context');
+
+      const first = await repairStateProjections(cwd, {});
+      assert.equal(first.archived.length, 2);
+      assert.equal(await readFile(join(currentSession, 'current-state.json'), 'utf8'), 'current projection');
+      assert.equal(await readFile(join(stateRoot, 'session.json'), 'utf8') !== '', true);
+      assert.equal(await readFile(join(cwd, '.omx', 'plans.md'), 'utf8'), 'keep plans');
+      assert.equal(await readFile(join(cwd, '.omx', 'specs.md'), 'utf8'), 'keep specs');
+      assert.equal(await readFile(join(cwd, '.omx', 'context.md'), 'utf8'), 'keep context');
+      assert.equal(await readFile(join(cwd, '.omx', 'archive', 'state', 'root-state.json'), 'utf8'), 'root projection');
+      assert.equal(await readFile(join(cwd, '.omx', 'archive', 'state', 'sessions', 'stale-session', 'stale-state.json'), 'utf8'), 'stale projection');
+
+      const second = await repairStateProjections(cwd, {});
+      assert.deepEqual(second.archived, []);
+      assert.equal((await readdir(join(cwd, '.omx', 'archive', 'state'))).includes('root-state.json'), true);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not archive symlink projections without file ownership proof', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-doctor-repair-state-link-'));
+    try {
+      const stateRoot = join(cwd, '.omx', 'state');
+      await mkdir(stateRoot, { recursive: true });
+      const target = join(cwd, 'foreign-state.json');
+      const projection = join(stateRoot, 'foreign-state.json');
+      await writeFile(target, 'foreign');
+      await symlink(target, projection);
+      const result = await repairStateProjections(cwd, {});
+      assert.deepEqual(result.archived, []);
+      assert.equal(await readFile(projection, 'utf8'), 'foreign');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 });

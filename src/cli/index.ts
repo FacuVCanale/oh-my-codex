@@ -344,6 +344,9 @@ Options:
                 Clear the persisted AGENTS merge policy for this project root
   --dry-run     Show what would be done without doing it
   --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
+  --disable-hooks
+                Disable only OMX-owned hook registrations and related enablement; preserve foreign hooks and .omx artifacts
+  --repair-state Archive stale state projections under .omx/archive/ during omx doctor
   --legacy      Use legacy setup delivery for omx setup, overriding persisted plugin mode
   --install-mode <legacy|plugin>
                 Explicit setup install mode (canonical form; --legacy/--plugin are aliases)
@@ -1169,6 +1172,10 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
       await writeFile(destination, launchConfig, "utf-8");
       continue;
     }
+	if (entry.name === "plugins" && entry.isDirectory()) {
+		await cp(source, destination, { recursive: true });
+		continue;
+	}
     await linkOrCopyCodexHomeEntry(source, destination);
   }
   await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
@@ -3385,6 +3392,7 @@ export async function main(args: string[]): Promise<void> {
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
+    repairState: flags.has("--repair-state"),
   };
 
   if (flags.has("--help") && !commandOwnsLocalHelp(command)) {
@@ -3426,6 +3434,7 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "setup":
         await setup({
+          disableHooks: flags.has("--disable-hooks"),
           force: options.force,
           mergeAgents: options.mergeAgents,
           mergeAgentsPolicy: resolveSetupAgentsMergePolicyArg(args.slice(1)),

@@ -14,7 +14,7 @@ import {
 	type RegularFileDurabilityTracker,
 } from "../utils/file-durability.js";
 import { constants, existsSync, readFileSync, type Stats } from "fs";
-import { access, chown, lstat, mkdtemp, readdir, readFile, rmdir, rm } from "fs/promises";
+import { access, chown, lstat, mkdir, mkdtemp, readdir, readFile, rename, rmdir, rm } from "fs/promises";
 import { spawnSync } from "child_process";
 import { basename, dirname, join, relative } from "path";
 import { tmpdir } from "os";
@@ -30,6 +30,7 @@ import {
 } from "../utils/paths.js";
 import {
   readCanonicalSessionBindingSnapshot,
+  isModeStateFilename,
   normalizeSessionId,
   type CanonicalSessionBindingSnapshot,
   type StateRootSource,
@@ -131,6 +132,13 @@ interface DoctorOptions {
 	force?: boolean;
 	dryRun?: boolean;
 	team?: boolean;
+	repairState?: boolean;
+}
+
+export interface StateProjectionRepairResult {
+	archived: string[];
+	preserved: string[];
+	skipped: string[];
 }
 
 interface Check {
@@ -541,6 +549,101 @@ export function checkStateRootSessionBinding(
   return { name: "State root/session binding", status, message };
 }
 
+function stateProjectionArchivePath(
+	baseStateDir: string,
+	sourcePath: string,
+	archiveRoot: string,
+): string {
+	const relativePath = relative(baseStateDir, sourcePath);
+	return join(archiveRoot, "state", relativePath);
+}
+
+async function collisionSafeArchivePath(path: string): Promise<string> {
+	if (!existsSync(path)) return path;
+	const suffix = path.endsWith(".json") ? ".json" : "";
+	const stem = suffix ? path.slice(0, -suffix.length) : path;
+	for (let index = 1; ; index += 1) {
+		const candidate = `${stem}.${index}${suffix}`;
+		if (!existsSync(candidate)) return candidate;
+	}
+}
+
+/**
+ * Archive non-authoritative mode-state projections without interpreting their
+ * workflow contents. The canonical session pointer selects the one current
+ * session scope; all other mode projection files are stale by ownership.
+ */
+export async function repairStateProjections(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<StateProjectionRepairResult> {
+	const result: StateProjectionRepairResult = {
+		archived: [],
+		preserved: [],
+		skipped: [],
+	};
+	const snapshot = await readCanonicalSessionBindingSnapshot(cwd, env);
+	const baseStateDir = snapshot.baseStateDir;
+	if (!baseStateDir || ["resolution-error", "read-error", "malformed", "missing-recorded-cwd", "root-mismatch", "foreign-cwd"].includes(snapshot.status)) {
+		return result;
+	}
+
+	const currentSessionId = snapshot.state && ["usable", "identity-indeterminate"].includes(snapshot.status)
+		? normalizeSessionId(snapshot.state.session_id)
+		: undefined;
+	const stateDirs = [baseStateDir];
+	try {
+		const sessionsRoot = join(baseStateDir, "sessions");
+		const sessionEntries = await readdir(sessionsRoot, { withFileTypes: true });
+		for (const entry of sessionEntries) {
+			if (entry.isDirectory() && normalizeSessionId(entry.name) === entry.name) {
+				stateDirs.push(join(sessionsRoot, entry.name));
+			}
+		}
+	} catch {
+		// A missing sessions directory is normal; the canonical root is enough.
+	}
+	const archiveRoot = join(dirname(baseStateDir), "archive");
+	for (const stateDir of stateDirs) {
+		const isRoot = stateDir === baseStateDir;
+		const sessionId = isRoot ? undefined : basename(stateDir);
+		const preserveDir = isRoot
+			? currentSessionId === undefined
+			: sessionId === currentSessionId;
+		let entries: string[];
+		try {
+			entries = await readdir(stateDir);
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (!isModeStateFilename(entry)) continue;
+			const sourcePath = join(stateDir, entry);
+			if (preserveDir) {
+				result.preserved.push(sourcePath);
+				continue;
+			}
+			try {
+				const sourceStat = await lstat(sourcePath);
+				if (!sourceStat.isFile()) {
+					result.skipped.push(`${sourcePath}: not a regular projection file`);
+					continue;
+				}
+				const destination = await collisionSafeArchivePath(
+					stateProjectionArchivePath(baseStateDir, sourcePath, archiveRoot),
+				);
+				await mkdir(dirname(destination), { recursive: true });
+				await rename(sourcePath, destination);
+				result.archived.push(destination);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				result.skipped.push(`${sourcePath}: ${message}`);
+			}
+		}
+	}
+	return result;
+}
+
 export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (options.team) {
 		await doctorTeam();
@@ -551,6 +654,14 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   const bindingSnapshot = await readCanonicalSessionBindingSnapshot(cwd, process.env);
 	const scopeResolution = await resolveDoctorScope(cwd);
 	const paths = resolveDoctorPaths(cwd, scopeResolution.scope);
+	if (options.repairState) {
+		const repair = await repairStateProjections(cwd);
+		console.log(
+			`State projection repair: archived ${repair.archived.length}, preserved ${repair.preserved.length}, skipped ${repair.skipped.length}`,
+		);
+		for (const skipped of repair.skipped) console.log(`  skipped: ${skipped}`);
+		console.log();
+	}
 	const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
 	const recovery = await recoverNativeHookClaimJournal(
 		paths.codexHomeDir,

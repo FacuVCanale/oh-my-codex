@@ -119,6 +119,41 @@ function cloneRegistration(entry: HookRegistration): HookRegistration {
 }
 
 describe("omx setup/uninstall shared ownership for native hooks", () => {
+	it("setup --disable-hooks removes only OMX hooks and preserves .omx artifacts", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-setup-disable-hooks-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(wd, ".codex");
+			const planPath = join(wd, ".omx", "plans", "keep.md");
+			await mkdir(home, { recursive: true });
+			await mkdir(codexDir, { recursive: true });
+			await mkdir(dirname(planPath), { recursive: true });
+			await writeFile(planPath, "keep\n");
+
+			const initial = runOmx(wd, ["setup", "--scope", "project"], { HOME: home });
+			if (shouldSkipForSpawnPermissions(initial.error)) return;
+			assert.equal(initial.status, 0, initial.stderr || initial.stdout);
+			const hooksPath = join(codexDir, "hooks.json");
+			const hooks = await readHooksJson(hooksPath);
+			hooks.hooks = hooks.hooks ?? {};
+			hooks.hooks.Stop = [
+				makeUserCommandHook('node "/custom/stop.js"'),
+				...(hooks.hooks.Stop ?? []),
+			];
+			await writeHooksJson(hooksPath, hooks);
+
+			const disabled = runOmx(wd, ["setup", "--scope", "project", "--disable-hooks"], { HOME: home });
+			assert.equal(disabled.status, 0, disabled.stderr || disabled.stdout);
+			assert.match(disabled.stdout, /Disabled OMX hook registrations/);
+			const finalHooks = await readHooksJson(hooksPath);
+			assert.equal(countManagedHooks(finalHooks.hooks?.Stop), 0);
+			assert.ok(hookCommands(finalHooks.hooks?.Stop).includes('node "/custom/stop.js"'));
+			assert.equal(await readFile(planPath, "utf-8"), "keep\n");
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
   it("setup merges managed wrappers into an existing user-owned hooks.json", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-setup-hooks-existing-user-file-"));
     try {
