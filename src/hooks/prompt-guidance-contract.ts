@@ -258,7 +258,6 @@ export const SKILL_CONTRACTS: GuidanceSurfaceContract[] = [
     'code-review',
     'plan',
     'ralph',
-    'ralplan',
     'team',
   ].map((name) => ({
     id: name,
@@ -339,12 +338,12 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'ralplan-consensus-sequence',
     path: 'skills/ralplan/SKILL.md',
-    requiredPatterns: [rx('Planner'), rx('Architect'), rx('Critic'), rx('ADR')],
+    requiredPatterns: [rx('was removed'), rx('\\$plan')],
   },
   {
     id: 'deep-interview-question-gate',
     path: 'skills/deep-interview/SKILL.md',
-    requiredPatterns: [rx('omx\\s+question'), rx('Socratic|interview'), rx('ambiguity')],
+    requiredPatterns: [rx('was removed'), rx('\\$plan --interview')],
   },
   {
     id: 'cancel-safety-boundary',

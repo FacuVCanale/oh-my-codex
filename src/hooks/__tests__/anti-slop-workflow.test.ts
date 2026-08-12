@@ -113,10 +113,9 @@ describe('anti-slop workflow surfaces', () => {
     ]);
 
     assertMatchesAll(planSkill, [
-      /### Review Mode \(`--review`\)/,
-      /reviewer-only\s+pass/i,
-      /MUST\s+NOT\s+be\s+the\s+context\s+that\s+approves\s+it/i,
-      /cleanup\s+plan,\s*regression\s+tests/i,
+      /### Review \(`--review`\)/,
+      /Critic evaluation/i,
+      /APPROVED\/REVISE\/REJECT/i,
     ]);
   });
 

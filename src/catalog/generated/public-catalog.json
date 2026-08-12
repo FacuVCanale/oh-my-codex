@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-06-17T05:57:55.659Z",
+  "generatedAt": "2026-08-12T12:50:30.883Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 50,
     "promptCount": 34,
-    "activeSkillCount": 28,
+    "activeSkillCount": 26,
     "activeAgentCount": 20
   },
   "coreSkills": [
@@ -12,8 +12,7 @@
     "ralph",
     "ultrawork",
     "team",
-    "ultragoal",
-    "ralplan"
+    "ultragoal"
   ],
   "skills": [
     {
@@ -110,15 +109,14 @@
     {
       "name": "ralplan",
       "category": "planning",
-      "status": "active",
-      "canonical": "plan",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
       "name": "deep-interview",
       "category": "planning",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },

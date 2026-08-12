@@ -41,13 +41,12 @@ describe('explore + sparkshell guidance contract', () => {
   });
 
   it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
+    // deep-interview and ralplan are now sunset stubs (merged into plan)
     for (const surface of [
       'prompts/planner.md',
       'prompts/executor.md',
       'prompts/sisyphus-lite.md',
-      'skills/deep-interview/SKILL.md',
       'skills/plan/SKILL.md',
-      'skills/ralplan/SKILL.md',
       'skills/ralph/SKILL.md',
     ]) {
       expectPatterns(surface, [
@@ -55,6 +54,12 @@ describe('explore + sparkshell guidance contract', () => {
         /normal repository inspection|normal Codex repository inspection/i,
         /omx sparkshell/i,
       ]);
+    }
+    // Sunset stubs should point to successor
+    for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md']) {
+      const content = loadSurface(stub);
+      assert.match(content, /was removed/i);
+      assert.match(content, /\$plan/i);
     }
   });
 
