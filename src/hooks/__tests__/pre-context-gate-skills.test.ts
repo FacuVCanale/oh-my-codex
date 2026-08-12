@@ -10,6 +10,10 @@ const ralplanSkill = readFileSync(
   join(__dirname, '../../../skills/ralplan/SKILL.md'),
   'utf-8',
 );
+const planSkill = readFileSync(
+  join(__dirname, '../../../skills/plan/SKILL.md'),
+  'utf-8',
+);
 const teamSkill = readFileSync(
   join(__dirname, '../../../skills/team/SKILL.md'),
   'utf-8',
@@ -24,10 +28,14 @@ const ralphSkill = readFileSync(
 );
 
 describe('pre-context gate guidance in planning/execution-heavy skills', () => {
-  it('ralplan documents required context snapshot intake', () => {
-    assert.match(ralplanSkill, /Pre-context Intake/i);
-    assert.match(ralplanSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
-    assert.match(ralplanSkill, /\$deep-interview\s+--quick/i);
+  it('ralplan is a sunset stub pointing to plan', () => {
+    assert.match(ralplanSkill, /was removed/i);
+    assert.match(ralplanSkill, /\$plan/i);
+  });
+
+  it('plan skill exists as canonical planning surface', () => {
+    assert.match(planSkill, /plan/i);
+    assert.ok(planSkill.length > 10);
   });
 
   it('team documents required context snapshot gate before launch', () => {

@@ -81,8 +81,9 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /planning_routing/i);
     assert.match(autopilotSkill, /cheap\/mini lane[\s\S]*`\[main\]`/i);
     assert.match(autopilotSkill, /dedicated `\[planner\]`/i);
-    assert.match(ralplanSkill, /`agentModels\.planner`/i);
-    assert.match(ralplanSkill, /initial Planner draft/i);
+    // ralplan is now a sunset stub; check that it points to $plan
+    assert.match(ralplanSkill, /was removed/i);
+    assert.match(ralplanSkill, /\$plan/i);
   });
 
   it('documents optional deep-interview execution contract validation without broadness inference', () => {
@@ -101,28 +102,27 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(autopilotSkill, /runtime may read legacy camelCase field\/marker aliases and direct\/nested `execution_contract` locations only as compatibility input/i);
   });
 
-  it('requires role-specific subsequent ralplan reviewer subagents with full context', () => {
-    assert.match(ralplanSkill, /subsequent role-specific `Architect` subagent/i);
-    assert.match(ralplanSkill, /subsequent role-specific `Critic` subagent/i);
-    assert.match(ralplanSkill, /full task statement, context snapshot, PRD\/test-spec paths/i);
-    assert.match(ralplanSkill, /do not substitute an unvalidated reviewer identity or a short improvised reviewer prompt/i);
-    assert.match(ralplanSkill, /do not ask the Architect subagent to perform the Critic gate/i);
-    // Surface-aware role contract (#3118): agent_type is mandatory only where the
-    // native surface exposes role routing. Without it, ordinary work proceeds under
-    // its own workflow gates; adapted Ralplan authority remains fail-closed.
-    assert.match(ralplanSkill, /When the native surface exposes `agent_type` role routing/i);
-    assert.match(ralplanSkill, /Run `omx ralplan preflight --json` only when the native task surface reports `role_routing_unavailable` and this workflow attempts adapted Ralplan Planner, Architect, or Critic authority, adapted role-intent, or adapted consensus authority/i);
-    assert.match(ralplanSkill, /unsupported_documented_leader_proof/i);
-    assert.doesNotMatch(ralplanSkill, /Before substantive planning, reviewer delegation, HUD\/runtime activation, or adapted-role work/i);
+  it('requires ralplan sunset stub (merged into plan)', () => {
+    assert.match(ralplanSkill, /was removed/i);
+    assert.match(ralplanSkill, /\$plan/i);
+    assert.doesNotMatch(ralplanSkill, /subsequent role-specific `Architect` subagent/i);
   });
 
   it('keeps documented-leader preflight capability-scoped across public guidance', () => {
-    for (const path of authorityGuidanceSurfaces) {
+    // ralplan is now a sunset stub — skip its content check; verify remaining surfaces still contain authority guidance where present
+    const nonStubSurfaces = authorityGuidanceSurfaces.filter((p) => p !== 'skills/ralplan/SKILL.md' && p !== 'plugins/oh-my-codex/skills/ralplan/SKILL.md');
+    for (const path of nonStubSurfaces) {
       const content = readFileSync(join(guidanceRoot, path), 'utf-8');
       assert.match(content, /role_routing_unavailable/);
       assert.match(content, /adapted Ralplan/i);
       assert.match(content, /Ordinary native planning[\s\S]*outside this preflight boundary/i);
       assert.doesNotMatch(content, /before (substantive )?planning, reviewer delegation, HUD\/runtime activation/i);
+    }
+    // ralplan stubs should point to successor
+    for (const path of ['skills/ralplan/SKILL.md']) {
+      const content = readFileSync(join(guidanceRoot, path), 'utf-8');
+      assert.match(content, /was removed/i);
+      assert.match(content, /\$plan/i);
     }
 
     for (const path of ['docs/release-notes-0.20.2.md', 'docs/release-notes-0.20.3.md', 'CHANGELOG.md', 'RELEASE_BODY.md']) {

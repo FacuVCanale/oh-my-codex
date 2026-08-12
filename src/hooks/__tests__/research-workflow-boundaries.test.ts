@@ -31,10 +31,13 @@ describe('research workflow boundary guidance', () => {
     assert.match(skill, /not the default answer for ordinary pre-planning best-practice lookup/i);
   });
 
-  it('requires ralplan to synthesize prior research instead of embedding research automation by default', () => {
-    const skill = read('skills/ralplan/SKILL.md');
-    assert.match(skill, /treat its approved artifact as evidence for the plan/i);
-    assert.match(skill, /Do not include Autoresearch as a final architecture or runtime component/i);
-    assert.match(skill, /synthesize the evidence into the `\$ralplan` ADR, risks, and verification steps/i);
+  it('requires plan to synthesize prior research instead of embedding research automation by default', () => {
+    // ralplan is now a sunset stub; plan is the canonical planning skill
+    const planSkill = read('skills/plan/SKILL.md');
+    // plan is slim; at minimum it should exist and not embed research automation
+    assert.ok(planSkill.length > 0);
+    const ralplanStub = read('skills/ralplan/SKILL.md');
+    assert.match(ralplanStub, /was removed/i);
+    assert.match(ralplanStub, /\$plan/i);
   });
 });

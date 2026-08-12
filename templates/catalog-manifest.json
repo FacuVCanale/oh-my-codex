@@ -96,15 +96,14 @@
     {
       "name": "ralplan",
       "category": "planning",
-      "status": "active",
-      "canonical": "plan",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
       "name": "deep-interview",
       "category": "planning",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },

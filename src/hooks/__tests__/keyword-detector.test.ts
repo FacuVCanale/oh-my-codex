@@ -4295,16 +4295,12 @@ deepMaxRounds = 21
   });
 
   it('keeps the documented deep-interview Suggested Config executable through activation state', async () => {
+    // Deep-interview is now a sunset stub (merged into plan --interview); verify stub exists and activation still routes via deep-interview explicit token
     const skillDoc = await readFile(join(process.cwd(), 'skills', 'deep-interview', 'SKILL.md'), 'utf-8');
-    const markerIndex = skillDoc.indexOf('## Suggested Config (optional)');
-    assert.notEqual(markerIndex, -1);
-    const configMatch = skillDoc.slice(markerIndex).match(/```toml\n([\s\S]*?)\n```/);
-    assert.ok(configMatch);
-    const documentedConfig = configMatch[1]?.trimEnd();
-    assert.ok(documentedConfig);
-    assert.match(documentedConfig, /standardThreshold = 0\.20/);
-    assert.match(documentedConfig, /standardMaxRounds = 12/);
+    assert.match(skillDoc, /was removed/i);
+    assert.match(skillDoc, /\$plan --interview/i);
 
+    // Verify $deep-interview activation still creates deep-interview state (one-release stub)
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-doc-config-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-deep-interview-doc-config';
@@ -4312,7 +4308,6 @@ deepMaxRounds = 21
     try {
       await mkdir(join(cwd, '.omx'), { recursive: true });
       await mkdir(stateDir, { recursive: true });
-      await writeFile(join(cwd, '.omx', 'config.toml'), `${documentedConfig}\n`);
 
       const result = await recordSkillActivation({
         stateDir,
@@ -4322,22 +4317,16 @@ deepMaxRounds = 21
         nowIso: '2026-02-25T00:00:00.000Z',
       });
       const modeState = JSON.parse(await readFile(statePath, 'utf-8')) as {
-        deep_interview_config?: { profile?: string; threshold?: number; maxRounds?: number; sourcePath?: string };
-        profile?: string;
-        threshold?: number;
-        max_rounds?: number;
-        config_source?: string;
+        active?: boolean;
+        mode?: string;
+        input_lock?: { active?: boolean };
       };
 
       assert.ok(result);
-      assert.equal(result.deep_interview_config?.profile, 'standard');
-      assert.equal(result.deep_interview_config?.threshold, 0.2);
-      assert.equal(result.deep_interview_config?.maxRounds, 12);
-      assert.equal(modeState.deep_interview_config?.profile, 'standard');
-      assert.equal(modeState.profile, 'standard');
-      assert.equal(modeState.threshold, 0.2);
-      assert.equal(modeState.max_rounds, 12);
-      assert.equal(modeState.config_source, join(cwd, '.omx', 'config.toml'));
+      assert.equal(result.skill, 'deep-interview');
+      assert.equal(modeState.mode, 'deep-interview');
+      assert.equal(modeState.active, true);
+      assert.equal(modeState.input_lock?.active, true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

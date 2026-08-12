@@ -28,21 +28,21 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
 
   { keyword: '$prometheus-strict', skill: 'prometheus-strict', priority: 11, guidance: 'Activate Prometheus Strict clean-room interview-driven planner workflow' },
 
-  { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'interview me', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: "don't assume", skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'ouroboros', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
+  { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: $deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: 'interview me', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: "don't assume", skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: 'ouroboros', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
 
   { keyword: '$plan', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: 'plan this', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: 'plan the', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: "let's plan", skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
 
-  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
-  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
+  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Sunset: $ralplan was removed in OMX 0.21; use $plan (stub)' },
+  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Sunset: consensus plan was removed in OMX 0.21; use $plan (stub)' },
 
   { keyword: '$autoresearch', skill: 'autoresearch', priority: 10, guidance: 'Activate autoresearch validator-gated research loop' },
   { keyword: '$best-practice-research', skill: 'best-practice-research', priority: 8, guidance: 'Activate bounded best-practice research wrapper' },
