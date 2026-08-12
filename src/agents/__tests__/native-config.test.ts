@@ -249,10 +249,6 @@ describe("agents/native-config", () => {
     for (const role of [
       "critic",
       "debugger",
-      "scholastic",
-      "prometheus-strict-metis",
-      "prometheus-strict-momus",
-      "prometheus-strict-oracle",
     ] as const) {
       const toml = generateAgentToml(AGENT_DEFINITIONS[role], `${role} prompt`);
       assert.match(toml, /model = "gpt-5\.6-sol"/, `${role} should stay on configured/root gpt-5.6-sol`);
@@ -350,14 +346,13 @@ describe("agents/native-config", () => {
     assert.doesNotMatch(executorToml, /native_subagent_delegation: allowed/);
   });
 
-  it("does not apply the leaf guard to roles with explicit native delegation contracts", () => {
-    const metisToml = generateAgentToml(
-      AGENT_DEFINITIONS["prometheus-strict-metis"],
-      "metis prompt",
+  it("applies the leaf guard to standard roles after sunset of delegation roles", () => {
+    const researcherToml = generateAgentToml(
+      AGENT_DEFINITIONS.researcher,
+      "researcher prompt",
     );
 
-    assert.doesNotMatch(metisToml, /<native_subagent_leaf_guard>/);
-    assert.match(metisToml, /native_subagent_delegation: allowed/);
+    assert.match(researcherToml, /<native_subagent_leaf_guard>/);
   });
 
   it("keeps native-only leaf guards out of non-native role composition", () => {

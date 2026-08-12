@@ -70,7 +70,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('worker'), true);
       assert.equal(installed.has('autoresearch'), true);
       assert.equal(installed.has('swarm'), false);
-      assert.equal(installed.has('ecomode'), false);
+      assert.equal(installed.has('ecomode'), false); // removed in #3493
       assert.equal(installed.has('ultraqa'), true);
       assert.equal(installed.has('ralph-init'), false);
       assert.equal(installed.has('visual-ralph'), true);
@@ -133,7 +133,7 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const staleSkills = ['swarm', 'ecomode', 'configure-discord', 'configure-telegram', 'configure-slack', 'configure-openclaw'];
+      const staleSkills = ['configure-discord', 'configure-telegram', 'configure-slack', 'configure-openclaw'];
       for (const staleSkill of staleSkills) {
         const staleDir = join(wd, '.codex', 'skills', staleSkill);
         await mkdir(staleDir, { recursive: true });
@@ -296,9 +296,8 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project', force: true, verbose: true });
 
       const output = logs.join('\n');
-      assert.match(output, /skipped review\/ \(status: deprecated\)/);
-      assert.match(output, /skipped ralph-init\/ \(status: deprecated\)/);
-      assert.match(output, /removed stale skill swarm\/ \(status: deprecated\)/);
+      assert.match(output, /removed stale skill swarm\//);
+      assert.match(output, /removed stale skill ecomode\//);
       assert.match(output, /skills: updated=/);
     } finally {
       console.log = originalLog;

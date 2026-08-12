@@ -3463,11 +3463,7 @@ async function checkPluginVersionDiagnostics(
 }
 
 const REQUIRED_NATIVE_REVIEWER_ROLES = ["architect", "critic"] as const;
-const ADVISORY_NATIVE_REVIEWER_ROLES = ["scholastic"] as const;
-
-type NativeReviewerRole =
-	| typeof REQUIRED_NATIVE_REVIEWER_ROLES[number]
-	| typeof ADVISORY_NATIVE_REVIEWER_ROLES[number];
+type NativeReviewerRole = typeof REQUIRED_NATIVE_REVIEWER_ROLES[number];
 
 function getParsedAgentTables(
 	configPath: string,
@@ -3533,31 +3529,14 @@ function checkNativeReviewerRoles(
 	const missingRequired = REQUIRED_NATIVE_REVIEWER_ROLES.filter(
 		(role) => !nativeReviewerRoleAvailable(paths, role),
 	);
-	const missingAdvisory = ADVISORY_NATIVE_REVIEWER_ROLES.filter(
-		(role) => !nativeReviewerRoleAvailable(paths, role),
-	);
-
 	if (missingRequired.length > 0) {
-		const advisorySuffix = missingAdvisory.length > 0
-			? `; advisory role missing: ${missingAdvisory.join(", ")}`
-			: "";
 		return {
 			name: "Native reviewer roles",
 			status: "fail",
 			message:
 				`plugin mode supplies skills/hooks, but required RALPLAN/Autopilot native reviewer role(s) are unavailable: ${missingRequired.join(", ")}. ` +
 				`Install ${formatNativeRoleFileList(missingRequired)} under ${paths.agentsDir} or define equivalent [agents.<role>] entries in ${paths.configPath}; ` +
-				`otherwise role-specific subagent calls may degrade to prompt-only/default subagents${advisorySuffix}`,
-		};
-	}
-
-	if (missingAdvisory.length > 0) {
-		return {
-			name: "Native reviewer roles",
-			status: "warn",
-			message:
-				`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); ` +
-				`advisory ontology reviewer role(s) missing: ${missingAdvisory.join(", ")} (optional unless explicitly used)`,
+				`otherwise role-specific subagent calls may degrade to prompt-only/default subagents`,
 		};
 	}
 
@@ -3565,7 +3544,7 @@ function checkNativeReviewerRoles(
 		name: "Native reviewer roles",
 		status: "pass",
 		message:
-			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); advisory ${ADVISORY_NATIVE_REVIEWER_ROLES.join(", ")} role is also available`,
+			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")})`,
 	};
 }
 

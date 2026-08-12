@@ -26,8 +26,6 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'investigate', skill: 'analyze', priority: 7, guidance: 'Activate deep analysis workflow' },
 
 
-  { keyword: '$prometheus-strict', skill: 'prometheus-strict', priority: 11, guidance: 'Activate Prometheus Strict clean-room interview-driven planner workflow' },
-
   { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: $deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
   { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
   { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
@@ -48,8 +46,6 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: '$best-practice-research', skill: 'best-practice-research', priority: 8, guidance: 'Activate bounded best-practice research wrapper' },
 
   { keyword: '$design', skill: 'design', priority: 6, guidance: 'Activate canonical DESIGN.md design-source-of-truth workflow' },
-  { keyword: '$frontend-ui-ux', skill: 'design', priority: 5, guidance: 'Deprecated: route to $design for DESIGN.md guidance; use $visual-ralph for visual-reference implementation' },
-
   { keyword: '$team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
   { keyword: 'coordinated team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
 
@@ -79,7 +75,6 @@ export interface ExplicitSkillDefinition {
 
 export const EXPLICIT_SKILL_ALIASES: readonly ExplicitSkillAlias[] = Object.freeze([
   Object.freeze({ source: 'ulw', target: 'ultrawork' }),
-  Object.freeze({ source: 'frontend-ui-ux', target: 'design' }),
 ]);
 
 function createExplicitSkillLookup(): Readonly<Record<string, ExplicitSkillDefinition>> {

@@ -18,6 +18,7 @@ import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresh
 
 
 import { getExplicitSkillDefinition, KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
+import { getRemovedSkillInfo } from './sunset-stub.js';
 
 import { readTeamModeConfig } from '../config/team-mode.js';
 import {
@@ -82,11 +83,18 @@ export interface ExplicitSkillCandidate {
   readonly reasons: readonly KeywordInertDiagnostic[];
 }
 
+export interface RemovedSkillMatch {
+  readonly rawKeyword: string;
+  readonly normalizedToken: string;
+  readonly message: string;
+}
+
 export interface KeywordInputClassification {
   readonly originalText: string;
   readonly normalizedText: string;
   readonly candidates: readonly ExplicitSkillCandidate[];
   readonly explicitMatches: readonly KeywordMatch[];
+  readonly removedMatches: readonly RemovedSkillMatch[];
   readonly hasExplicitLikeInvocation: boolean;
   readonly reservedInput: KeywordReservedInput;
   readonly implicitMatches: readonly KeywordMatch[];
@@ -3366,6 +3374,26 @@ export function classifyKeywordInput(text: string): KeywordInputClassification {
       : null;
   const hasExplicitLikeInvocation = candidates.length > 0;
   const hasActiveExplicitLike = hasActiveExplicitLikeInvocation(candidates, documentationRanges, postposedNegations);
+
+  // Sunset stub: any candidate that maps to a removed skill produces a removedMatches entry
+  const removedMatches: RemovedSkillMatch[] = [];
+  const removedTokensSeen = new Set<string>();
+  for (const candidate of candidates) {
+    if (isInInertRange(documentationRanges, candidate.start)) continue;
+    if ([...candidate.reasons].some((reason) => reason !== 'not-leading-region')) continue;
+    if (isNegativeExplicitMention(candidate, postposedNegations)) continue;
+    if (candidate.skill !== null) continue;
+    const info = getRemovedSkillInfo(candidate.normalizedToken);
+    if (!info) continue;
+    if (removedTokensSeen.has(candidate.normalizedToken)) continue;
+    removedTokensSeen.add(candidate.normalizedToken);
+    removedMatches.push({
+      rawKeyword: candidate.rawKeyword,
+      normalizedToken: candidate.normalizedToken,
+      message: info.message,
+    });
+  }
+
   const finalMatches = reservedInput
     ? []
     : explicitMatches.length > 0
@@ -3382,6 +3410,7 @@ export function classifyKeywordInput(text: string): KeywordInputClassification {
     normalizedText,
     candidates: freezeCandidates(candidates),
     explicitMatches: freezeMatches(explicitMatches),
+    removedMatches: Object.freeze(removedMatches.slice()) as readonly RemovedSkillMatch[],
     hasExplicitLikeInvocation,
     reservedInput,
     implicitMatches: freezeMatches(implicitMatches),
@@ -3742,6 +3771,36 @@ export async function recordSkillActivation(
   const previousSession = sessionStatePath ? await readExistingSkillState(sessionStatePath) : null;
   const previous = input.sessionId ? previousSession : previousRoot;
   const teamMode = readTeamModeConfig(sourceCwd);
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  // Sunset: if the prompt contains a removed skill token, surface a transition_error instead of silently ignoring
+  if (classification.removedMatches && classification.removedMatches.length > 0) {
+    const msg = classification.removedMatches.map((m) => m.message).join(" ");
+    const failed: SkillActiveState = {
+      version: 1,
+      active: false,
+      skill: (previous?.skill as string) || classification.removedMatches[0]!.normalizedToken,
+      keyword: classification.removedMatches[0]!.rawKeyword,
+      phase: 'failed' as SkillActivePhase,
+      activated_at: nowIso,
+      updated_at: nowIso,
+      source: 'keyword-detector',
+      session_id: input.sessionId ?? previous?.session_id,
+      thread_id: input.threadId ?? previous?.thread_id,
+      turn_id: input.turnId ?? previous?.turn_id,
+      active_skills: [],
+      transition_error: msg,
+      status_message: msg,
+    };
+    try {
+      await writeSkillActiveStateCopiesForStateDir(
+        input.stateDir,
+        failed,
+        input.sessionId,
+        selectRootSkillStateCopy(previousRoot, failed, input.sessionId, suppressRootMutation),
+      );
+    } catch {}
+    return failed;
+  }
   const match = resolveContinuationKeywordMatch(
     input.text,
     previous,
@@ -3749,9 +3808,6 @@ export async function recordSkillActivation(
     classification,
   );
   if (!match) return null;
-
-
-  const nowIso = input.nowIso ?? new Date().toISOString();
   const hadDeepInterviewLock = previous?.skill === 'deep-interview' && previous?.input_lock?.active === true;
   const matches = filterMatchesForTeamMode(classification.matches, teamMode.enabled);
 

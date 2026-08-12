@@ -30,12 +30,6 @@
       "core": true
     },
     {
-      "name": "ecomode",
-      "category": "execution",
-      "status": "deprecated",
-      "description": "Deprecated standalone efficiency mode skill."
-    },
-    {
       "name": "ultraqa",
       "category": "execution",
       "status": "active"
@@ -72,12 +66,6 @@
       "core": true
     },
     {
-      "name": "swarm",
-      "category": "execution",
-      "status": "deprecated",
-      "description": "Deprecated standalone swarm skill."
-    },
-    {
       "name": "plan",
       "category": "planning",
       "status": "active"
@@ -95,12 +83,6 @@
       "description": "Removed in OMX 0.21; use plan --interview. One-release sunset stub."
     },
     {
-      "name": "prometheus-strict",
-      "category": "planning",
-      "status": "active",
-      "core": false
-    },
-    {
       "name": "best-practice-research",
       "category": "planning",
       "status": "active",
@@ -112,24 +94,6 @@
       "status": "active"
     },
     {
-      "name": "deepsearch",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone deepsearch skill."
-    },
-    {
-      "name": "tdd",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone TDD skill."
-    },
-    {
-      "name": "build-fix",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone build-fix skill."
-    },
-    {
       "name": "ai-slop-cleaner",
       "category": "shortcut",
       "status": "active"
@@ -139,24 +103,6 @@
       "category": "shortcut",
       "status": "active",
       "canonical": "code-reviewer"
-    },
-    {
-      "name": "security-review",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone security review skill."
-    },
-    {
-      "name": "visual-verdict",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone visual verdict skill."
-    },
-    {
-      "name": "web-clone",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone web-clone skill."
     },
     {
       "name": "visual-ralph",
@@ -171,38 +117,15 @@
       "canonical": "designer"
     },
     {
-      "name": "frontend-ui-ux",
-      "category": "shortcut",
-      "status": "deprecated"
-    },
-    {
       "name": "git-master",
       "category": "shortcut",
       "status": "alias",
       "canonical": "git-master"
     },
     {
-      "name": "review",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated standalone review skill."
-    },
-    {
       "name": "ask",
       "category": "shortcut",
       "status": "active"
-    },
-    {
-      "name": "ask-claude",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated provider-specific ask skill. Use the active ask skill directly for new advisor workflows."
-    },
-    {
-      "name": "ask-gemini",
-      "category": "shortcut",
-      "status": "deprecated",
-      "description": "Deprecated provider-specific ask skill. Use the active ask skill directly for new advisor workflows."
     },
     {
       "name": "cancel",
@@ -218,24 +141,6 @@
       "name": "wiki",
       "category": "utility",
       "status": "active"
-    },
-    {
-      "name": "help",
-      "category": "utility",
-      "status": "deprecated",
-      "description": "Deprecated standalone help skill."
-    },
-    {
-      "name": "note",
-      "category": "utility",
-      "status": "deprecated",
-      "description": "Deprecated standalone note skill."
-    },
-    {
-      "name": "trace",
-      "category": "utility",
-      "status": "deprecated",
-      "description": "Deprecated standalone trace skill."
     },
     {
       "name": "skill",
@@ -290,12 +195,6 @@
       "canonical": "configure-notifications",
       "core": false,
       "internalRequired": false
-    },
-    {
-      "name": "ralph-init",
-      "category": "utility",
-      "status": "deprecated",
-      "description": "Deprecated standalone Ralph initialization skill."
     },
     {
       "name": "worker",
@@ -456,27 +355,7 @@
       "canonical": "analyst"
     },
     {
-      "name": "prometheus-strict-metis",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "prometheus-strict-momus",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "prometheus-strict-oracle",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
       "name": "critic",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "scholastic",
       "category": "coordination",
       "status": "active"
     },

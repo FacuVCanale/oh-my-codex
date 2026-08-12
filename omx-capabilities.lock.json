@@ -2,7 +2,7 @@
   "kind": "omx_capabilities_lock",
   "surfaces": {
     "agents": {
-      "digest": "2655e1ea38987fb1e0e933add5f178d043176c647e12b92f6ecc0336afc1da7c",
+      "digest": "3b9784ad344162f76f1de411bd37010a06fc7b8879e787093376eae015f00692",
       "files": [
         {
           "digest": "c4f74fb651155bb39281ea97fb582d22b6d5e8b33b45073633ec11baf1baa7f9",
@@ -81,19 +81,7 @@
           "path": "prompts/product-manager.md"
         },
         {
-          "digest": "1ffb593edcb40ca89e2cffeb6e567af1df19ad5da19564cb21fe49f8db557a78",
-          "path": "prompts/prometheus-strict-metis.md"
-        },
-        {
-          "digest": "3202c0c36c2e759833ee7af4ce9c8620471f80249ba1e0da74beb65e354295e5",
-          "path": "prompts/prometheus-strict-momus.md"
-        },
-        {
-          "digest": "745f2d4563e4f0eeeefbee3ab53dc3daa9ecdea57d749cda7ccdef33e57ee4de",
-          "path": "prompts/prometheus-strict-oracle.md"
-        },
-        {
-          "digest": "cfff374f8a3406ffe01e4ecb01ede99e6ad3b2a9ad37926126ebee4af8d68b46",
+          "digest": "5e8a183c3c4ab7bae3b83f70a50f10aa6025a6654f25958ae02fd28fde3d3c23",
           "path": "prompts/qa-tester.md"
         },
         {
@@ -109,16 +97,8 @@
           "path": "prompts/researcher.md"
         },
         {
-          "digest": "cc54ccec7352e0616c56009c6ffc9b207f5dfd335fb0b02d445cb3e0d04ba856",
-          "path": "prompts/scholastic.md"
-        },
-        {
-          "digest": "a6ab30fd26370e835f3d044c2ac0ad9ac97a8976b820eb455d0d2c0506204016",
+          "digest": "9cf46f8a1c21ef3383be79bfd0430d7ba0ff97120c46011f74d811e6d1d67c9d",
           "path": "prompts/security-reviewer.md"
-        },
-        {
-          "digest": "def762b90530acbe1c5e8bbc9e4bfc60c8740a3a558dada1afcd5d416b01a4cd",
-          "path": "prompts/sisyphus-lite.md"
         },
         {
           "digest": "8dc0ea45e9edcc294487fa3f6c4988069b58692eee094329b1b454707a1e8b97",
@@ -163,7 +143,7 @@
       ]
     },
     "configured_tools": {
-      "digest": "79e2e21bcb711e5f7cf8142f8649a4e54dfeda911b929a2b5ce0155874fd2c7d",
+      "digest": "4fa5a7b8baf12ed3b3454e5f31909d7596bc65601f323f5032cd5a7db310183e",
       "disabled_first_party_servers": [],
       "external_servers": [],
       "tools": [
@@ -955,6 +935,45 @@
           "server": "memory"
         },
         {
+          "description": "Clear/delete state for a specific mode.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "all_sessions": {
+                "description": "Clear matching mode in global and all session scopes",
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "autopilot",
+                  "autoresearch",
+                  "team",
+                  "ralph",
+                  "ultrawork",
+                  "ultraqa",
+                  "ralplan",
+                  "deep-interview",
+                  "skill-active"
+                ],
+                "type": "string"
+              },
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "name": "state_clear",
+          "server": "state"
+        },
+        {
           "description": "Get detailed status for a specific mode or all modes.",
           "enabled": true,
           "inputSchema": {
@@ -1039,6 +1058,100 @@
             "type": "object"
           },
           "name": "state_read",
+          "server": "state"
+        },
+        {
+          "description": "Write/update state for a specific mode. Creates directories if needed.",
+          "enabled": true,
+          "inputSchema": {
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "completed_at": {
+                "type": "string"
+              },
+              "current_phase": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              },
+              "iteration": {
+                "type": "number"
+              },
+              "lifecycle_outcome": {
+                "enum": [
+                  "finished",
+                  "blocked",
+                  "failed",
+                  "userinterlude",
+                  "askuserQuestion"
+                ],
+                "type": "string"
+              },
+              "max_iterations": {
+                "type": "number"
+              },
+              "mode": {
+                "enum": [
+                  "autopilot",
+                  "autoresearch",
+                  "team",
+                  "ralph",
+                  "ultrawork",
+                  "ultraqa",
+                  "ralplan",
+                  "deep-interview",
+                  "skill-active"
+                ],
+                "type": "string"
+              },
+              "run_outcome": {
+                "enum": [
+                  "continue",
+                  "finish",
+                  "blocked_on_user",
+                  "failed",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "session_id": {
+                "description": "Optional session scope ID",
+                "type": "string"
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "state": {
+                "description": "Additional custom fields",
+                "type": "object"
+              },
+              "task_description": {
+                "type": "string"
+              },
+              "terminal_outcome": {
+                "description": "Legacy alias for lifecycle_outcome; canonical writes should prefer lifecycle_outcome.",
+                "enum": [
+                  "finished",
+                  "blocked",
+                  "failed",
+                  "userinterlude",
+                  "askuserQuestion"
+                ],
+                "type": "string"
+              },
+              "workingDirectory": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          },
+          "name": "state_write",
           "server": "state"
         },
         {
@@ -1323,7 +1436,7 @@
       ]
     },
     "fixtures": {
-      "digest": "200564289c8a95e64ab816fff458ea77f4585f0f88868e4ea61eb70dcc053789",
+      "digest": "88d95e3b00265771de6c023c16df6da41dc90d4b6f6c1b82cab72dd889bcbfae",
       "fixtures": [
         {
           "allowed_tools": [
@@ -1357,9 +1470,11 @@
             "project_memory_add_note",
             "project_memory_read",
             "project_memory_write",
+            "state_clear",
             "state_get_status",
             "state_list_active",
             "state_read",
+            "state_write",
             "trace_summary",
             "trace_timeline",
             "wiki_add",
@@ -1408,9 +1523,11 @@
             "project_memory_add_note",
             "project_memory_read",
             "project_memory_write",
+            "state_clear",
             "state_get_status",
             "state_list_active",
             "state_read",
+            "state_write",
             "trace_summary",
             "trace_timeline",
             "wiki_add",
@@ -1437,7 +1554,7 @@
       ]
     },
     "skills": {
-      "digest": "91e6668a7a8bf6b20a6dfc14cda990ba6c9f335c90eb942f7afaa4026766e5cf",
+      "digest": "01aa5dc85b721cb6d717a389de160b8c2de9ef3840c64d2895534ac216ffcf11",
       "files": [
         {
           "digest": "227c02cb4304603fae65200878acb9708bc31523d0d851ea148861a8c6f72055",
@@ -1446,14 +1563,6 @@
         {
           "digest": "1c29f556b4cd80eb92c625a3c29746586abd05ada191e1536aa39a2ac3a5aaea",
           "path": "skills/analyze/SKILL.md"
-        },
-        {
-          "digest": "496e7a4dedcb55860b38e126d270e08f331d4f695e2dc22fb0249b6104517d0e",
-          "path": "skills/ask-claude/SKILL.md"
-        },
-        {
-          "digest": "04f4dbf8f289f2be15cb986b5aed5b46a7974e5f4655eacbc38696ee3a7f1082",
-          "path": "skills/ask-gemini/SKILL.md"
         },
         {
           "digest": "5301bee75b021060a7021bb27782c904e4bebff1217e158a3107285e649c65ed",
@@ -1476,11 +1585,7 @@
           "path": "skills/best-practice-research/SKILL.md"
         },
         {
-          "digest": "aafbdee5a0c1df78850f1db9ee078f818d63cc442371ca822ec0df2d52c34e40",
-          "path": "skills/build-fix/SKILL.md"
-        },
-        {
-          "digest": "661a728669c3d92f1dfa08b5f00c07143fc07eebcd068b00d0fae8a069b33340",
+          "digest": "246458233c1d493a704df676f9e1f4ae17f2a27a276ee473e0d113670b0a5518",
           "path": "skills/cancel/SKILL.md"
         },
         {
@@ -1496,11 +1601,7 @@
           "path": "skills/deep-interview/SKILL.md"
         },
         {
-          "digest": "2dc38ba1be7baacb09edf09df30d394d7ec24428cc6055ecef23ebb0b7b92fd9",
-          "path": "skills/deepsearch/SKILL.md"
-        },
-        {
-          "digest": "3f1bddf79820c83433f3ba97cc3e41a61cb72b009acbd08ba3f9dcc5e5ead67a",
+          "digest": "793d9fb7ce9fbcb238ee27c96d31dc2c0edf4d77cdaf28d023138a4197b1f956",
           "path": "skills/design/SKILL.md"
         },
         {
@@ -1508,31 +1609,15 @@
           "path": "skills/doctor/SKILL.md"
         },
         {
-          "digest": "0fab8ea1c8cb5696578ef3b350b45f72177a8074563b5750cc29564bd28613c3",
-          "path": "skills/ecomode/SKILL.md"
-        },
-        {
-          "digest": "70e692291e8f1c58bdf8a42cc1809d9f8d987a900e9b816fb2f51d34869111d0",
-          "path": "skills/frontend-ui-ux/SKILL.md"
-        },
-        {
           "digest": "d917dbd61c1476133a6fa2e5c3ff3fbd4d56a458fea71aa0594c16b8d998f2b7",
           "path": "skills/git-master/SKILL.md"
-        },
-        {
-          "digest": "84fda285c398f5a496ce221e931f8395a8864fc592fbf4cb5ef7322f8c5a8785",
-          "path": "skills/help/SKILL.md"
         },
         {
           "digest": "d5c30b632149f1fc06e9945872e3eb02a5efeb93ba66bf512ecae558d1e3b4ea",
           "path": "skills/hud/SKILL.md"
         },
         {
-          "digest": "4c842f56d349dd03ce1d69fff55c0389cd4158f3c802620b936967b41677c687",
-          "path": "skills/note/SKILL.md"
-        },
-        {
-          "digest": "e5ba47df26aa0a040f0111df216ea4068e8badb67c74a4f41901a2a30050984b",
+          "digest": "21e56ba3e2cf070f2d8de7384185c0af2bf587d6090b6597a8062c4d102b2123",
           "path": "skills/omx-setup/SKILL.md"
         },
         {
@@ -1548,15 +1633,7 @@
           "path": "skills/plan/SKILL.md"
         },
         {
-          "digest": "d5232220005de50d3a7fe1440d71bfa2e6519c09c07566e3193522fe1a1be47b",
-          "path": "skills/prometheus-strict/SKILL.md"
-        },
-        {
-          "digest": "b81b0739c103e044c97ad808739a83c252d92f486084202374fec69eeb8a194e",
-          "path": "skills/ralph-init/SKILL.md"
-        },
-        {
-          "digest": "1cc239daa9d1c034aa0cb4e4fd6246f1453128c57b3004963b63ba39083b58dd",
+          "digest": "cb0ce8dec4c36cfc0267afc2d4b142ad3722b2df99b16203cdb5926d12ef4b25",
           "path": "skills/ralph/SKILL.md"
         },
         {
@@ -1564,35 +1641,15 @@
           "path": "skills/ralplan/SKILL.md"
         },
         {
-          "digest": "6099f7c30780c96c0bea1a339319e6324eeddabe84003a6d928ccc877bc4d0ec",
-          "path": "skills/review/SKILL.md"
-        },
-        {
-          "digest": "007ac9f94b8d246f64a5c0360408f5682ae43d5468c4415ca9c2f6623e82321c",
-          "path": "skills/security-review/SKILL.md"
-        },
-        {
-          "digest": "bbd89ebc5adf8b478aa643dc6d086eb175e9899be20391a048be118803d65c07",
+          "digest": "b459ca43f1cefbf9a367a39dd0b76283408cdef8cf52ad1890d806359d5bb9bb",
           "path": "skills/skill/SKILL.md"
         },
         {
-          "digest": "9806ce3dff32a149edc61bc62ee20ecadc1cce6fdc9f997f3abc5ec4cc1633d4",
-          "path": "skills/swarm/SKILL.md"
-        },
-        {
-          "digest": "b94bc25930af9f996be7f892b161b53ef9f8cf951784d31806548f5ad45e142c",
-          "path": "skills/tdd/SKILL.md"
-        },
-        {
-          "digest": "c235609d4a6c57862890b3ab1a4ee6430f5d0c1fae77988be3a2040e6e831221",
+          "digest": "2e80b184f48a04ee685839a7085b73549dd90d70b2d13d6f5ba79adf8ed53057",
           "path": "skills/team/SKILL.md"
         },
         {
-          "digest": "c39af0c40fddb921bff9f6e34bc8c85f736265c2935e664709de7b33e2ea94bb",
-          "path": "skills/trace/SKILL.md"
-        },
-        {
-          "digest": "b9c194fb9ba4877c44add7e5c7df415341a91e5baddf24a1336ac49875804e46",
+          "digest": "e7ae4c06137e1a175e260e60a592f0e6544c36d3190081bf7fe61e0e46f09dac",
           "path": "skills/ultragoal/SKILL.md"
         },
         {
@@ -1606,14 +1663,6 @@
         {
           "digest": "d2da6f86a297f8e053d7e740f5352b3fc88706afbb8b3ccb82023066d410d473",
           "path": "skills/visual-ralph/SKILL.md"
-        },
-        {
-          "digest": "abeaa514ff016d8e84db48aa58e278bcf1f62848147d556114e60e4039399c3f",
-          "path": "skills/visual-verdict/SKILL.md"
-        },
-        {
-          "digest": "b4baf27613f89cea1096845f66398e206f88b4eb82252b2c4b4cd8bcd5551f28",
-          "path": "skills/web-clone/SKILL.md"
         },
         {
           "digest": "94c4715d92451a6ae4281bc1690564a659ad68cb58b0938004a49b1079a14241",

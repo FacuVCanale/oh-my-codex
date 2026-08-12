@@ -59,17 +59,15 @@ describe('catalog schema', () => {
     assert.ok(counts.activeAgentCount > 0);
   });
 
-  it('includes ask as active and legacy ask provider skills as hard-deprecated entries', () => {
+  it('includes ask as active and removed legacy ask provider skills via sunset stubs', () => {
     const parsed = validateCatalogManifest(readSourceManifest());
     const ask = parsed.skills.find((skill) => skill.name === 'ask');
     const askClaude = parsed.skills.find((skill) => skill.name === 'ask-claude');
     const askGemini = parsed.skills.find((skill) => skill.name === 'ask-gemini');
 
     assert.equal(ask?.status, 'active');
-    assert.equal(askClaude?.status, 'deprecated');
-    assert.equal(askClaude?.canonical, undefined);
-    assert.equal(askGemini?.status, 'deprecated');
-    assert.equal(askGemini?.canonical, undefined);
+    assert.equal(askClaude, undefined);
+    assert.equal(askGemini, undefined);
   });
 
   it('includes ai-slop-cleaner as an active built-in skill', () => {

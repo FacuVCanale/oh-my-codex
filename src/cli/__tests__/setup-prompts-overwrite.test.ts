@@ -181,7 +181,7 @@ describe('omx setup prompt/native-agent overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const validPrompts = ['style-reviewer.md', 'quality-reviewer.md', 'sisyphus-lite.md'];
+      const validPrompts = ['style-reviewer.md', 'quality-reviewer.md'];
       for (const validPrompt of validPrompts) {
         assert.equal(existsSync(join(wd, '.codex', 'prompts', validPrompt)), true);
       }

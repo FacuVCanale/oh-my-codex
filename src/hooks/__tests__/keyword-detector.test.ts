@@ -509,7 +509,7 @@ describe('keyword input classification direct grammar', () => {
       { text: '\u00a0$RALPLAN implement this', skills: ['ralplan'], keywords: ['$RALPLAN'], priorities: [11] },
       { text: '- $team $ralph ship this', skills: ['team', 'ralph'], keywords: ['$team', '$ralph'], priorities: [8, 9] },
       { text: '12) $oh-my-codex:ralplan build this', skills: ['ralplan'], keywords: ['$oh-my-codex:ralplan'], priorities: [11] },
-      { text: '$ulw $frontend-ui-ux build this', skills: ['ultrawork', 'design'], keywords: ['$ulw', '$frontend-ui-ux'], priorities: [10, 6] },
+      { text: '$ulw build this', skills: ['ultrawork'], keywords: ['$ulw'], priorities: [10] },
       { text: '$ralplan $unknown $ralplan $ralph ship this', skills: ['ralplan', 'ralph'], keywords: ['$ralplan', '$ralph'], priorities: [11, 9] },
       { text: '$ㅕㅣㅈ 병렬 작업', skills: ['ultrawork'], keywords: ['$ulw'], priorities: [10] },
       { text: 'use $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
@@ -1914,11 +1914,12 @@ describe('explicit skill-name invocation requirement', () => {
   it('does not trigger ralplan from bare skill-name usage', () => {
     assert.equal(detectPrimaryKeyword('please do ralplan first'), null);
   });
-  it('detects explicit prometheus-strict invocation only', () => {
-    const match = detectPrimaryKeyword('please run $prometheus-strict before implementation');
-    assert.ok(match);
-    assert.equal(match.skill, 'prometheus-strict');
-    assert.equal(match.keyword.toLowerCase(), '$prometheus-strict');
+  it('treats removed prometheus-strict as sunset stub', () => {
+    const c = classifyKeywordInput('please run $prometheus-strict before implementation');
+    assert.equal(c.matches.length, 0);
+    assert.equal(c.removedMatches.length, 1);
+    assert.match(c.removedMatches[0].message, /removed/i);
+    assert.match(c.removedMatches[0].message, /use/i);
     assert.equal(detectPrimaryKeyword('please use prometheus-strict planning here'), null);
   });
 });
@@ -1941,7 +1942,6 @@ describe('keyword registry coverage', () => {
     assert.ok(registryKeywords.has('wiki lint'));
     assert.ok(registryKeywords.has('$autoresearch'));
     assert.ok(registryKeywords.has('$ultragoal'));
-    assert.ok(registryKeywords.has('$prometheus-strict'));
     assert.ok(registryKeywords.has('ultragoal'));
     assert.ok(registryKeywords.has('autopilot'));
   });

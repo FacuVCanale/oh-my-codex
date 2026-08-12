@@ -40,8 +40,13 @@ describe('explore + sparkshell guidance contract', () => {
     ]);
   });
 
-  it('keeps the deprecated explore routing isolated to compatibility surfaces', () => {
-    for (const surface of ['prompts/explore.md', 'prompts/explore-harness.md']) {
+  it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
+    // deep-interview, ralplan, ralph, autopilot are now sunset stubs
+    for (const surface of [
+      'prompts/planner.md',
+      'prompts/executor.md',
+      'skills/plan/SKILL.md',
+    ]) {
       expectPatterns(surface, [
         /deprecated/i,
         /compatibility-only/i,
