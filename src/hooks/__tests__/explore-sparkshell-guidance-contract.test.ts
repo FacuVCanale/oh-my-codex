@@ -41,13 +41,12 @@ describe('explore + sparkshell guidance contract', () => {
   });
 
   it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
-    // deep-interview and ralplan are now sunset stubs (merged into plan)
+    // deep-interview, ralplan, ralph, autopilot are now sunset stubs
     for (const surface of [
       'prompts/planner.md',
       'prompts/executor.md',
       'prompts/sisyphus-lite.md',
       'skills/plan/SKILL.md',
-      'skills/ralph/SKILL.md',
     ]) {
       expectPatterns(surface, [
         /`omx explore` is deprecated/i,
@@ -56,10 +55,9 @@ describe('explore + sparkshell guidance contract', () => {
       ]);
     }
     // Sunset stubs should point to successor
-    for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md']) {
+    for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md', 'skills/ralph/SKILL.md', 'skills/autopilot/SKILL.md']) {
       const content = loadSurface(stub);
       assert.match(content, /was removed/i);
-      assert.match(content, /\$plan/i);
     }
   });
 

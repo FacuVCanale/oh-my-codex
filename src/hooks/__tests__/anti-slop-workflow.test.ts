@@ -33,7 +33,7 @@ const antiSlopWorkingAgreementPatterns = [
 
 const antiSlopWorkflowPatterns = [
   /^Anti-slop workflow:$/m,
-  /^- Cleanup\/refactor\/deslop work still follows the same `\$deep-interview` -> `\$ralplan` -> `\$team`\/`\$ralph` path; use `\$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow\.$/m,
+  /^- Cleanup\/refactor\/deslop work follows the same lightweight workflow \(`understand -> execute -> verify -> report`\); use `\$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow\.$/m,
   /^- Write a cleanup plan before modifying code; lock existing behavior with regression tests first, then make one smell-focused pass at a time\.$/m,
   /^- Prefer deletion over addition, and prefer reuse plus boundary repair over new layers\.$/m,
   /^- No new dependencies without explicit request\.$/m,

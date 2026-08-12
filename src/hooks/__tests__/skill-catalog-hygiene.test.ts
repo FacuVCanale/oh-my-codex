@@ -50,7 +50,7 @@ describe('skill catalog hygiene', () => {
   });
 
   it('keeps the cleanup subset free of obsolete prompt/tool boilerplate', () => {
-    const cleanupSubset = ['analyze', 'ecomode', 'git-master', 'plan', 'tdd', 'ultraqa', 'ultrawork', 'web-clone'];
+    const cleanupSubset = ['analyze', 'ecomode', 'git-master', 'plan', 'tdd', 'ultraqa', 'web-clone'];
     const obsolete = [
       /ToolSearch\(/,
       /mcp__[^\s`]+/,
@@ -71,14 +71,11 @@ describe('skill catalog hygiene', () => {
 
   it('keeps primary workflow guidance CLI-first instead of MCP-first', () => {
     const primaryWorkflows = [
-      'autopilot',
       'code-review',
       'ecomode',
       'plan',
-      'ralph',
       'tdd',
       'ultraqa',
-      'ultrawork',
       'wiki',
     ];
     const mcpFirstPatterns = [

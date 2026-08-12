@@ -6,19 +6,19 @@ export interface KeywordTriggerDefinition {
 }
 
 export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = [
-  { keyword: '$ralph', skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
-  { keyword: "don't stop", skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
-  { keyword: 'must complete', skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
-  { keyword: 'keep going', skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
+  { keyword: '$ralph', skill: 'ralph', priority: 9, guidance: 'Sunset: $ralph was removed in OMX 0.21; use $ultragoal (stub)' },
+  { keyword: "don't stop", skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
+  { keyword: 'must complete', skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
+  { keyword: 'keep going', skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
 
-  { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
-  { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
-  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
-  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
+  { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Sunset: $autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
+  { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Sunset: autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
+  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Sunset: autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
+  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Sunset: autopilot was removed in OMX 0.21; use the default lightweight workflow (understand -> execute -> verify -> report) (stub)' },
 
-  { keyword: '$ultrawork', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
-  { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
-  { keyword: 'parallel', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
+  { keyword: '$ultrawork', skill: 'ultrawork', priority: 10, guidance: 'Sunset: $ultrawork was removed in OMX 0.21; use $team (stub)' },
+  { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Sunset: ultrawork was removed in OMX 0.21; use $team (stub)' },
+  { keyword: 'parallel', skill: 'ultrawork', priority: 10, guidance: 'Sunset: ultrawork was removed in OMX 0.21; use $team (stub)' },
   { keyword: '$ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: 'ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: '$ultraqa', skill: 'ultraqa', priority: 8, guidance: 'Activate UltraQA cycling workflow' },

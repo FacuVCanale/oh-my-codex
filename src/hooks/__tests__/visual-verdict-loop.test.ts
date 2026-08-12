@@ -17,19 +17,9 @@ describe('visual-verdict skill contract', () => {
   });
 });
 
-describe('ralph visual loop integration guidance', () => {
-  it('requires the built-in Visual Ralph verdict before next edit', () => {
-    assert.match(ralphSkill, /Visual Ralph verdict step/i);
-    assert.match(ralphSkill, /before every next edit/i);
-  });
-
-  it('documents -i and --images-dir flags', () => {
-    assert.match(ralphSkill, /-i <image-path>/);
-    assert.match(ralphSkill, /--images-dir <directory>/);
-  });
-
-  it('requires persisting visual feedback to ralph-progress ledger', () => {
-    assert.match(ralphSkill, /ralph-progress\.json/);
-    assert.match(ralphSkill, /numeric \+ qualitative feedback/i);
+describe('ralph sunset stub contract', () => {
+  it('ralph is a sunset stub pointing to ultragoal', () => {
+    assert.match(ralphSkill, /was removed/i);
+    assert.match(ralphSkill, /\$ultragoal/i);
   });
 });

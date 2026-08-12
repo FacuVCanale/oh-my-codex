@@ -5,20 +5,23 @@
     {
       "name": "autopilot",
       "category": "execution",
-      "status": "active",
-      "core": true
+      "status": "deprecated",
+      "core": false,
+      "description": "Removed in OMX 0.21; default lightweight workflow documented in AGENTS.md. One-release sunset stub."
     },
     {
       "name": "ralph",
       "category": "execution",
-      "status": "active",
-      "core": true
+      "status": "deprecated",
+      "core": false,
+      "description": "Removed in OMX 0.21; use ultragoal. One-release sunset stub."
     },
     {
       "name": "ultrawork",
       "category": "execution",
-      "status": "active",
-      "core": true
+      "status": "deprecated",
+      "core": false,
+      "description": "Removed in OMX 0.21; use team. One-release sunset stub."
     },
     {
       "name": "team",
@@ -45,8 +48,9 @@
     {
       "name": "autoresearch-goal",
       "category": "execution",
-      "status": "active",
-      "core": false
+      "status": "deprecated",
+      "core": false,
+      "description": "Removed in OMX 0.21; use autoresearch. One-release sunset stub."
     },
     {
       "name": "performance-goal",
@@ -57,8 +61,9 @@
     {
       "name": "pipeline",
       "category": "execution",
-      "status": "active",
-      "core": false
+      "status": "deprecated",
+      "core": false,
+      "description": "Removed in OMX 0.21; use plan and team directly. One-release sunset stub."
     },
     {
       "name": "ultragoal",

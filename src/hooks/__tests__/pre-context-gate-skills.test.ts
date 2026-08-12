@@ -45,22 +45,13 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.match(teamSkill, /initialize\/sync it from canonical team runtime state before proceeding/i);
   });
 
-  it('autopilot documents required pre-context intake before expansion', () => {
-    assert.match(autopilotSkill, /Pre-context Intake/i);
-    assert.match(autopilotSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
-    assert.match(autopilotSkill, /run `explore` first/i);
-    assert.match(autopilotSkill, /\$deep-interview\s+--quick/i);
+  it('autopilot is a sunset stub pointing to the default lightweight workflow', () => {
+    assert.match(autopilotSkill, /was removed/i);
+    assert.match(autopilotSkill, /understand -> execute -> verify -> report/i);
   });
 
-  it('ralph documents required pre-context intake before execution loop', () => {
-    assert.match(ralphSkill, /Pre-context intake/i);
-    assert.match(ralphSkill, /\.omx\/context\/\{task-slug\}-\{timestamp\}\.md/);
-    assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
-  });
-
-  it('ralph documents state CLI retry guidance when the MCP channel is unavailable', () => {
-    assert.match(ralphSkill, /do \*\*not\*\* retry the same MCP call/i);
-    assert.match(ralphSkill, /omx state write --input '<json>' --json/i);
-    assert.match(ralphSkill, /preserving `workingDirectory` and `session_id`/i);
+  it('ralph is a sunset stub pointing to ultragoal', () => {
+    assert.match(ralphSkill, /was removed/i);
+    assert.match(ralphSkill, /\$ultragoal/i);
   });
 });

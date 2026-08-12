@@ -25,10 +25,10 @@ describe('research workflow boundary guidance', () => {
     assert.match(skill, /should not become a final architecture\/component unless the user explicitly asks/i);
   });
 
-  it('keeps autoresearch-goal limited to goal-mode research missions', () => {
+  it('autoresearch-goal is a sunset stub pointing to autoresearch', () => {
     const skill = read('skills/autoresearch-goal/SKILL.md');
-    assert.match(skill, /Codex goal-mode management plus professor\/critic-style validation/i);
-    assert.match(skill, /not the default answer for ordinary pre-planning best-practice lookup/i);
+    assert.match(skill, /was removed/i);
+    assert.match(skill, /\$autoresearch/i);
   });
 
   it('requires plan to synthesize prior research instead of embedding research automation by default', () => {

@@ -5,22 +5,22 @@
     {
       "name": "autopilot",
       "category": "execution",
-      "status": "active",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
       "name": "ralph",
       "category": "execution",
-      "status": "active",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
       "name": "ultrawork",
       "category": "execution",
-      "status": "active",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
@@ -54,7 +54,7 @@
     {
       "name": "autoresearch-goal",
       "category": "execution",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -68,7 +68,7 @@
     {
       "name": "pipeline",
       "category": "execution",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },

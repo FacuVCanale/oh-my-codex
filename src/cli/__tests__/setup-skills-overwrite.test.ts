@@ -76,7 +76,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('visual-ralph'), true);
       assert.equal(installed.has('web-clone'), false);
       assert.equal(installed.has('frontend-ui-ux'), false);
-      assert.equal(installed.has('pipeline'), true);
+      assert.equal(installed.has('pipeline'), false, 'pipeline is a sunset stub; should not be installed');
       assert.equal(installed.has('configure-notifications'), true);
       assert.equal(installed.has('wiki'), true);
       assert.equal(installed.has('configure-discord'), false);
@@ -153,7 +153,7 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
-  it('keeps newly cataloged pipeline skill fresh on --force', async () => {
+  it('keeps newly cataloged ultragoal skill fresh on --force', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();
     try {
@@ -162,12 +162,12 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const pipelinePath = join(wd, '.codex', 'skills', 'pipeline', 'SKILL.md');
-      await writeFile(pipelinePath, '# stale pipeline\n');
+      const ultragoalPath = join(wd, '.codex', 'skills', 'ultragoal', 'SKILL.md');
+      await writeFile(ultragoalPath, '# stale ultragoal\n');
 
       await setup({ scope: 'project', force: true });
 
-      assert.match(await readFile(pipelinePath, 'utf-8'), /^---\nname: pipeline/m);
+      assert.match(await readFile(ultragoalPath, 'utf-8'), /^---\nname: ultragoal/m);
       assert.equal(existsSync(join(wd, '.codex', 'skills', 'team')), true);
     } finally {
       process.chdir(previousCwd);
