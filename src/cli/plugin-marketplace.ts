@@ -422,7 +422,10 @@ async function retireUnpinnedManagedSnapshots(
 		if (existsSync(join(path, ".omx-live-pin"))) continue;
 		managed.push({ path, version: entry.name, mtimeMs: (await lstat(path)).mtimeMs });
 	}
-	managed.sort((left, right) => right.mtimeMs - left.mtimeMs || right.version.localeCompare(left.version));
+	managed.sort((left, right) =>
+		right.version.localeCompare(left.version, undefined, { numeric: true }) ||
+		right.mtimeMs - left.mtimeMs,
+	);
 	const retired: string[] = [];
 	for (const candidate of managed.slice(1)) {
 		await rm(candidate.path, { recursive: true, force: true });
