@@ -113,4 +113,8 @@ Implementation should be considered complete only when tests prove:
 5. denial messages mention both `omx state` and `omx_state.*`
 6. HUD / overlay / stop-hook consumers honor the combined set consistently
 7. `autopilot` and `autoresearch` still reject unsupported overlap attempts; Autopilot review-driven planning loopbacks keep `autopilot` active and update its `current_phase` to `ralplan` instead of starting standalone `ralplan`
-8. `deep-interview -> ralplan` is evidence-gated: answered or handoff-cleared question obligations alone do not complete deep-interview, and Autopilot `ralplan -> ultragoal` remains blocked with `documented_host_consensus_receipt_unavailable` until an official non-user-mintable host receipt verifier exists; native lanes, trackers, `codex_exec`, and artifact approvals are non-authoritative.
+8. The retired Autopilot/Ralplan host-receipt gate must not block ordinary
+   progression or authority-decreasing recovery. Native lanes, trackers,
+   `codex_exec`, and artifacts remain planning/review evidence rather than an
+   authorization boundary; missing host provenance does not terminalize the
+   lightweight workflow.

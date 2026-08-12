@@ -89,6 +89,26 @@ describe('execution-loop sunset stub contract', () => {
     assert.doesNotMatch(gettingStartedDocs, /Choose `\$autopilot`.*`\$ultrawork`.*`\$ralph`/);
   });
 
+  it('#3486 keeps canonical workflow and recovery docs aligned with the lightweight runtime', () => {
+    const canonicalWorkflowDocs = [
+      'docs/STATE_MODEL.md',
+      'docs/contracts/ralplan-consensus-gate.md',
+      'docs/contracts/multi-state-transition-contract.md',
+      'docs/codex-native-hooks.md',
+    ];
+    for (const path of canonicalWorkflowDocs) {
+      const content = readFileSync(join(guidanceRoot, path), 'utf-8');
+      assert.doesNotMatch(content, /documented_host_consensus_receipt_unavailable/);
+      assert.doesNotMatch(content, /missing host (?:receipt|provenance) (?:terminalizes|terminalized|will terminalize)/i);
+    }
+
+    const nativeHooks = readFileSync(join(guidanceRoot, 'docs/codex-native-hooks.md'), 'utf-8');
+    assert.match(nativeHooks, /omx setup --scope user --disable-hooks/);
+    assert.match(nativeHooks, /omx setup --scope project --disable-hooks/);
+    assert.match(nativeHooks, /preserving project `\.omx` artifacts, foreign hooks/i);
+    assert.doesNotMatch(nativeHooks, /omx hooks disable/);
+  });
+
   it('autopilot stub does not preserve the old broad phase lifecycle', () => {
     assert.doesNotMatch(autopilotSkill, /All 5 phases completed/i);
     assert.doesNotMatch(autopilotSkill, /Phase 0 - Expansion/i);
