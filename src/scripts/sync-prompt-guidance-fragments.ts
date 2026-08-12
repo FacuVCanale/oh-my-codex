@@ -12,6 +12,7 @@ function replaceBetween(text: string, startMarker: string, endMarker: string, re
 }
 
 async function main(): Promise<void> {
+  const check = process.argv.includes('--check');
   const op = (await read('docs/prompt-guidance-fragments/core-operating-principles.md')).trim();
   const sr = (await read('docs/prompt-guidance-fragments/leader-specialist-routing.md')).trim();
   const vs = (await read('docs/prompt-guidance-fragments/core-verification-and-sequencing.md')).trim();
@@ -23,30 +24,66 @@ async function main(): Promise<void> {
   const vfC = (await read('docs/prompt-guidance-fragments/verifier-constraints.md')).trim();
   const vfI = (await read('docs/prompt-guidance-fragments/verifier-investigation.md')).trim();
 
-  for (const file of ['AGENTS.md', 'templates/AGENTS.md']) {
-    if (!existsSync(file)) continue;
-    let text = await read(file);
-    text = replaceBetween(text, '<!-- OMX:GUIDANCE:OPERATING:START -->', '<!-- OMX:GUIDANCE:OPERATING:END -->', op);
-    text = replaceBetween(text, '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->', '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->', sr);
-    text = replaceBetween(text, '<!-- OMX:GUIDANCE:VERIFYSEQ:START -->', '<!-- OMX:GUIDANCE:VERIFYSEQ:END -->', vs);
-    await writeFile(file, text);
+  const targets: Array<{ file: string; replacements: Array<[string, string, string]> }> = [
+    {
+      file: 'AGENTS.md',
+      replacements: [
+        ['<!-- OMX:GUIDANCE:OPERATING:START -->', '<!-- OMX:GUIDANCE:OPERATING:END -->', op],
+        ['<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->', '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->', sr],
+        ['<!-- OMX:GUIDANCE:VERIFYSEQ:START -->', '<!-- OMX:GUIDANCE:VERIFYSEQ:END -->', vs],
+      ],
+    },
+    {
+      file: 'templates/AGENTS.md',
+      replacements: [
+        ['<!-- OMX:GUIDANCE:OPERATING:START -->', '<!-- OMX:GUIDANCE:OPERATING:END -->', op],
+        ['<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:START -->', '<!-- OMX:GUIDANCE:SPECIALIST-ROUTING:END -->', sr],
+        ['<!-- OMX:GUIDANCE:VERIFYSEQ:START -->', '<!-- OMX:GUIDANCE:VERIFYSEQ:END -->', vs],
+      ],
+    },
+    {
+      file: 'prompts/executor.md',
+      replacements: [
+        ['<!-- OMX:GUIDANCE:EXECUTOR:CONSTRAINTS:START -->', '<!-- OMX:GUIDANCE:EXECUTOR:CONSTRAINTS:END -->', exC],
+        ['<!-- OMX:GUIDANCE:EXECUTOR:OUTPUT:START -->', '<!-- OMX:GUIDANCE:EXECUTOR:OUTPUT:END -->', exO],
+      ],
+    },
+    {
+      file: 'prompts/planner.md',
+      replacements: [
+        ['<!-- OMX:GUIDANCE:PLANNER:CONSTRAINTS:START -->', '<!-- OMX:GUIDANCE:PLANNER:CONSTRAINTS:END -->', plC],
+        ['<!-- OMX:GUIDANCE:PLANNER:INVESTIGATION:START -->', '<!-- OMX:GUIDANCE:PLANNER:INVESTIGATION:END -->', plI],
+        ['<!-- OMX:GUIDANCE:PLANNER:OUTPUT:START -->', '<!-- OMX:GUIDANCE:PLANNER:OUTPUT:END -->', plO],
+      ],
+    },
+    {
+      file: 'prompts/verifier.md',
+      replacements: [
+        ['<!-- OMX:GUIDANCE:VERIFIER:CONSTRAINTS:START -->', '<!-- OMX:GUIDANCE:VERIFIER:CONSTRAINTS:END -->', vfC],
+        ['<!-- OMX:GUIDANCE:VERIFIER:INVESTIGATION:START -->', '<!-- OMX:GUIDANCE:VERIFIER:INVESTIGATION:END -->', vfI],
+      ],
+    },
+  ];
+
+  const drift: string[] = [];
+  for (const target of targets) {
+    if (!existsSync(target.file)) continue;
+    let text = await read(target.file);
+    let expected = text;
+    for (const [start, end, replacement] of target.replacements) {
+      expected = replaceBetween(expected, start, end, replacement);
+    }
+    if (check) {
+      if (expected !== text) drift.push(target.file);
+    } else {
+      if (expected !== text) await writeFile(target.file, expected);
+    }
   }
 
-  let text = await read('prompts/executor.md');
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:EXECUTOR:CONSTRAINTS:START -->', '<!-- OMX:GUIDANCE:EXECUTOR:CONSTRAINTS:END -->', exC);
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:EXECUTOR:OUTPUT:START -->', '<!-- OMX:GUIDANCE:EXECUTOR:OUTPUT:END -->', exO);
-  await writeFile('prompts/executor.md', text);
-
-  text = await read('prompts/planner.md');
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:PLANNER:CONSTRAINTS:START -->', '<!-- OMX:GUIDANCE:PLANNER:CONSTRAINTS:END -->', plC);
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:PLANNER:INVESTIGATION:START -->', '<!-- OMX:GUIDANCE:PLANNER:INVESTIGATION:END -->', plI);
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:PLANNER:OUTPUT:START -->', '<!-- OMX:GUIDANCE:PLANNER:OUTPUT:END -->', plO);
-  await writeFile('prompts/planner.md', text);
-
-  text = await read('prompts/verifier.md');
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:VERIFIER:CONSTRAINTS:START -->', '<!-- OMX:GUIDANCE:VERIFIER:CONSTRAINTS:END -->', vfC);
-  text = replaceBetween(text, '<!-- OMX:GUIDANCE:VERIFIER:INVESTIGATION:START -->', '<!-- OMX:GUIDANCE:VERIFIER:INVESTIGATION:END -->', vfI);
-  await writeFile('prompts/verifier.md', text);
+  if (check && drift.length > 0) {
+    throw new Error(`prompt_guidance_fragment_drift:${drift.join(',')}`);
+  }
+  if (check) console.log('prompt guidance check ok');
 }
 
 main().catch((err) => {
