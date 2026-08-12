@@ -2,7 +2,7 @@
   "kind": "omx_capabilities_lock",
   "surfaces": {
     "agents": {
-      "digest": "63c9b3d021698b2bee26e78f3cbf4e554b6f91a773863b18746a37245c87f96b",
+      "digest": "4a20d13359b5a16473dc993ad94f1a09f437264faf080e68f7183ebd448f4f4f",
       "files": [
         {
           "digest": "df4f90d10549e66ce33e9fad097ecd9ea8fcf08e7a6d7085550c8c95b5336d77",
@@ -81,7 +81,7 @@
           "path": "prompts/product-manager.md"
         },
         {
-          "digest": "a904daac293ca33f91291442b41a147d2ac2f314ad182cea457ccb97173ef3fe",
+          "digest": "1ffb593edcb40ca89e2cffeb6e567af1df19ad5da19564cb21fe49f8db557a78",
           "path": "prompts/prometheus-strict-metis.md"
         },
         {
@@ -1574,10 +1574,10 @@
       ]
     },
     "skills": {
-      "digest": "0e59dbf0f181393ea4fd5b5a10afe938d56b31585ba1952dbcd9d4b028f3fd62",
+      "digest": "292a6f63b1031abc280164d222ffbb845e54e89d626bbc11cf553bfa35460659",
       "files": [
         {
-          "digest": "3b34b200e4797cf0b31a2840ee745565a84bcd59fd0537b41825fa5951087a8c",
+          "digest": "4f1b7a5f096e846e51c57362bb5e06c908b17861f75a53057391f87c817285fe",
           "path": "skills/ai-slop-cleaner/SKILL.md"
         },
         {
@@ -1597,7 +1597,7 @@
           "path": "skills/ask/SKILL.md"
         },
         {
-          "digest": "55f05e82682133fd7c42f524d69d54ff73b1f1e9d4e65333bead4fa146410197",
+          "digest": "93fe1aaad240211c8617004b30df552335227399965c8db16ef45fef0a59a387",
           "path": "skills/autopilot/SKILL.md"
         },
         {
@@ -1617,11 +1617,11 @@
           "path": "skills/build-fix/SKILL.md"
         },
         {
-          "digest": "9dc56f2817d218c696c7de198dc21b7666e8c37d8a78373cc1b04869586ba96b",
+          "digest": "246458233c1d493a704df676f9e1f4ae17f2a27a276ee473e0d113670b0a5518",
           "path": "skills/cancel/SKILL.md"
         },
         {
-          "digest": "529e730550f911b935ebb2f15085e8e148fbd70c85dce93a9b3b6b4f4e8299d7",
+          "digest": "52cd2a7bed15900e23e9850542dc83e7f26a499745d97401445712f354e94ccc",
           "path": "skills/code-review/SKILL.md"
         },
         {
@@ -1629,7 +1629,7 @@
           "path": "skills/configure-notifications/SKILL.md"
         },
         {
-          "digest": "9979d0d4aef4e917af9559ce952f51530c525263d545c01f4780372078523bb0",
+          "digest": "5350379268a22eaa22b88ff98d0085bbbea059d4970b5be9e22ab886870488d0",
           "path": "skills/deep-interview/SKILL.md"
         },
         {
@@ -1669,7 +1669,7 @@
           "path": "skills/note/SKILL.md"
         },
         {
-          "digest": "30e994b5217c7ede52b88c65bfc53797a627c8404b7959bd5797888b49beba4a",
+          "digest": "21e56ba3e2cf070f2d8de7384185c0af2bf587d6090b6597a8062c4d102b2123",
           "path": "skills/omx-setup/SKILL.md"
         },
         {
@@ -1681,11 +1681,11 @@
           "path": "skills/pipeline/SKILL.md"
         },
         {
-          "digest": "24ddfa88be1efd06baf8fd93373be6d19ade207a6d2c37822d8dcc08835770ac",
+          "digest": "31badb8a5a61fda71a56c5aa7412ce43b4056bd0a8eeae1455c8a887bf933ebe",
           "path": "skills/plan/SKILL.md"
         },
         {
-          "digest": "43b2639c4dc2ac3853fc141927270ab6c6cb1d791b52934f0eb1a437e57d6b81",
+          "digest": "d5232220005de50d3a7fe1440d71bfa2e6519c09c07566e3193522fe1a1be47b",
           "path": "skills/prometheus-strict/SKILL.md"
         },
         {
@@ -1693,11 +1693,11 @@
           "path": "skills/ralph-init/SKILL.md"
         },
         {
-          "digest": "fd631c8fd4011af487c5521b2f29c9c31d0f9f90480be294811b9c9ae8da2b6c",
+          "digest": "cb0ce8dec4c36cfc0267afc2d4b142ad3722b2df99b16203cdb5926d12ef4b25",
           "path": "skills/ralph/SKILL.md"
         },
         {
-          "digest": "510b639a0e79c611f9f46c4739db2b2ba7873dfc5e41656c506acf3db5fd9467",
+          "digest": "ec039864560ff05ce9cbd7297383bec38fb4bf9f6d52aaff6883f47330d9929f",
           "path": "skills/ralplan/SKILL.md"
         },
         {
@@ -1721,7 +1721,7 @@
           "path": "skills/tdd/SKILL.md"
         },
         {
-          "digest": "2163d2df462e21a9c5734dfbd764044195814937866cfe037b5a860a2f803397",
+          "digest": "2e80b184f48a04ee685839a7085b73549dd90d70b2d13d6f5ba79adf8ed53057",
           "path": "skills/team/SKILL.md"
         },
         {
@@ -1729,7 +1729,7 @@
           "path": "skills/trace/SKILL.md"
         },
         {
-          "digest": "c6d8d253dd0f3041c0c671838a346218a03c1479169777ede02734dffe8d3c73",
+          "digest": "e7ae4c06137e1a175e260e60a592f0e6544c36d3190081bf7fe61e0e46f09dac",
           "path": "skills/ultragoal/SKILL.md"
         },
         {

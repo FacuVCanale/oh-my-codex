@@ -57,6 +57,8 @@ function isSourceCheckout(): boolean {
 function runSourceCheckoutGate(): void {
   run(npmBin(), ["run", "verify:native-agents"]);
   run(npmBin(), ["run", "verify:plugin-bundle"]);
+  run(npmBin(), ["run", "verify:capabilities-lock"]);
+  run(npmBin(), ["run", "verify:prompt-guidance"]);
   run(npmBin(), ["run", "test:node"]);
   run(process.execPath, ["dist/scripts/generate-catalog-docs.js", "--check"]);
 }
