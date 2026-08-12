@@ -5,156 +5,78 @@ description: "Visual Ralph orchestration for frontend UI from generated referenc
 
 # Visual Ralph Skill
 
-Use this skill when the user wants Codex to build or restyle frontend UI through a Visual Ralph loop: an approved generated reference, static reference, or live URL-derived baseline becomes the target, Ralph implements, and Visual Verdict drives measured iteration rather than subjective description alone.
+Use `$visual-ralph` for measured frontend implementation from an approved generated reference, static image, or live-URL baseline. The loop is:
 
-## Purpose
+`description / URL -> approved reference -> $ralph implementation -> Visual Ralph verdict + pixel diff -> reusable design system`.
 
-Create a measured frontend delivery loop from either a generated reference, a static reference, or a live URL:
+For URL cloning, this skill owns the migrated `$web-clone` use case; preserve URL, viewport, fidelity, and interaction notes here. Do not invoke standalone `$web-clone`.
 
-`user description / live URL -> approved visual reference -> $ralph implementation -> Visual Ralph verdict + pixel diff -> reproducible design system`.
-
-For live URL cloning requests, Visual Ralph owns the migrated `$web-clone` use case. Do not route new URL-driven website cloning work to `$web-clone`; preserve the URL, viewport, fidelity requirements, and interaction notes inside the Visual Ralph loop.
-
-This is an orchestration skill. It composes existing skills and must not add runtime commands, dependencies, or app-specific assumptions by itself.
+Shared operating, delegation, state, hook, team, cancellation, and verification invariants live in [`templates/AGENTS.md`](../../templates/AGENTS.md). Follow that source instead of duplicating its rules here.
 
 ## Use when
 
-- The user describes a desired web/app UI and wants implementation, not just design advice.
-- The user provides a live URL and wants a visual implementation or clone through measured Visual Verdict iteration.
-- A generated raster mockup/reference image would make the target clearer.
-- The task needs pixel-level visual iteration with a pass/fail threshold.
-- The final result should leave reusable design tokens/components, not only a one-off screenshot match.
+- The user wants a web/app UI built or restyled against a visual target.
+- A live URL or generated raster mockup needs measured implementation and pixel-level iteration.
+- The result must leave reusable repo-native tokens/components, not only a matching screenshot.
 
-## Do not use when
-
-- The user only wants repo-wide design guidance, product/design context, or a DESIGN.md source of truth; use `$design` or a designer lane.
-- The task is a non-visual backend/API implementation with no UI reference target.
-- The user already supplied a final static reference image and only needs comparison/fixes; hand directly to `$ralph` with Visual Ralph verdict guidance.
-- The requested output is a deterministic SVG/vector/code-native asset rather than a raster reference.
+Do not use it for a durable `DESIGN.md` brief (`$design`), non-visual backend work, comparison-only fixes that can go directly to `$ralph`, or deterministic SVG/code-native assets.
 
 ## Workflow
 
-### 1. Ground the target repo
+### 1. Ground the repository
 
-Before stack-specific choices, inspect local evidence:
-- package manager and scripts,
-- frontend framework and routing structure,
-- styling system and design-token conventions,
-- screenshot/test tooling,
-- existing components that should be reused.
+Inspect package manager/scripts, frontend framework and routes, styling/token conventions, screenshot tooling, and reusable components. Choose stack-specific commands only when repository evidence supports them.
 
-Do not hardcode React, Vue, Tailwind, Playwright, or any other stack unless the repository evidence supports it.
+### 2. Establish a reference
 
-### 2. Establish the visual reference
+For a live URL, capture or document an artifact containing source URL and permission/scope, viewport(s), route/state, seed/login assumptions, baseline screenshot path or capture command, visible-control parity notes, and exclusions (backend/API/auth, personalized data, crawling, third-party widgets).
 
-For live URL requests, capture or document the URL-derived reference inside the Visual Ralph artifacts and carry forward viewport, content-state, and interaction constraints. Do not invoke `$web-clone`; that standalone skill is hard-deprecated.
-
-Live URL reference artifacts must include:
-- source URL and permission/scope note,
-- viewport(s), route/state, and any seed/login assumptions,
-- captured baseline screenshot path or documented capture command/tool,
-- interaction parity notes for visible controls,
-- known exclusions such as backend/API/auth, personalized data, multi-page crawling, and third-party widget parity.
-
-For generated UI concepts, use `$imagegen` to produce the reference from the user's UI description.
-
-Prompt requirements:
-- classify as `ui-mockup`, unless another imagegen taxonomy is clearly better,
-- include viewport/aspect ratio and intended surface,
-- specify layout, hierarchy, typography direction, color mood, and any exact text,
-- forbid logos/watermarks/unrequested brand marks,
-- ask imagegen to avoid impossible UI details or unreadable text.
-
-When running under OMX CLI/runtime and a generated reference is part of an active Ralph-style loop, queue a continuation checkpoint before invoking the built-in image tool:
+For a generated concept, use `$imagegen` with classification `ui-mockup`, viewport/aspect ratio, surface, layout hierarchy, typography, color mood, exact text, no logos/watermarks/unrequested marks, and readable/feasible UI details. In OMX runtime, queue the continuation checkpoint before the built-in image tool:
 
 ```bash
 omx imagegen continuation <session-id> --artifact <slug-or-filename> --generated-dir "$CODEX_HOME/generated_images/<session>" --work-dir ".omx/artifacts/visual-ralph/<slug>"
 ```
 
-This helper records `.omx/state/sessions/<session>/imagegen-pending.json` and uses the existing Stop-hook follow-up queue. It exists because built-in image generation may have to end the assistant turn immediately; the next Stop checkpoint should resume artifact recovery, copy the generated image into the workspace, and run the required visual QA/verdict gate instead of relying on a manual `$ralph` re-prompt.
+Copy the approved reference into `.omx/artifacts/visual-ralph/<slug>/reference.png`; do not leave it only under `$CODEX_HOME/generated_images`.
 
-For project-bound implementation, copy the approved reference into the workspace, for example under `.omx/artifacts/visual-ralph/<slug>/reference.png`. Never leave the implementation reference only in `$CODEX_HOME/generated_images/...`.
+### 3. Approval gate
 
-### 3. Require explicit user approval
+Stop after generation or URL capture and obtain approval of one reference image/state (or a targeted regeneration/capture adjustment). Before approval, do not implement or invoke `$ralph`. After approval, the image/baseline is the visual source of truth; major pivots require an explicit user request.
 
-Stop after reference generation or URL-derived reference capture and ask the user to approve one reference image/state or request a targeted regeneration/capture adjustment.
+### 4. Hand off to `$ralph`
 
-Before approval:
-- do not start frontend implementation,
-- do not invoke `$ralph`,
-- do not treat a rough image as final.
+Pass the approved reference/baseline, URL and permission note when applicable, viewport/content state, interaction parity and exclusions, user description, detected frontend context, screenshot command/viewport, and the completion checklist. Ralph edits, runs, captures, and iterates after approval until matched or blocked.
 
-After approval, the confirmed image or URL-derived baseline becomes the visual source of truth. Major design pivots, replacing the reference, or changing the design direction require an explicit user request.
+### 5. Verdict before every edit
 
-### 4. Hand off to `$ralph` for implementation
+For each iteration, capture the current screenshot with viewport/state, run Visual Ralph verdict (using `vision` when needed), and treat its JSON as authoritative. If `score < 90`, turn `differences[]` and `suggestions[]` into the next edit plan and rerun before editing. Required verdict keys: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, `reasoning`.
 
-Invoke `$ralph` with:
-- the approved reference image path or URL-derived baseline artifact,
-- source URL, viewport(s), content state, and interaction parity notes for live URL tasks,
-- the user description,
-- the detected repo/frontend context,
-- exact screenshot command/viewport requirements,
-- the completion checklist below.
+### 6. Secondary diff evidence
 
-Ralph may iterate autonomously after approval. It should edit code, run the app, capture screenshots, and keep improving until the approved reference is matched or a real blocker exists.
+Use pixel diff/pixelmatch overlays only to locate hotspots and translate them into edits; they never replace the verdict. Record final reference, screenshot, and diff artifacts for auditability.
 
-### 5. Use Visual Ralph verdict before every next edit
+### 7. Reusable design system
 
-For each visual iteration:
-1. Capture the current generated screenshot with recorded viewport/state.
-2. Run the Visual Ralph verdict step comparing the approved reference and generated screenshot. Use the `vision` agent for image understanding when needed.
-3. Treat the JSON verdict as authoritative.
-4. If `score < 90`, convert `differences[]` and `suggestions[]` into the next edit plan.
-5. Rerun before the next edit.
+Encode the match in existing repo-native CSS variables, theme tokens, config, component variants, stories, or `DESIGN.md` updates. Capture applicable colors, spacing, typography/weights, radii, shadows/elevation, and important variants/states. Extend existing patterns rather than adding a parallel layer.
 
-Required verdict shape: `score`, `verdict`, `category_match`, `differences[]`, `suggestions[]`, and `reasoning`.
+## Completion evidence and stop conditions
 
-### 6. Use pixel diff only as secondary debug evidence
-
-When mismatch diagnosis is hard, generate a pixel diff or pixelmatch overlay to locate hotspots. Pixel diff does not replace the Visual Ralph verdict; it only helps translate visual hotspots into concrete edits.
-
-Record final diff evidence with the reference/screenshot artifacts so the result can be audited.
-
-### 7. Build a reproducible design system
-
-The implementation is incomplete unless the visual match is encoded in repo-native reusable artifacts. Depending on the project, this may mean CSS variables, theme tokens, Tailwind config, component variants, Storybook stories, updates that align with DESIGN.md, or existing equivalents.
-
-Capture at least the applicable:
-- colors,
-- spacing scale,
-- typography scale/weights,
-- radii,
-- shadows/elevation,
-- important component variants and states.
-
-Prefer existing token/component patterns. Do not introduce a new design-system layer if the repo already has one that can be extended.
-
-## Completion checklist
-
-Do not declare done until all are true:
-- Approved reference image or URL-derived reference artifact is saved in the workspace.
-- Screenshot reproduction command, viewport, route, seed/state, and output paths are documented.
-- Visual Ralph verdict final score is `>= 90` against the approved reference.
-- Pixel diff or overlay evidence is recorded as secondary debug evidence.
-- Design-system tokens/components are repo-native and reusable.
-- Build/lint/test or the repo's equivalent verification passes.
-- No unapproved major design pivot occurred after reference approval.
-- Remaining visual differences, if any, are explicitly documented with rationale.
+Do not declare done until the approved reference/baseline and reproduction command (viewport, route, state, output path) are saved; final verdict is `>= 90`; secondary diff evidence is recorded; reusable tokens/components exist; equivalent build/lint/test verification passes; no unapproved pivot occurred; and remaining differences are documented. Stop at the approval gate or report a concrete blocker when evidence cannot satisfy these conditions.
 
 ## Handoff template
 
 ```text
 $ralph "Implement the approved frontend reference.
-Reference: <workspace-reference-image-or-url-derived-artifact>
-Source URL (if URL-derived): <url and permission/scope note>
+Reference: <workspace reference or URL-derived artifact>
+Source URL and permission/scope: <when applicable>
 Viewport/content state: <viewport, route/state, seed/login assumptions>
-Interaction parity notes: <visible controls and known exclusions>
+Interaction parity and exclusions: <visible controls and known limits>
 Route/surface: <route or component>
 Screenshot command: <command and viewport>
-Use the Visual Ralph verdict step before every next edit; pass threshold score >= 90.
-Use pixel diff only as secondary debug evidence.
-Extract reusable design tokens/components for colors, spacing, typography, radii, shadows, and key variants.
-Run build/lint/test before completion.
+Run Visual Ralph verdict before every next edit; pass threshold >= 90.
+Use pixel diff only as secondary evidence.
+Extract reusable tokens/components for colors, spacing, typography, radii, shadows, and variants.
+Run the repository's equivalent verification before completion.
 Do not make major design pivots unless explicitly requested."
 ```
 

@@ -5,176 +5,76 @@ description: Canonical repo-local DESIGN.md workflow for product, UI/UX, and fro
 
 # Design Skill
 
-Use `$design` when product, UI/UX, frontend, or design-system decisions need a durable source of truth in the repository. This skill discovers existing design context, interviews for missing product/design information, and creates or refreshes repo-local `DESIGN.md` so future UI/UX/frontend work is grounded instead of improvised.
+Use `$design` to discover product and UI evidence, close only design-critical context gaps, and create or refresh the repository’s durable `DESIGN.md` contract. It is a maintained design brief, not a pixel-matching loop or one-off critique.
 
-## Purpose
-
-Make repo-local `DESIGN.md` source of truth and canonical design contract for the current repository:
-
-`existing repo evidence -> missing-context interview -> create/refresh DESIGN.md -> use DESIGN.md for UI/UX/frontend decisions`.
-
-The output is not a pixel-matching loop and not a one-off visual critique. It is the maintained design brief/checklist that implementation, review, and future visual work should cite.
+Shared operating, delegation, state, hook, team, cancellation, and verification invariants live in [`templates/AGENTS.md`](../../templates/AGENTS.md). Follow that source instead of duplicating its rules here.
 
 ## Use when
 
-- The user asks for design direction, UX guidance, frontend planning, or design-system alignment.
-- A repo needs a design brief before UI/frontend implementation begins.
-- Existing UI/components/assets/screenshots need to be summarized into a reusable design source of truth.
-- UI/UX/frontend decisions are ambiguous and should be resolved through product context, constraints, and documented principles.
-- A feature needs `DESIGN.md` created or refreshed before `$ralph`, a designer lane, or implementation work proceeds.
+- Product, UX, frontend, or design-system decisions need a repo-local source of truth.
+- A feature needs a design brief before `$ralph`, a designer lane, or implementation.
+- Existing UI, assets, screenshots, or constraints need an actionable design summary.
 
-## Do not use when
-
-- The user provides or requests a visual reference/image/live URL and wants measured implementation until screenshots match. Use `$visual-ralph` for that visual-reference implementation loop.
-- The task is pure backend/API/infrastructure work with no user-facing design consequence.
-- The user only asks to compare screenshots or score visual fidelity. Use `$visual-ralph` and its built-in visual verdict flow.
+Do not use it for visual-reference implementation matching (use `$visual-ralph`), screenshot comparison alone, or backend/infrastructure work without user-facing design impact.
 
 ## Relationship to `$visual-ralph`
 
-`$design` owns the durable repo design source of truth: product goals, users, IA, visual language, components, accessibility, constraints, and open questions in `DESIGN.md`.
-
-`$visual-ralph` owns implementation against an approved generated/static/live-URL visual reference, with screenshot capture, Visual Ralph verdict scoring, and pixel-diff evidence. `$visual-ralph` may read `DESIGN.md`, and it may leave design-system artifacts behind, but it does not replace the `DESIGN.md` discovery/interview/refresh workflow.
-
-If both are needed, run `$design` first to establish the design contract, then run `$visual-ralph` only after the visual reference/baseline is approved.
+`$design` owns product goals, users, information architecture, visual language, components, accessibility, constraints, and open questions in `DESIGN.md`. `$visual-ralph` owns implementation against an approved visual reference or live-URL baseline, measured verdicts, and pixel-diff evidence. Run `$design` first when both are needed; `DESIGN.md` supports but does not replace the visual verdict target.
 
 ## Workflow
 
-### 1. Discover local design evidence
+### 1. Discover local evidence
 
-Inspect the repository before writing guidance. Look for:
+Inspect and cite existing `DESIGN.md`, design/UX/frontend docs, README/specs/issues, routes/pages/layouts/components/stories, theme and token files, assets, screenshots/mockups, Storybook or Playwright baselines, and accessibility/responsive/i18n/platform constraints. Separate observations from inferences; note absent evidence.
 
-- `DESIGN.md`, `docs/design*`, `docs/ux*`, `docs/frontend*`, `README.md`, product specs, PRDs, and issue notes.
-- Existing UI source: routes, pages, layouts, components, stories, examples, demos, theme files, CSS variables, Tailwind/theme config, tokens, icons, and assets.
-- Screenshots, mockups, brand files, logos, Figma/export notes, Storybook snapshots, Playwright screenshots, visual-regression baselines, or `.omx/artifacts/visual-ralph/*` references.
-- Accessibility, responsive, i18n, content, and platform constraints already encoded in code or docs.
+### 2. Interview only missing context
 
-Record evidence with file paths. Distinguish observed facts from design inferences.
-
-### 2. Interview only for missing context
-
-Ask concise questions only when repo evidence cannot answer design-critical context. Prefer one focused round that closes the biggest gaps, such as:
-
-- target users/personas and jobs to be done,
-- product/business goals and non-goals,
-- brand personality or forbidden aesthetics,
-- primary flows and information architecture,
-- accessibility level, device/browser support, and implementation constraints,
-- existing design assets or references the repo does not contain.
-
-If the user wants autonomous progress or cannot answer, create `DESIGN.md` with explicit assumptions and open questions instead of blocking.
+Ask concise questions only for gaps the repository cannot resolve: users/jobs, goals/non-goals, brand personality and forbidden aesthetics, primary flows, accessibility/device/browser targets, or unavailable assets/references. If answers are unavailable, record explicit assumptions and open questions rather than blocking.
 
 ### 3. Create or refresh `DESIGN.md`
 
-Use the structure below. Preserve useful existing content, remove contradictions, and mark unknowns as open questions. Keep it actionable for implementers and reviewers.
+Preserve useful content, remove contradictions, mark unknowns, and keep decisions actionable. The root file must contain these sections:
 
-#### Required `DESIGN.md` structure/checklist
-
-```markdown
 # Design
-
 ## Source of truth
-- Status: Draft | Active | Needs refresh
-- Last refreshed: YYYY-MM-DD
-- Primary product surfaces:
-- Evidence reviewed:
-
+Status (Draft | Active | Needs refresh), date, product surfaces, evidence reviewed.
 ## Brand
-- Personality:
-- Trust signals:
-- Avoid:
-
+Personality, trust signals, avoid.
 ## Product goals
-- Goals:
-- Non-goals:
-- Success signals:
-
+Goals, non-goals, success signals.
 ## Personas and jobs
-- Primary personas:
-- User jobs:
-- Key contexts of use:
-
+Primary personas, user jobs, contexts of use.
 ## Information architecture
-- Primary navigation:
-- Core routes/screens:
-- Content hierarchy:
-
+Navigation, routes/screens, content hierarchy.
 ## Design principles
-- Principle 1:
-- Principle 2:
-- Tradeoffs:
-
+Principles and tradeoffs.
 ## Visual language
-- Color:
-- Typography:
-- Spacing/layout rhythm:
-- Shape/radius/elevation:
-- Motion:
-- Imagery/iconography:
-
+Color, typography, spacing, shape/elevation, motion, imagery/iconography.
 ## Components
-- Existing components to reuse:
-- New/changed components:
-- Variants and states:
-- Token/component ownership:
-
+Existing/new components, variants/states, token ownership.
 ## Accessibility
-- Target standard:
-- Keyboard/focus behavior:
-- Contrast/readability:
-- Screen-reader semantics:
-- Reduced motion and sensory considerations:
-
+Target standard, keyboard/focus, contrast, semantics, reduced motion/sensory concerns.
 ## Responsive behavior
-- Supported breakpoints/devices:
-- Layout adaptations:
-- Touch/hover differences:
-
+Breakpoints/devices, layout adaptations, touch/hover differences.
 ## Interaction states
-- Loading:
-- Empty:
-- Error:
-- Success:
-- Disabled:
-- Offline/slow network, if applicable:
-
+Loading, empty, error, success, disabled, offline/slow network where applicable.
 ## Content voice
-- Tone:
-- Terminology:
-- Microcopy rules:
-
+Tone, terminology, microcopy rules.
 ## Implementation constraints
-- Framework/styling system:
-- Design-token constraints:
-- Performance constraints:
-- Compatibility constraints:
-- Test/screenshot expectations:
-
+Framework/styling, tokens, performance, compatibility, test/screenshot expectations.
 ## Open questions
-- [ ] Question / owner / impact
-```
+`[ ]` question, owner, and impact.
 
-### 4. Use `DESIGN.md` as the decision contract
+### 4. Apply the contract
 
-For UI/UX/frontend work after the refresh:
+Before UI decisions, cite relevant `DESIGN.md` sections, reuse documented components/tokens, and update the file or add an open question when implementation exposes a contradiction. Do not invent a parallel design-system layer.
 
-- Cite the relevant `DESIGN.md` sections before making design choices.
-- Prefer existing components, tokens, and documented constraints.
-- If implementation reveals a design contradiction, update `DESIGN.md` or add an open question before proceeding.
-- Do not introduce a new design-system layer when existing repo-native patterns can be extended.
+### 5. Handoff
 
-### 5. Handoff to implementation or Visual Ralph when appropriate
+For normal frontend work, provide the relevant sections, repo evidence, and acceptance criteria. For visual-reference, image, or live-URL matching, hand off to `$visual-ralph` with the approved baseline and identify `DESIGN.md` as supporting context only.
 
-- For normal frontend implementation, hand off with the relevant `DESIGN.md` sections, repo evidence, and acceptance criteria.
-- For visual-reference/image/live-URL matching, hand off to `$visual-ralph` with the approved reference/baseline and note that `DESIGN.md` is supporting context, not the visual verdict target.
+## Evidence and completion
 
-## Completion checklist
-
-Do not declare the design workflow complete until:
-
-- Existing design docs/assets/components/screenshots have been inspected or explicitly noted as absent.
-- Missing product/design context has been answered, assumed, or listed in `DESIGN.md` open questions.
-- `DESIGN.md` exists at the repo root and contains all required checklist sections.
-- UI/UX/frontend recommendations cite `DESIGN.md` rather than relying on unstated preferences.
-- Any `$visual-ralph` handoff is clearly separated as visual implementation matching, not DESIGN.md governance.
+Complete only when design docs/assets/components/screenshots were inspected or noted absent; missing context is answered, assumed, or listed; root `DESIGN.md` contains every required section; recommendations cite it; and any Visual Ralph handoff is clearly separated from design governance.
 
 Task: {{ARGUMENTS}}

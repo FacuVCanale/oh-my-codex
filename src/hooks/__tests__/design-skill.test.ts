@@ -12,9 +12,12 @@ const visualRalphSkill = readFileSync(join(repoRoot, 'skills', 'visual-ralph', '
 describe('design skill contract', () => {
   it('defines canonical DESIGN.md source-of-truth workflow', () => {
     assert.match(designSkill, /^---\nname: design/m);
-    assert.match(designSkill, /repo-local `DESIGN\.md` source of truth/i);
-    assert.match(designSkill, /Discover local design evidence/i);
-    assert.match(designSkill, /Interview only for missing context/i);
+    assert.match(designSkill, /discover product and UI evidence/i);
+    assert.match(designSkill, /durable `DESIGN\.md` contract/i);
+    assert.match(designSkill, /It is a maintained design brief/i);
+    assert.match(designSkill, /## Workflow/i);
+    assert.match(designSkill, /Discover local evidence/i);
+    assert.match(designSkill, /Interview only missing context/i);
     assert.match(designSkill, /Create or refresh `DESIGN\.md`/i);
   });
 
@@ -39,10 +42,11 @@ describe('design skill contract', () => {
   });
 
   it('separates design governance from Visual Ralph matching', () => {
-    assert.match(designSkill, /`\$visual-ralph` owns implementation against an approved generated\/static\/live-URL visual reference/i);
-    assert.match(designSkill, /does not replace the `DESIGN\.md` discovery\/interview\/refresh workflow/i);
+    assert.match(designSkill, /`\$design` owns product goals, users, information architecture, visual language, components, accessibility, constraints, and open questions/i);
+    assert.match(designSkill, /`\$visual-ralph` owns implementation against an approved visual reference or live-URL baseline/i);
+    assert.match(designSkill, /`DESIGN\.md` supports but does not replace the visual verdict target/i);
     assert.doesNotMatch(visualRalphSkill, /use `\$frontend-ui-ux`/i);
-    assert.match(visualRalphSkill, /use `\$design`/i);
+    assert.match(visualRalphSkill, /durable `DESIGN\.md` brief \(`\$design`\)/i);
   });
 
   it('routes explicit $design while keeping frontend-ui-ux as deprecated compatibility guidance', () => {

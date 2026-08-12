@@ -5,113 +5,42 @@ description: "Run read-only deep repository analysis and return a ranked synthes
 
 # Analyze — Read-Only Deep Analysis
 
-Use this skill to answer the user’s question through **read-only repository analysis**. The goal is to explain what the codebase most likely says about the question, not to drift into implementation, debugging theater, or generic fix planning.
+Use `$analyze` to answer a repository question with grounded, read-only evidence. Explain what the code most likely says; do not turn analysis into implementation or generic fix planning.
 
-## Use `$analyze` when
+Shared operating, delegation, state, hook, team, cancellation, and verification invariants live in [`templates/AGENTS.md`](../../templates/AGENTS.md). Follow that source instead of duplicating its rules here.
 
-- the user wants a grounded explanation, not code changes
-- the answer requires reading multiple files or tracing behavior across boundaries
-- there are several plausible explanations and they need to be ranked
-- confidence should reflect the strength of the available evidence
-- the user wants to understand architecture, behavior, causality, impact, or tradeoffs before changing anything
+## Use when
 
-Examples:
-- why a workflow behaves a certain way
-- how a feature is wired across modules
-- what likely explains a failure, regression, or mismatch
-- what would be impacted by changing a dependency or contract
-- which interpretation of the current codebase is best supported
+- The user needs a causal, architectural, behavioral, impact, or tradeoff explanation.
+- The answer requires tracing multiple files or boundaries, or ranking plausible explanations.
+- The user needs confidence and concrete evidence before changing anything.
 
-## Do not use `$analyze` when
+Do not use it for edits, implementation, a new product plan, a simple one-file lookup, or OMX team-runtime operation.
 
-- the user explicitly wants code edits, a fix, or execution — use the appropriate implementation lane instead
-- the user wants a new product plan or acceptance criteria — use `$plan` / `$ralplan`
-- the request is a simple one-file fact lookup — read the file and answer directly
-- the request is purely about running the OMX tmux team runtime — use `$team` only when OMX runtime is active
+## Inputs and method
 
-## Non-negotiable contract
+1. Restate the question and define the evidence-backed scope.
+2. Identify the smallest files, tests, configs, and docs likely to answer it.
+3. Read direct code paths and contracts first; trace boundaries only as far as needed.
+4. Compare competing explanations, rank them by support, and mark unresolved points.
+5. Stop when the question is answered with sufficient evidence, or name the smallest read-only probe that would resolve the remaining uncertainty.
 
-Analyze is **read-only by contract**.
+## Evidence discipline
 
-- Do not edit files.
-- Do not turn the answer into an implementation plan.
-- Do not recommend fixes as the primary output.
-- Do not silently switch into execution work.
-- Do not overclaim certainty.
-- Do not invent facts that are not supported by repository evidence.
-- Do not use judgmental, normative, or speculative language that outruns the evidence.
+Label every material claim as one of:
 
-If a next step is helpful, keep it to a **discriminating read-only probe** that would reduce uncertainty.
+- **Evidence** — directly shown by code, tests, generated artifacts, configuration, or docs.
+- **Inference** — a reasoned conclusion drawn from cited evidence.
+- **Unknown** — not settled by the repository evidence.
 
-## Question-aligned synthesis
-
-Answer the user’s actual question first.
-
-- Start from the asked question, not a generic debugger template.
-- Keep the synthesis scoped to what the user needs to know.
-- Scale the depth to the request: for simple or obvious questions, reduce swarm intensity and answer directly after enough reading.
-- For broader questions, expand the search surface but keep the final answer tightly synthesized.
-
-## Evidence rules
-
-Maintain an explicit **evidence-vs-inference distinction**. Every material claim must be labeled as one of:
-
-1. **Evidence** — directly supported by concrete repository artifacts
-2. **Inference** — a reasoned conclusion drawn from evidence
-3. **Unknown** — a question the current repository evidence does not resolve
-
-Never present an inference as if it were direct evidence.
-Never present a guess as if it were an inference.
-Call out uncertainty explicitly when the codebase does not settle the question.
-
-### Acceptable evidence
-
-Prefer stronger evidence over weaker evidence:
-
-1. direct code paths, contracts, tests, generated artifacts, configs, or docs with concrete file references
-2. multiple independent files pointing to the same conclusion
-3. localized behavioral inference from well-supported code structure
-4. weaker contextual clues that remain explicitly marked as tentative
-
-Unsupported speculation is not evidence.
-
-## Parallel exploration policy
-
-Parallel exploration is allowed when it improves quality, but it must stay runtime-safe.
-
-- Default to direct read-only analysis when the answer is simple.
-- When parallelism helps, prefer **native subagents by default** or equivalent in-session parallel exploration when available.
-- Keep parallel lanes bounded: each lane should answer a concrete sub-question or inspect a specific subsystem.
-- Use **`$team` only when OMX runtime is active** and durable tmux-based coordination is actually needed.
-- Do not imply that `$team` is available in plain Codex/App sessions.
-
-A good default split for complex analysis is:
-- one lane for primary code path / contracts
-- one lane for config / orchestration / generated surfaces
-- one lane for tests / docs / secondary corroboration
-
-## Execution policy
-
-- Default to outcome-first progress and completion reporting: state the question, evidence, inference boundaries, and stop condition before adding process detail.
-- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints.
-- If the user says `continue`, keep working from the current analysis state instead of restarting discovery.
-
-## Working method
-
-1. Restate the question in one sentence.
-2. Identify the smallest set of files most likely to answer it.
-3. Read for direct evidence first.
-4. If needed, open bounded parallel exploration lanes.
-5. Compare competing explanations.
-6. Rank the explanations by support.
-7. Return a synthesis that clearly separates evidence from inference.
+Prefer direct paths and independent corroboration over contextual clues. Never present guesses as evidence or inference, and never overclaim certainty.
 
 ## Output contract
 
-Structure the answer so the user can see what is known, what is inferred, and how confident the synthesis is.
+Answer the asked question first and use this shape:
 
 ### Question
-[Restate the user’s question briefly]
+Restated question, briefly.
 
 ### Ranked synthesis
 | Rank | Explanation | Confidence | Basis |
@@ -121,26 +50,21 @@ Structure the answer so the user can see what is known, what is inferred, and ho
 | 3 | ... | High / Medium / Low | why it remains possible |
 
 ### Evidence
-- `path/to/file:line-line` — what this artifact directly shows
-- `path/to/file:line-line` — corroborating evidence
+- `path/to/file:line-line` — direct observation.
+- `path/to/file:line-line` — corroborating observation.
 
 ### Inference
-- What the evidence most strongly implies
-- Why weaker alternatives were down-ranked
+- What the evidence most strongly implies.
+- Why weaker alternatives were down-ranked.
 
 ### Unknowns / limits
-- What the repository evidence does not establish
-- What would need to be checked next to reduce uncertainty
+- What the repository does not establish.
+- The next discriminating read-only probe, when useful.
 
-## Quality bar
+## Stop conditions
 
-A good analyze response is:
-- read-only and question-aligned
-- ranked rather than flat
-- explicit about confidence
-- concrete about file references
-- careful about evidence vs inference
-- free of unsupported speculation
-- free of normative drift or judgmental filler
-- explicit about the evidence-vs-inference distinction
-- concise for simple cases, broader only when the question truly needs it
+- Do not edit files, run an implementation lane, or make recommendations the evidence cannot support.
+- Do not continue searching after the answer and confidence boundary are grounded.
+- If evidence is insufficient, report the limit explicitly rather than manufacturing certainty.
+
+Task: {{ARGUMENTS}}

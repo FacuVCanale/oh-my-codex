@@ -40,10 +40,8 @@ describe('prompt guidance contract', () => {
     }
   });
 
-  it('tracked AGENTS and core prompt surfaces encode AUTO-CONTINUE vs ASK autonomy steering', () => {
-    const surfaces = [...listTrackedAgentSurfaces(), ...CORE_ROLE_CONTRACTS.map((contract) => contract.path)];
-
-    for (const surface of surfaces) {
+  it('keeps AUTO-CONTINUE vs ASK autonomy steering in AGENTS.md only', () => {
+    for (const surface of listTrackedAgentSurfaces()) {
       const content = loadSurface(surface);
       assert.match(content, /AUTO-CONTINUE.*clear.*already-requested.*low-risk.*reversible.*local/i);
       assert.match(
@@ -51,6 +49,12 @@ describe('prompt guidance contract', () => {
         /ASK only.*destructive.*irreversible.*credential-gated.*external-production.*materially scope-changing/i,
       );
       assert.match(content, /AUTO-CONTINUE branches.*permission-handoff phrasing/i);
+    }
+
+    for (const contract of CORE_ROLE_CONTRACTS) {
+      const content = loadSurface(contract.path);
+      assert.doesNotMatch(content, /AUTO-CONTINUE.*already-requested/i);
+      assert.doesNotMatch(content, /ASK only.*credential-gated/i);
     }
   });
 });

@@ -38,11 +38,11 @@ describe('pre-context gate guidance in planning/execution-heavy skills', () => {
     assert.ok(planSkill.length > 10);
   });
 
-  it('team documents required context snapshot gate before launch', () => {
-    assert.match(teamSkill, /Pre-context Intake Gate/i);
-    assert.match(teamSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
-    assert.match(teamSkill, /\$deep-interview\s+--quick/i);
-    assert.match(teamSkill, /initialize\/sync it from canonical team runtime state before proceeding/i);
+  it('team documents the context snapshot precondition before launch', () => {
+    assert.match(teamSkill, /Before launch, ground the task in a recent `\.omx\/context\/\{slug\}-\*\.md`/i);
+    assert.match(teamSkill, /create a concise snapshot when none exists/i);
+    assert.match(teamSkill, /target, evidence, constraints, unknowns, and likely touchpoints/i);
+    assert.match(teamSkill, /do not launch nested Team runs/i);
   });
 
   it('autopilot is a sunset stub pointing to the default lightweight workflow', () => {

@@ -52,7 +52,7 @@ describe("worker bootstrap", () => {
 
     assert.match(workerSkill, /omx team api claim-task/);
     assert.match(workerSkill, /omx team api transition-task-status/);
-    assert.match(workerSkill, /omx team api release-task-claim/);
+    assert.match(workerSkill, /release-task-claim/);
     assert.match(
       workerSkill,
       /\$\{CODEX_HOME:-~\/\.codex\}\/skills\/worker\/SKILL\.md/,
@@ -68,21 +68,19 @@ describe("worker bootstrap", () => {
     );
   });
 
-  it("team and worker skills document coordination activation heuristics", async () => {
+  it("slim team and worker cards defer durable coordination rules to AGENTS.md", async () => {
     const teamSkill = await readFile(join(process.cwd(), "skills", "team", "SKILL.md"), "utf8");
     const workerSkill = await readFile(join(process.cwd(), "skills", "worker", "SKILL.md"), "utf8");
 
-    for (const content of [teamSkill, workerSkill]) {
-      assert.match(content, /Team Big Five/i);
-      assert.match(content, /ATEM/i);
-      assert.match(content, /independent fan-out/i);
-      assert.match(content, /shared mental model|single source of truth/i);
-      assert.match(content, /closed-loop communication|ACK-readback/i);
-      assert.match(content, /mutual performance monitoring/i);
-      assert.match(content, /backup\/reassignment|backup behavior/i);
-      assert.match(content, /adaptability checkpoint/i);
-      assert.match(content, /team orientation/i);
-    }
+    assert.match(teamSkill, /explicit `\$team` request|omx team/i);
+    assert.match(teamSkill, /tmux/i);
+    assert.match(teamSkill, /AGENTS\.md#durable-runtime-invariants-canonical-ssot/i);
+    assert.match(workerSkill, /OMX_TEAM_WORKER/i);
+    assert.match(workerSkill, /claim-task/);
+    assert.match(workerSkill, /transition-task-status/);
+    assert.match(workerSkill, /AGENTS\.md#durable-runtime-invariants-canonical-ssot/i);
+    assert.ok(teamSkill.split("\n").length <= 120, `team skill should remain slim (<=120 lines)`);
+    assert.ok(workerSkill.split("\n").length <= 120, `worker skill should remain slim (<=120 lines)`);
   });
 
   it("generateWorkerOverlay produces markdown with correct start/end markers", () => {

@@ -55,7 +55,6 @@ describe('skill catalog hygiene', () => {
       /ToolSearch\(/,
       /mcp__[^\s`]+/,
       /GPT-5\.4 Guidance Alignment/,
-      /Task:\s*\{\{ARGUMENTS\}\}/,
       /delegate\(role=/,
     ];
 
