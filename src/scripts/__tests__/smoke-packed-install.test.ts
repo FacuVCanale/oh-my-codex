@@ -13,7 +13,6 @@ import {
   assertInstalledReasoningRuntimeContract,
   assertInstalledRootReasoningHelp,
   assertInstalledRootReasoningRejection,
-  assertInstalledTeamSkillContract,
   assertPackedInstallFileMetadata,
   assertPackedRegressionWorkflowState,
   buildNativeHookSmokePayload,
@@ -1455,10 +1454,25 @@ test('packed install removes same-user native-anchor authentication', async () =
   assert.match(cliSource, /execWithOverlay[\s\S]+OMX_CODEX_LAUNCH_ID[\s\S]+buildHudRuntimeEnv\(\{ sessionId/);
 });
 
-test('packed install contract requires canonical/plugin Team skill parity and text', async () => {
-  const canonical = await readFile(join(process.cwd(), 'skills/team/SKILL.md'));
-  const pluginMirror = await readFile(join(process.cwd(), 'plugins/oh-my-codex/skills/team/SKILL.md'));
-  assert.doesNotThrow(() => assertInstalledTeamSkillContract(canonical, pluginMirror));
+test('packed install contract requires canonical/plugin Ultragoal skill parity and operational anchors', async () => {
+  const canonical = await readFile(join(process.cwd(), 'skills/ultragoal/SKILL.md'), 'utf8');
+  const pluginMirror = await readFile(join(process.cwd(), 'plugins/oh-my-codex/skills/ultragoal/SKILL.md'), 'utf8');
+
+  assert.equal(canonical, pluginMirror, 'canonical and plugin Ultragoal skills must be byte-identical');
+  assert.ok(canonical.split(/\r?\n/).length <= 120, 'installed Ultragoal skill must remain a concise task card');
+  for (const anchor of [
+    '.omx/ultragoal/goals.json',
+    '.omx/ultragoal/ledger.jsonl',
+    'get_goal',
+    'checkpoint',
+    '--codex-goal-json',
+    'omx ultragoal steer',
+    'add_subgoal',
+    'Optional Team bridge',
+    'fresh `get_goal` snapshot',
+  ]) {
+    assert.match(canonical, new RegExp(anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
 });
 
 test('packed install plugin assertions enforce the packaged plugin contract', async () => {

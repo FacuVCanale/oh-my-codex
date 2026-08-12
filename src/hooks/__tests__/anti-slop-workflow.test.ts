@@ -23,81 +23,71 @@ function assertCanonicalPluginParity(path: string): void {
   assert.equal(read(pluginPath), read(path), `${path} must match the plugin mirror exactly`);
 }
 
-const antiSlopWorkingAgreementPatterns = [
-  /^## Working agreements$/m,
-  /^- For cleanup\/refactor\/deslop work, write a cleanup plan and lock behavior with regression tests before editing when coverage is missing\.$/m,
-  /^- Prefer deletion, existing utilities, and existing patterns before new abstractions; add dependencies only when explicitly requested\.$/m,
-  /^- Keep diffs small, reviewable, and reversible\.$/m,
-  /^- Verify with lint, typecheck, tests, and static analysis after changes; final reports include changed files, simplifications, and remaining risks\.$/m,
-];
-
-const antiSlopWorkflowPatterns = [
-  /^Anti-slop workflow:$/m,
-  /^- Cleanup\/refactor\/deslop work follows the same lightweight workflow \(`understand -> execute -> verify -> report`\); use `\$ai-slop-cleaner` as a bounded helper inside the chosen execution lane, not as a competing top-level workflow\.$/m,
-  /^- Write a cleanup plan before modifying code; lock existing behavior with regression tests first, then make one smell-focused pass at a time\.$/m,
-  /^- Prefer deletion over addition, and prefer reuse plus boundary repair over new layers\.$/m,
-  /^- No new dependencies without explicit request\.$/m,
-  /^- Run lint, typecheck, tests, and static analysis before claiming completion\.$/m,
-  /^- Keep writer\/reviewer pass separation for cleanup plans and approvals; preserve writer\/reviewer pass separation explicitly\.$/m,
-];
-
-const aiSlopCleanerWorkflowPatterns = [
-  /^Reduce AI-generated slop with a regression-tests-first, smell-by-smell cleanup workflow that preserves behavior and raises signal quality\.$/m,
-  /^## Scoped File Lists and Ralph Workflow$/m,
-  /^- This skill can accept a \*\*file list scope\*\* instead of a whole feature area\.$/m,
-  /^- In the \*\*Ralph workflow\*\*, the mandatory deslop pass should run this skill on Ralph's changed files only, in standard mode unless the caller explicitly requests otherwise\.$/m,
-  /^1\. \*\*Lock behavior with regression tests first\*\*$/m,
-  /^   - For fallback-like code, cover the primary path and any preserved compatibility\/fail-safe fallback before cleanup$/m,
-  /^2\. \*\*Create a cleanup plan before code\*\*$/m,
-  /^   - Include fallback findings, classifications, and escalation status in the plan$/m,
-  /^3\. \*\*Inventory fallback-like code before editing\*\*$/m,
-  /^   - Search the requested scope for fallback-like detection signals: quick hacks?, temporary workaround, temporary fallback, just bypass, just skip, fallback if it fails, swallowed errors, silent defaults, broad compatibility shims, and duplicate alternate execution paths$/m,
-  /^   - Classify each finding before changing it:$/m,
-  /^     - \*\*Masking fallback slop\*\* — hides errors or evidence, bypasses the primary contract, suppresses tests or validation, swallows failures, silently defaults, or adds untested alternate paths$/m,
-  /^     - \*\*Grounded compatibility\/fail-safe fallback\*\* — is scoped to an external\/version\/fail-safe boundary, documents the rationale, preserves failure evidence, and has regression tests for both the primary and fallback behavior$/m,
-  /^   - Prefer root-cause repair, deletion, boundary repair, or explicit failure behavior before preserving fallback paths$/m,
-  /^   - For broad, ambiguous, cross-layer, or architectural fallback-like code, invoke `\$ralplan` for consensus resolution before edits$/m,
-  /^   - Recursion guard: when already inside ralplan, ralph, team, or another OMX workflow, do not spawn a nested `\$ralplan`; record the finding and attach it to the active ralplan, leader, or plan handoff instead$/m,
-  /^4\. \*\*Categorize issues before editing\*\*$/m,
-  /^   - \*\*Fallback-like code\*\* — masking fallbacks, workaround branches, bypasses, swallowed errors, silent defaults, broad shims, alternate execution paths$/m,
-  /^   - \*\*Duplication\*\* — repeated logic, copy-paste branches, redundant helpers$/m,
-  /^   - \*\*Dead code\*\* — unused code, unreachable branches, stale flags, debug leftovers$/m,
-  /^   - \*\*Needless abstraction\*\* — pass-through wrappers, speculative indirection, single-use helper layers$/m,
-  /^   - \*\*Boundary violations\*\* — hidden coupling, leaky responsibilities, wrong-layer imports or side effects$/m,
-  /^   - \*\*UI\/design slop\*\* — review visual outputs as context-sensitive signals, not absolute bans; preserve intentional brand, design-system, accessibility, or product-context exceptions when the rationale is clear$/m,
-  /^     - Korean body text that is too small: challenge 11-12px body copy; Korean body text generally needs 14px or larger unless a dense, accessible system explicitly supports smaller text$/m,
-  /^     - Gratuitous depth: avoid putting box shadows on every logo, surface, card, icon, background, and step block when hierarchy or affordance does not need it$/m,
-  /^     - Repetitive content scaffolding: trim repeated eyebrow \+ title \+ description \+ paragraph stacks, filler explanation text, and generic emoji badges that do not add meaning$/m,
-  /^     - Default AI palettes: question blue\/purple defaults such as #3B82F6 when there is no brand, semantic, or system rationale$/m,
-  /^     - Over-perfect grids: avoid reflexive uniform 3-column or 4-column card grids when the product context would benefit from rhythm, asymmetry, carousel cuts, bento composition, or varied emphasis$/m,
-  /^     - Extreme gradients: tone down "AI demo" gradients unless the brand or campaign intentionally calls for that intensity$/m,
-  /^5\. \*\*Execute passes one smell at a time\*\*$/m,
-  /^   - \*\*Fallback-like code resolution gate\*\* — remove masking fallback slop, repair root causes, or escalate ambiguous cases before continuing$/m,
-  /^   - \*\*Pass 1: Dead code deletion\*\*$/m,
-  /^   - \*\*Pass 2: Duplicate removal\*\*$/m,
-  /^   - \*\*Pass 3: Naming\/error handling cleanup\*\*$/m,
-  /^   - \*\*Pass 4: Test reinforcement\*\*$/m,
-  /^6\. \*\*Run quality gates\*\*$/m,
-  /^   - Regression tests stay green$/m,
-  /^   - Static\/security scan passes when available$/m,
-  /^7\. \*\*Finish with an evidence-dense report\*\*$/m,
-  /^   - Changed files$/m,
-  /^   - Fallback findings, classifications, and escalation status$/m,
-  /^   - Remaining risks$/m,
-];
-
 describe('anti-slop workflow surfaces', () => {
-  it('adds durable anti-slop guidance to AGENTS surfaces', () => {
-    const templateContent = read('templates/AGENTS.md');
-    assertMatchesAll(templateContent, antiSlopWorkingAgreementPatterns);
-    assertMatchesAll(templateContent, antiSlopWorkflowPatterns);
+  it('keeps the cleaner a bounded helper with file-list and Ralph scope rules', () => {
+    const skill = read('skills/ai-slop-cleaner/SKILL.md');
+    assertCanonicalPluginParity('skills/ai-slop-cleaner/SKILL.md');
+    assert.ok(skill.trimEnd().split(/\r?\n/).length <= 120, 'task card must stay within the prompt size limit');
+    assert.match(skill, /bounded helper.*not as a competing top-level\s+workflow/is);
+    assert.match(skill, /A file list scope is valid; keep the pass bounded\s+to it/i);
+    assert.match(skill, /Ralph workflow.*changed files only, standard mode/i);
+    assert.match(skill, /requested\s+feature\/files and behavior to preserve/i);
+  });
 
-    if (existsSync(join(repoRoot, 'AGENTS.md'))) {
-      const content = read('AGENTS.md');
-      if (/^## Working agreements$/m.test(content)) {
-        assertMatchesAll(content, antiSlopWorkingAgreementPatterns);
-      }
+  it('requires behavior locking, fallback classification, and smell-focused passes', () => {
+    const skill = read('skills/ai-slop-cleaner/SKILL.md');
+    assert.match(skill, /Lock behavior with regression tests first/i);
+    assert.match(skill, /Create a cleanup plan before code/i);
+    assert.match(skill, /Inventory fallback-like code.*in scope/i);
+    assert.match(skill, /Masking fallback slop/i);
+    assert.match(skill, /Grounded compatibility\/fail-safe fallback/i);
+    assert.match(skill, /primary.*fallback/i);
+    assert.match(skill, /root-cause repair, deletion, boundary repair, or explicit failure behavior/i);
+    assert.match(skill, /broad\/ambiguous\/cross-layer\/architectural findings.*\$ralplan/i);
+    assert.match(skill, /do not spawn a nested `\$ralplan`/i);
+
+    for (const smell of [
+      /Fallback-like code/i,
+      /Duplication/i,
+      /Dead code/i,
+      /Needless abstraction/i,
+      /Boundary violations/i,
+      /Missing tests/i,
+      /UI\/design slop/i,
+    ]) {
+      assert.match(skill, smell);
     }
+
+    for (const pass of [
+      /fallback-like code resolution gate/i,
+      /Pass 1: Dead code deletion/i,
+      /Pass 2: Duplicate removal/i,
+      /Pass 3: Naming\/error\s+handling cleanup/i,
+      /Pass 4: Test reinforcement/i,
+    ]) {
+      assert.match(skill, pass);
+    }
+  });
+
+  it('requires evidence-dense output and an explicit cleanup stop condition', () => {
+    const skill = read('skills/ai-slop-cleaner/SKILL.md');
+    assert.match(skill, /AI SLOP CLEANUP REPORT/i);
+    for (const field of [
+      /Scope:/i,
+      /Behavior Lock:/i,
+      /Cleanup Plan:/i,
+      /Fallback Findings:/i,
+      /Passes Completed:/i,
+      /Quality Gates:/i,
+      /Changed Files:/i,
+      /Remaining Risks:/i,
+    ]) {
+      assert.match(skill, field);
+    }
+    assert.match(skill, /writer\/reviewer separation/i);
+    assert.match(skill, /behavior-lock evidence/i);
+    assert.match(skill, /each selected smell pass is\s+complete or explicitly deferred/i);
+    assert.match(skill, /Never present an unverified cleanup as\s+complete/i);
   });
 
   it('documents reviewer-only separation in review and plan review mode', () => {
@@ -117,61 +107,5 @@ describe('anti-slop workflow surfaces', () => {
       /Critic evaluation/i,
       /APPROVED\/REVISE\/REJECT/i,
     ]);
-  });
-
-  it('defines the built-in ai-slop-cleaner workflow', () => {
-    const skill = read('skills/ai-slop-cleaner/SKILL.md');
-    const pluginSkill = read('plugins/oh-my-codex/skills/ai-slop-cleaner/SKILL.md');
-    assert.equal(pluginSkill, skill);
-    assertMatchesAll(skill, aiSlopCleanerWorkflowPatterns);
-    assert.match(skill, /regression tests first/i);
-    assert.match(skill, /cleanup plan/i);
-    assert.match(skill, /duplication/i);
-    assert.match(skill, /dead code/i);
-    assert.match(skill, /needless abstraction/i);
-    assert.match(skill, /boundary violations/i);
-    assert.match(skill, /UI\/design slop/i);
-    assert.match(skill, /Korean body text/i);
-    assert.match(skill, /11-12px/);
-    assert.match(skill, /14px or larger/);
-    assert.match(skill, /box shadows/i);
-    assert.match(skill, /eyebrow \+ title \+ description \+ paragraph/i);
-    assert.match(skill, /generic emoji badges/i);
-    assert.match(skill, /#3B82F6/);
-    assert.match(skill, /3-column or 4-column card grids/i);
-    assert.match(skill, /rhythm, asymmetry/i);
-    assert.match(skill, /Extreme gradients/i);
-    assert.match(skill, /intentional brand, design-system, accessibility, or product-context exceptions/i);
-    assert.match(skill, /Pass 1: Dead code deletion/i);
-    assert.match(skill, /Pass 2: Duplicate removal/i);
-    assert.match(skill, /Pass 3: Naming\/error handling cleanup/i);
-    assert.match(skill, /Pass 4: Test reinforcement/i);
-    assert.match(skill, /quality gates/i);
-    assert.match(skill, /remaining risks/i);
-    assert.match(skill, /file list scope/i);
-    assert.match(skill, /changed files/i);
-    assert.match(skill, /Ralph workflow/i);
-    assert.match(skill, /fallback-like (?:inventory|detection|code)/i);
-    assert.match(skill, /quick hack/i);
-    assert.match(skill, /temporary workaround/i);
-    assert.match(skill, /temporary fallback/i);
-    assert.match(skill, /just bypass/i);
-    assert.match(skill, /fallback if it fails/i);
-    assert.match(skill, /swallowed errors/i);
-    assert.match(skill, /silent defaults/i);
-    assert.match(skill, /broad compatibility shims/i);
-    assert.match(skill, /alternate execution paths/i);
-    assert.match(skill, /Masking fallback slop/i);
-    assert.match(skill, /Grounded compatibility\/fail-safe fallback/i);
-    assert.match(skill, /root-cause repair/i);
-    assert.match(skill, /explicit failure behavior/i);
-    assert.match(skill, /\$ralplan/);
-    assert.match(skill, /consensus resolution/i);
-    assert.match(skill, /Recursion guard/i);
-    assert.match(skill, /do not spawn a nested `?\$ralplan`?/i);
-    assert.match(skill, /active ralplan/i);
-    assert.match(skill, /Fallback Findings/i);
-    assert.match(skill, /classifications/i);
-    assert.match(skill, /escalation status/i);
   });
 });

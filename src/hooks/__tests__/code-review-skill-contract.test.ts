@@ -11,15 +11,12 @@ const codeReviewSkill = readFileSync(
 );
 
 describe('code-review skill contract', () => {
-  it('requires parallel code-reviewer and architect lanes', () => {
-    assert.match(codeReviewSkill, /`code-reviewer` and `architect` agents in parallel/i);
-    assert.match(codeReviewSkill, /Both lanes run in parallel/i);
-    assert.match(codeReviewSkill, /clean context/i);
-    assert.match(codeReviewSkill, /explicit scope and artifacts/i);
-    assert.match(codeReviewSkill, /`code-reviewer` lane/i);
-    assert.match(codeReviewSkill, /`architect` lane/i);
-    assert.match(codeReviewSkill, /If either lane cannot be launched or does not return evidence/i);
+  it('requires independent review lanes with explicit scope and unavailable handling', () => {
+    assert.match(codeReviewSkill, /Launch the `code-reviewer` and `architect` agents in parallel/i);
+    assert.match(codeReviewSkill, /Both lanes run in parallel on a clean context with explicit scope and artifacts/i);
+    assert.match(codeReviewSkill, /If either lane cannot be launched or does not return evidence, report `independent review unavailable`/i);
     assert.match(codeReviewSkill, /do \*\*not\*\* substitute the current\/authoring lane/i);
+    assert.match(codeReviewSkill, /do \*\*not\*\* approve or mark the review merge-ready/i);
   });
 
   it('uses native task agent_type examples without overriding user model or effort', () => {
@@ -33,18 +30,16 @@ describe('code-review skill contract', () => {
     assert.doesNotMatch(codeReviewSkill, /tier="/);
   });
 
-  it('frames architect as the devil’s-advocate lane with deterministic blocker status', () => {
+  it('frames architect as the devil’s-advocate lane with explicit status values', () => {
     assert.match(codeReviewSkill, /devil['’]s-advocate/i);
     assert.match(codeReviewSkill, /Architectural Status Contract/i);
-    assert.match(codeReviewSkill, /CLEAR/i);
-    assert.match(codeReviewSkill, /WATCH/i);
-    assert.match(codeReviewSkill, /BLOCK/i);
+    assert.match(codeReviewSkill, /Architectural Status: CLEAR \| WATCH \| BLOCK/i);
     assert.match(codeReviewSkill, /If architect status is \*\*BLOCK\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
   });
 
   it('requires final synthesis across both lanes', () => {
     assert.match(codeReviewSkill, /Final Synthesis/i);
-    assert.match(codeReviewSkill, /Combine the `code-reviewer` recommendation and the architect status/i);
+    assert.match(codeReviewSkill, /Combine the `code-reviewer` recommendation and architect status/i);
     assert.match(codeReviewSkill, /Approval requires explicit evidence from both independent lanes/i);
     assert.match(codeReviewSkill, /missing or failed delegation is a blocking unavailable-review state/i);
     assert.match(codeReviewSkill, /final report must make architect blockers impossible to miss/i);
@@ -53,13 +48,16 @@ describe('code-review skill contract', () => {
   it('forbids self-review fallback approval when delegation is unavailable', () => {
     assert.match(codeReviewSkill, /Do not self-review as a fallback/i);
     assert.match(codeReviewSkill, /missing, unavailable, skipped, or fails/i);
-    assert.match(codeReviewSkill, /block approval until the independent lane evidence exists/i);
+    assert.match(codeReviewSkill, /block approval until independent lane evidence exists/i);
   });
 
-  it('keeps approval criteria aligned with the deterministic synthesis contract', () => {
-    assert.match(codeReviewSkill, /\*\*APPROVE\*\* - `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence/i);
-    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* - `code-reviewer` returns REQUEST CHANGES, architect status is `BLOCK`, or required independent review delegation is unavailable\/skipped\/failed/i);
-    assert.match(codeReviewSkill, /\*\*COMMENT\*\* - `code-reviewer` returns COMMENT with architect status `CLEAR`, architect status is `WATCH`, or only LOW\/MEDIUM improvements remain/i);
+  it('keeps recommendation mapping deterministic', () => {
+    assert.match(codeReviewSkill, /If architect status is \*\*BLOCK\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
+    assert.match(codeReviewSkill, /Else if `code-reviewer` recommendation is \*\*REQUEST CHANGES\*\*, final recommendation is \*\*REQUEST CHANGES\*\*/i);
+    assert.match(codeReviewSkill, /Else if architect status is \*\*WATCH\*\*, final recommendation is \*\*COMMENT\*\*/i);
+    assert.match(codeReviewSkill, /Else final recommendation follows the `code-reviewer` lane/i);
+    assert.match(codeReviewSkill, /\*\*APPROVE\*\* only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence/i);
+    assert.match(codeReviewSkill, /\*\*REQUEST CHANGES\*\* for a blocker, unresolved high\/critical finding, or unavailable lane/i);
   });
 
   it('bounds auto-fix wording to the explicit ralph path only', () => {

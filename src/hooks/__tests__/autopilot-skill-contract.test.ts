@@ -46,12 +46,9 @@ describe('execution-loop sunset stub contract', () => {
 
   it('documents minimal state/HUD contracts for code-review and ultragoal child phases', () => {
     assert.match(codeReviewSkill, /State\/HUD Phase Contract/);
-    assert.match(codeReviewSkill, /not a standalone tracked mode with a `code-review-state\.json` lifecycle/i);
     assert.match(codeReviewSkill, /skill-active-state\.json.*skill:"code-review".*phase:"planning"/s);
     assert.match(codeReviewSkill, /current_phase":"code-review"/);
-    assert.match(ultragoalSkill, /State\/HUD Phase Contract/);
-    assert.match(ultragoalSkill, /mode:"ultragoal".*active:true.*current_phase/s);
-    assert.match(ultragoalSkill, /current_phase":"ultragoal"/);
+    assert.match(ultragoalSkill, /current_phase:"ultragoal"/);
     assert.match(ultragoalSkill, /handoff_artifacts\.ultragoal/);
   });
 

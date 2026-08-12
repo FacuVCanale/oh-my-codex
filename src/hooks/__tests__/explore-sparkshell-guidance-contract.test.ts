@@ -40,38 +40,44 @@ describe('explore + sparkshell guidance contract', () => {
     ]);
   });
 
-  it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
-    // deep-interview, ralplan, ralph, autopilot are now sunset stubs
-    for (const surface of [
-      'prompts/planner.md',
-      'prompts/executor.md',
-      'prompts/sisyphus-lite.md',
-      'skills/plan/SKILL.md',
-    ]) {
+  it('keeps the deprecated explore routing isolated to compatibility surfaces', () => {
+    for (const surface of ['prompts/explore.md', 'prompts/explore-harness.md']) {
       expectPatterns(surface, [
-        /`omx explore` is deprecated/i,
-        /normal repository inspection|normal Codex repository inspection/i,
-        /omx sparkshell/i,
+        /deprecated/i,
+        /compatibility-only/i,
+        /normal path/i,
       ]);
     }
+
+    // Slim role cards keep their role contract without repeating repository-routing prose.
+    for (const surface of ['prompts/planner.md', 'prompts/executor.md']) {
+      const content = loadSurface(surface);
+      assert.doesNotMatch(content, /omx explore --prompt/i, `${surface} must not invoke the removed explore command`);
+      assert.doesNotMatch(content, /USE_OMX_EXPLORE_CMD/i, `${surface} must not carry the removed explore override`);
+    }
+
+    expectPatterns('skills/plan/SKILL.md', [
+      /normal repository inspection/i,
+      /omx sparkshell/i,
+    ]);
+    assert.match(loadSurface('skills/ralph/SKILL.md'), /was removed/i);
+    assert.match(loadSurface('skills/ralph/SKILL.md'), /\$ultragoal/i);
     // Sunset stubs should point to successor
-    for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md', 'skills/ralph/SKILL.md', 'skills/autopilot/SKILL.md']) {
+    for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md']) {
       const content = loadSurface(stub);
       assert.match(content, /was removed/i);
+      assert.match(content, /\$plan/i);
     }
   });
 
-  it('keeps sparkshell guidance explicit opt-in and preserves raw qa or tmux evidence', () => {
+  it('keeps QA evidence raw while Team remains a slim runtime card', () => {
     expectPatterns('prompts/qa-tester.md', [
       /optional operator aid/i,
       /does not replace raw `tmux capture-pane` evidence/i,
       /explicit opt-?in/i,
     ]);
 
-    expectPatterns('skills/team/SKILL.md', [
-      /omx sparkshell --tmux-pane/i,
-      /explicit opt-?in/i,
-      /raw `tmux capture-pane` evidence/i,
-    ]);
+    const teamSkill = loadSurface('skills/team/SKILL.md');
+    assert.match(teamSkill, /tmux|Team state/i);
   });
 });

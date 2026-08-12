@@ -3,306 +3,116 @@ name: code-review
 description: Run a comprehensive code review
 ---
 
-# Code Review Skill
+# Code Review Task Card
 
-Conduct a thorough code review for quality, security, and maintainability with severity-rated feedback.
+Use this explicit opt-in for a merge-readiness review. Shared operating invariants
+live in `templates/AGENTS.md`; this card only defines review-specific behavior.
 
-## When to Use
+## When to use
 
-This skill activates when:
-- User requests "review this code", "code review"
-- Before merging a pull request
-- After implementing a major feature
-- User wants quality assessment
+- The user asks for a code review or quality/security assessment.
+- A change is ready for review before merge, or a major feature needs an independent review.
+- Do not activate this card for implementation, broad planning, or automatic cleanup.
 
-## GPT-5.6 Guidance Alignment
+## Inputs
 
-- Default to outcome-first progress and completion reporting: state the target result, evidence, validation status, and stop condition before adding process detail.
-- Treat newer user task updates as local overrides for the active workflow branch while preserving earlier non-conflicting constraints.
-- If correctness depends on additional inspection, retrieval, execution, or verification, keep using the relevant tools until the review is grounded; stop once enough evidence exists.
-- Continue through clear, low-risk, reversible next steps automatically; ask only when the next step is materially branching, destructive, credentialed, external-production, or preference-dependent.
+- Scope: the requested files, commit, PR, or whole diff.
+- Requirements/specification, acceptance criteria, and relevant test/CI evidence.
+- Existing review artifacts and known risks, if any.
+- If the user says `continue`, advance the current verified review step rather than restarting discovery.
 
-Delegates to the `code-reviewer` and `architect` agents in parallel for a two-lane review:
-
-1. **Identify Changes**
-   - Run `git diff` to find changed files
-   - Determine scope of review (specific files or entire PR)
-
-2. **Launch Parallel Review Lanes**
-   - **`code-reviewer` lane** - owns spec compliance, security, code quality, performance, and maintainability findings
-   - **`architect` lane** - owns the devil's-advocate / design-tradeoff perspective
-   - Both lanes run in parallel on a clean context with explicit scope and artifacts, and produce distinct outputs before final synthesis
-   - If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
-
-3. **Review Categories**
-   - **Security** - Hardcoded secrets, injection risks, XSS, CSRF
-   - **Code Quality** - Function size, complexity, nesting depth
-   - **Performance** - Algorithm efficiency, N+1 queries, caching
-   - **Best Practices** - Naming, documentation, error handling
-   - **Maintainability** - Duplication, coupling, testability
-
-4. **Severity Rating**
-   - **CRITICAL** - Security vulnerability (must fix before merge)
-   - **HIGH** - Bug or major code smell (should fix before merge)
-   - **MEDIUM** - Minor issue (fix when possible)
-   - **LOW** - Style/suggestion (consider fixing)
-
-5. **Architectural Status Contract**
-   - **CLEAR** - No unresolved architectural blocker was found
-   - **WATCH** - Non-blocking design/tradeoff concern that must appear in the final synthesis
-   - **BLOCK** - Unresolved design concern that prevents a merge-ready verdict
-
-6. **Specific Recommendations**
-   - File:line locations for each issue
-   - Concrete fix suggestions
-   - Code examples where applicable
-
-7. **Final Synthesis**
-   - Combine the `code-reviewer` recommendation and the architect status into one final verdict
-   - Approval requires explicit evidence from both independent lanes; missing or failed delegation is a blocking unavailable-review state, not an approval fallback
-   - Deterministic merge gating rules:
-     - If architect status is **BLOCK**, final recommendation is **REQUEST CHANGES**
-     - Else if `code-reviewer` recommendation is **REQUEST CHANGES**, final recommendation is **REQUEST CHANGES**
-     - Else if architect status is **WATCH**, final recommendation is **COMMENT**
-     - Else final recommendation follows the `code-reviewer` lane
-   - The final report must make architect blockers impossible to miss
-
-
-## State/HUD Phase Contract
-
-Code-review is a merge-readiness gate and Autopilot child phase, not a standalone tracked mode with a `code-review-state.json` lifecycle. Keep HUD/current-phase state explicit and minimal:
-
-- **Standalone `$code-review` activation**: rely on the hook-owned `skill-active-state.json` entry (`skill:"code-review"`, `phase:"planning"`) for HUD visibility; do not create an ad-hoc `code-review-state.json`.
-- **Inside active Autopilot**: before review work starts, keep `mode:"autopilot"` active and set the supervised phase to `current_phase:"code-review"` / skill-active `phase:"code-review"`; do not activate a peer workflow over Autopilot.
-- **On clean review**: persist the review artifact/verdict under Autopilot `handoff_artifacts.code_review` and transition Autopilot to `current_phase:"ultraqa"` only after durable independent review evidence exists.
-- **On non-clean review**: persist the review artifact/verdict, set Autopilot `current_phase:"rework"` for implementation-only fixes or `current_phase:"ralplan"` when requirements/planning must change, and keep the findings as the scoped handoff.
-
-Minimal Autopilot phase declaration when the review stage begins:
+Start by recording the scope:
 
 ```sh
-omx state write --input '{"mode":"autopilot","active":true,"current_phase":"code-review"}' --json
+git status --short
+git diff --stat
+git diff -- <scope>
 ```
 
-## Agent Delegation
+## Execution
 
-Do not self-review as a fallback. If the `code-reviewer` or `architect` agent path is missing, unavailable, skipped, or fails, emit a clear unavailable-review result and block approval until the independent lane evidence exists.
+1. Identify changed files and review boundaries; do not silently widen the scope.
+2. Launch the `code-reviewer` and `architect` agents in parallel. Both lanes run in parallel on a clean context with explicit scope and artifacts. If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
+3. Respect the user's current model and reasoning/effort selection. Do not pass `model` or `reasoning_effort` overrides in review-lane calls.
 
-Respect the user's current model and reasoning/effort selection when launching review lanes. Do not pass `model` or `reasoning_effort` overrides in the review-lane task calls unless the user explicitly asks for review-specific overrides; omitting them lets native subagents inherit the active session settings.
-
-```
+```text
 task(
   agent_type="code-reviewer",
   prompt="CODE REVIEW TASK
 
-Review code changes for quality, security, and maintainability.
-
-This is the code/spec/security lane. Do not absorb architectural ownership.
-
-Scope: [git diff or specific files]
-
-Review Checklist:
-- Security vulnerabilities (OWASP Top 10)
-- Code quality (complexity, duplication)
-- Performance issues (N+1, inefficient algorithms)
-- Best practices (naming, documentation, error handling)
-- Maintainability (coupling, testability)
-
-Output: Code review report with:
-- Files reviewed count
-- Issues by severity (CRITICAL, HIGH, MEDIUM, LOW)
-- Specific file:line locations
-- Fix recommendations
-- Approval recommendation (APPROVE / REQUEST CHANGES / COMMENT)"
+Review the supplied scope for spec compliance, security, quality, performance, and maintainability.
+Return files reviewed, severity-rated findings with file:line evidence and concrete fixes,
+and a recommendation: APPROVE / REQUEST CHANGES / COMMENT. Do not review architecture.
+Scope: [scope and artifacts]"
 )
 
 task(
   agent_type="architect",
   prompt="ARCHITECTURE / DEVIL'S-ADVOCATE REVIEW TASK
 
-Review the same code changes from the architecture/tradeoff perspective.
-
-Scope: [git diff or specific files]
-
-Focus:
-- System boundaries and interfaces
-- Hidden coupling or long-term maintainability risks
-- Tradeoff tension the main reviewer might miss
-- Strongest counterargument against approving as-is
-
-Output:
-- Architectural Status: CLEAR / WATCH / BLOCK
-- File:line evidence for each concern
-- Concrete tradeoff or design recommendation"
+Review the same scope for boundaries, interfaces, hidden coupling, long-term tradeoffs,
+and the strongest counterargument against approval. Return file:line evidence,
+recommendations, and Architectural Status: CLEAR / WATCH / BLOCK.
+Scope: [scope and artifacts]"
 )
-
-Run both lanes in parallel, then synthesize them with the deterministic rules above.
 ```
 
-## External Model Consultation (Preferred)
+## Review taxonomy
 
-The code-reviewer agent SHOULD consult Codex for cross-validation.
+- `code-reviewer` checks **Security**, **Code Quality**, **Performance**, **Best Practices**, and **Maintainability**.
+- Rate each finding: **CRITICAL** (security or data-loss blocker), **HIGH** (bug/major smell), **MEDIUM** (important improvement), or **LOW** (style/suggestion).
+- `architect` checks explicit boundaries/interfaces, hidden coupling, long-horizon tradeoffs, and devil's-advocate concerns. Status is **CLEAR**, **WATCH** (non-blocking concern), or **BLOCK** (merge blocker).
+- Every finding names `file:line`, issue, risk, and a concrete fix; distinguish facts from suggestions.
 
-### Protocol
-1. **Form your OWN review FIRST** - Complete the review independently
-2. **Consult for validation** - Cross-check findings with Codex
-3. **Critically evaluate** - Never blindly adopt external findings
-4. **Graceful optional consultation fallback** - Never block because optional external consultation tools are unavailable; this does not waive the required independent `code-reviewer` and `architect` lanes
+## State/HUD Phase Contract
 
-### When to Consult
-- Security-sensitive code changes
-- Complex architectural patterns
-- Unfamiliar codebases or languages
-- High-stakes production code
+- Standalone `$code-review` relies on hook-owned `skill-active-state.json` (`skill:"code-review"`, `phase:"planning"`); do not create `code-review-state.json`.
+- Inside Autopilot, keep `mode:"autopilot"` active with `current_phase:"code-review"` / skill-active `phase:"code-review"`; do not activate a peer workflow.
+- On clean review, persist the artifact under Autopilot `handoff_artifacts.code_review` before moving to `ultraqa`. On non-clean review, persist findings and use `rework` or `ralplan` as appropriate.
 
-### When to Skip
-- Simple refactoring
-- Well-understood patterns
-- Time-critical reviews
-- Small, isolated changes
-
-### Tool Usage
-Prefer native `code-reviewer` agent consultation or CLI-backed `ask_codex` surfaces when available. Optional MCP compatibility ask tools may be used only when already enabled. If optional external consultation tools are unavailable, continue with the required independent `code-reviewer` and `architect` lanes; do not replace those lanes with self-review.
-
-**Note:** Codex calls can take up to 1 hour. Consider the review timeline before consulting.
-
-## Output Format
-
+```sh
+omx state write --input '{"mode":"autopilot","active":true,"current_phase":"code-review"}' --json
 ```
+
+## Final Synthesis and gate
+
+### Architectural Status Contract
+
+Combine the `code-reviewer` recommendation and architect status. Approval requires explicit evidence from both independent lanes; missing or failed delegation is a blocking unavailable-review state, not an approval fallback. The final report must make architect blockers impossible to miss.
+
+- If architect status is **BLOCK**, final recommendation is **REQUEST CHANGES**.
+- Else if `code-reviewer` recommendation is **REQUEST CHANGES**, final recommendation is **REQUEST CHANGES**.
+- Else if architect status is **WATCH**, final recommendation is **COMMENT**.
+- Else final recommendation follows the `code-reviewer` lane.
+
+Approval criteria: **APPROVE** only when `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence. **REQUEST CHANGES** for a blocker, unresolved high/critical finding, or unavailable lane. **COMMENT** may record non-blocking findings.
+
+Do not self-review as a fallback. If the `code-reviewer` or `architect` path is missing, unavailable, skipped, or fails, block approval until independent lane evidence exists. On the explicit Ralph path, findings may trigger automatic fix follow-up without another permission prompt; plain `code-review` itself remains read-only and does **not** promise auto-fix.
+
+## Evidence/output contract
+
+Return a concise report containing:
+
+```text
 CODE REVIEW REPORT
-==================
-
-Files Reviewed: 8
-Total Issues: 12
-Architectural Status: WATCH
-
-CRITICAL (0)
------------
-(none)
-
-HIGH (0)
---------
-(none)
-
-MEDIUM (7)
-----------
-1. src/api/auth.ts:42
-   Issue: Email normalization logic is duplicated instead of reusing the shared helper
-   Risk: Validation rules can drift between authentication paths
-   Fix: Route both paths through the shared normalization helper
-
-2. src/components/UserProfile.tsx:89
-   Issue: Derived permissions are recalculated on every render
-   Risk: Avoidable work during profile refreshes
-   Fix: Memoize the derived permissions list or compute it upstream
-
-3. src/utils/validation.ts:15
-   Issue: Form-layer and server-layer validation messages are defined separately
-   Risk: User-facing validation guidance can become inconsistent
-   Fix: Share one validation message helper across both call sites
-
-LOW (5)
--------
-...
-
-ARCHITECTURE WATCHLIST
-----------------------
-- src/review/orchestrator.ts:88
-  Concern: Review result synthesis relies on implicit ordering rather than an explicit blocker contract
-  Status: WATCH
-  Recommendation: Define deterministic merge gating before expanding reviewers
-
-SYNTHESIS
----------
+Files Reviewed: <count>
+Total Issues: 0
+Architectural Status: CLEAR | WATCH | BLOCK
+CRITICAL (0) | HIGH (0) | MEDIUM (0) | LOW (0)
+Findings: file:line -> issue, risk, concrete fix (or none)
+ARCHITECTURE WATCHLIST: concern, status, recommendation (or none)
 - code-reviewer recommendation: COMMENT
 - architect status: WATCH
 - final recommendation: COMMENT
-
 RECOMMENDATION: COMMENT
-
-Address any WATCH concerns before treating the change as merge-ready.
 ```
 
-## Review Checklist
+Replace the illustrative counts and verdict with observed values. Include scope,
+lane evidence/artifact references, unresolved risks, and validation gaps.
 
-The `code-reviewer` lane checks:
+## Exit condition
 
-### Security
-- [ ] No hardcoded secrets (API keys, passwords, tokens)
-- [ ] All user inputs sanitized
-- [ ] SQL/NoSQL injection prevention
-- [ ] XSS prevention (escaped outputs)
-- [ ] CSRF protection on state-changing operations
-- [ ] Authentication/authorization properly enforced
-
-### Code Quality
-- [ ] Functions < 50 lines (guideline)
-- [ ] Cyclomatic complexity < 10
-- [ ] No deeply nested code (> 4 levels)
-- [ ] No duplicate logic (DRY principle)
-- [ ] Clear, descriptive naming
-
-### Performance
-- [ ] No N+1 query patterns
-- [ ] Appropriate caching where applicable
-- [ ] Efficient algorithms (avoid O(n²) when O(n) possible)
-- [ ] No unnecessary re-renders (React/Vue)
-
-### Best Practices
-- [ ] Error handling present and appropriate
-- [ ] Logging at appropriate levels
-- [ ] Documentation for public APIs
-- [ ] Tests for critical paths
-- [ ] No commented-out code
-
-## Architect Lane Checklist
-
-The `architect` lane checks:
-
-- [ ] Boundary or interface changes are explicit
-- [ ] New coupling/tradeoff risks are surfaced
-- [ ] Long-horizon maintainability concerns are evidence-backed
-- [ ] Architectural status is one of `CLEAR`, `WATCH`, or `BLOCK`
-- [ ] Any `BLOCK` concern cites the reason merge-ready status should be withheld
-
-## Approval Criteria
-
-**APPROVE** - `code-reviewer` returns APPROVE, architect status is `CLEAR`, and both independent lanes returned evidence
-**REQUEST CHANGES** - `code-reviewer` returns REQUEST CHANGES, architect status is `BLOCK`, or required independent review delegation is unavailable/skipped/failed
-**COMMENT** - `code-reviewer` returns COMMENT with architect status `CLEAR`, architect status is `WATCH`, or only LOW/MEDIUM improvements remain
-
-
-## Scenario Examples
-
-**Good:** The user says `continue` after the workflow already has a clear next step. Continue the current branch of work instead of restarting or re-asking the same question.
-
-**Good:** The user changes only the output shape or downstream delivery step (for example `make a PR`). Preserve earlier non-conflicting workflow constraints and apply the update locally.
-
-**Bad:** The user says `continue`, and the workflow restarts discovery or stops before the missing verification/evidence is gathered.
-
-## Use with Other Skills
-
-**With Team:**
-```
-/team "review recent auth changes and report findings"
-```
-Includes coordinated review execution across specialized agents.
-
-**With Ralph:**
-```
-/ralph code-review then fix all issues
-```
-On the explicit Ralph path, review findings should flow into automatic fix follow-up without another permission prompt. Plain `code-review` itself remains read-only and does **not** promise auto-fix.
-
-**With Ultrawork:**
-```
-/ultrawork review all files in src/
-```
-Parallel code review across multiple files.
-
-## Best Practices
-
-- **Review early** - Catch issues before they compound
-- **Review often** - Small, frequent reviews better than huge ones
-- **Address CRITICAL/HIGH first** - Fix security and bugs immediately
-- **Consider context** - Some "issues" may be intentional trade-offs
-- **Learn from reviews** - Use feedback to improve coding practices
+Stop when the scoped diff has two independent lane results and a deterministic final
+recommendation. Report `APPROVE` only under the approval criteria; otherwise leave a
+bounded `REQUEST CHANGES`, `COMMENT`, or unavailable-review result. Never claim
+merge-ready without the required evidence.
