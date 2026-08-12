@@ -1011,7 +1011,8 @@ describe("omx setup install mode behavior", () => {
 				);
 				assert.equal(existsSync(join(cacheSkillsDir, "team", "SKILL.md")), false);
 				assert.equal(existsSync(join(cacheSkillsDir, "worker", "SKILL.md")), false);
-				assert.equal(existsSync(join(cacheSkillsDir, "ralph", "SKILL.md")), true);
+				assert.equal(existsSync(join(cacheSkillsDir, "ralph", "SKILL.md")), false, "ralph is a sunset stub; not installable in plugin cache");
+				assert.equal(existsSync(join(cacheSkillsDir, "ultragoal", "SKILL.md")), true, "ultragoal remains installable");
 				assert.equal(existsSync(join(codexHomeDir, "agents", "team-executor.toml")), false);
 				assert.equal(existsSync(join(codexHomeDir, "agents", "executor.toml")), true);
 			});

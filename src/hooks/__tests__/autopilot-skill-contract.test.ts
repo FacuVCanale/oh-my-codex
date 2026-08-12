@@ -10,6 +10,8 @@ const ralplanSkill = readFileSync(join(__dirname, '../../../skills/ralplan/SKILL
 const codeReviewSkill = readFileSync(join(__dirname, '../../../skills/code-review/SKILL.md'), 'utf-8');
 const ultragoalSkill = readFileSync(join(__dirname, '../../../skills/ultragoal/SKILL.md'), 'utf-8');
 const pipelineSkill = readFileSync(join(__dirname, '../../../skills/pipeline/SKILL.md'), 'utf-8');
+const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
+const ultraworkSkill = readFileSync(join(__dirname, '../../../skills/ultrawork/SKILL.md'), 'utf-8');
 const skillsDocs = readFileSync(join(__dirname, '../../../docs/skills.html'), 'utf-8');
 const gettingStartedDocs = readFileSync(join(__dirname, '../../../docs/getting-started.html'), 'utf-8');
 const guidanceRoot = join(__dirname, '../../..');
@@ -20,32 +22,26 @@ const authorityGuidanceSurfaces = [
   'plugins/oh-my-codex/skills/ralplan/SKILL.md',
 ] as const;
 
-describe('autopilot skill default Ultragoal contract', () => {
-  it('makes deep-interview -> ralplan -> ultragoal -> code-review -> ultraqa the recommended/default contract', () => {
-    assert.match(autopilotSkill, /\$deep-interview\s*->\s*\$ralplan\s*->\s*\$ultragoal\s*\(\+ \$team if needed\)\s*->\s*\$code-review\s*->\s*\$ultraqa/);
-    assert.match(autopilotSkill, /recommended\/default contract/i);
-    assert.match(autopilotSkill, /Ralph is a legacy\/explicit alternate execution loop only/i);
+describe('execution-loop sunset stub contract', () => {
+  it('autopilot is a sunset stub pointing to the default lightweight workflow', () => {
+    assert.match(autopilotSkill, /was removed/i);
+    assert.match(autopilotSkill, /understand -> execute -> verify -> report/i);
   });
 
-  it('returns non-clean code-review or ultraqa findings to ralplan', () => {
-    assert.match(autopilotSkill, /If `\$code-review` or `\$ultraqa` is not clean, Autopilot returns to `\$ralplan`/i);
-    assert.match(autopilotSkill, /COMMENT.*REQUEST CHANGES.*WATCH.*BLOCK/s);
-    assert.match(autopilotSkill, /UltraQA finds issues.*transition back to Phase `ralplan`/s);
+  it('ralph is a sunset stub pointing to ultragoal', () => {
+    assert.match(ralphSkill, /was removed/i);
+    assert.match(ralphSkill, /\$ultragoal/i);
   });
 
-  it('requires tight phase, cycle, handoff, review state fields', () => {
-    for (const field of [
-      'current_phase',
-      'iteration',
-      'review_cycle',
-      'phase_cycle',
-      'handoff_artifacts',
-      'review_verdict',
-      'qa_verdict',
-      'return_to_ralplan_reason',
-    ]) {
-      assert.match(autopilotSkill, new RegExp(field));
-    }
+  it('ultrawork is a sunset stub pointing to team', () => {
+    assert.match(ultraworkSkill, /was removed/i);
+    assert.match(ultraworkSkill, /\$team/i);
+  });
+
+  it('pipeline is a sunset stub pointing to plan and team', () => {
+    assert.match(pipelineSkill, /was removed/i);
+    assert.match(pipelineSkill, /\$plan/i);
+    assert.match(pipelineSkill, /\$team/i);
   });
 
   it('documents minimal state/HUD contracts for code-review and ultragoal child phases', () => {
@@ -57,49 +53,6 @@ describe('autopilot skill default Ultragoal contract', () => {
     assert.match(ultragoalSkill, /mode:"ultragoal".*active:true.*current_phase/s);
     assert.match(ultragoalSkill, /current_phase":"ultragoal"/);
     assert.match(ultragoalSkill, /handoff_artifacts\.ultragoal/);
-  });
-
-  it('forbids self-attesting clean review and QA gates without durable stage evidence', () => {
-    assert.match(autopilotSkill, /Do not author `review_verdict:\{clean:true\}` from the leader's own summary/i);
-    assert.match(autopilotSkill, /both gates have durable source evidence/i);
-    assert.match(autopilotSkill, /actual `\$code-review`\/`\$ultraqa` stage or native-subagent\/thread\/tool records/i);
-    assert.match(autopilotSkill, /leader-authored summaries alone are not gate evidence/i);
-    assert.match(autopilotSkill, /`qa_verdict` cites durable `\$ultraqa` evidence or an explicit persisted low-risk skip reason/i);
-    assert.match(autopilotSkill, /keep the active phase at `code-review` or `ultraqa` and record a blocker instead of self-attesting a clean gate/i);
-  });
-
-  it('requires sequential ralplan Architect and Critic consensus before execution handoff', () => {
-    assert.match(autopilotSkill, /PRD\/test-spec files alone are not completion evidence/i);
-    assert.match(autopilotSkill, /subsequent `Architect` approval first.*subsequent `Critic` approval second/is);
-    assert.doesNotMatch(autopilotSkill, /records an `Architect` approval first/i);
-    assert.match(autopilotSkill, /ralplan_consensus_gate/);
-    assert.match(autopilotSkill, /missing ralplan consensus evidence/i);
-    assert.match(autopilotSkill, /do not progress to `\$ultragoal`, `\$team`, `\$ralph`, or implementation/i);
-  });
-
-  it('documents dedicated planner routing when Autopilot main is cheap or mini', () => {
-    assert.match(autopilotSkill, /planning_routing/i);
-    assert.match(autopilotSkill, /cheap\/mini lane[\s\S]*`\[main\]`/i);
-    assert.match(autopilotSkill, /dedicated `\[planner\]`/i);
-    // ralplan is now a sunset stub; check that it points to $plan
-    assert.match(ralplanSkill, /was removed/i);
-    assert.match(ralplanSkill, /\$plan/i);
-  });
-
-  it('documents optional deep-interview execution contract validation without broadness inference', () => {
-    assert.match(autopilotSkill, /execution_contract_required:true/i);
-    assert.match(autopilotSkill, /execution_contract/i);
-    assert.match(autopilotSkill, /execution_stride:"task"\|"deliverable"\|"milestone"/i);
-    assert.match(autopilotSkill, /allow_task_shrink/i);
-    assert.match(autopilotSkill, /completion_unit/i);
-    assert.match(autopilotSkill, /stop_condition/i);
-    assert.match(autopilotSkill, /acceptance_coverage_scope/i);
-    assert.match(autopilotSkill, /shrink_policy/i);
-    assert.match(autopilotSkill, /Preserve legacy behavior when `execution_contract_required` is absent or false/i);
-    assert.match(autopilotSkill, /Do not infer stride from prose, broadness, phase names, snapshots, or task size/i);
-    assert.match(autopilotSkill, /deliberately uses `milestone` rather than `phase`/i);
-    assert.match(autopilotSkill, /New artifacts must write canonical snake_case keys/i);
-    assert.match(autopilotSkill, /runtime may read legacy camelCase field\/marker aliases and direct\/nested `execution_contract` locations only as compatibility input/i);
   });
 
   it('requires ralplan sunset stub (merged into plan)', () => {
@@ -133,19 +86,15 @@ describe('autopilot skill default Ultragoal contract', () => {
     }
   });
 
-  it('documents ralplan consensus completion in pipeline and public docs', () => {
-    assert.match(pipelineSkill, /Plan\/test-spec files alone are not consensus evidence/i);
-    assert.match(pipelineSkill, /Architect approval followed by Critic approval/i);
-    assert.match(skillsDocs, /not just PRD\/test-spec files/i);
-    assert.match(skillsDocs, /never leaving ralplan until Architect\/Critic consensus evidence is recorded/i);
-    assert.match(gettingStartedDocs, /Architect review evidence and then Critic review evidence are recorded/i);
+  it('public docs no longer advertise the removed fixed chain or removed skills', () => {
+    // skills.html and getting-started.html should not advertise autopilot's fixed chain
+    assert.doesNotMatch(skillsDocs, /\$deep-interview\s*->\s*\$ralplan\s*->\s*\$ultragoal.*\$code-review\s*->\s*\$ultraqa/);
+    assert.doesNotMatch(gettingStartedDocs, /Choose `\$autopilot`.*`\$ultrawork`.*`\$ralph`/);
   });
 
-  it('does not preserve the old broad phase lifecycle as primary behavior', () => {
+  it('autopilot stub does not preserve the old broad phase lifecycle', () => {
     assert.doesNotMatch(autopilotSkill, /All 5 phases completed/i);
     assert.doesNotMatch(autopilotSkill, /Phase 0 - Expansion/i);
     assert.doesNotMatch(autopilotSkill, /Phase 4 - Validation/i);
-    assert.match(autopilotSkill, /must not run a separate broad expansion\/planning\/execution\/QA\/validation lifecycle as its primary behavior/i);
-    assert.doesNotMatch(autopilotSkill, /primary contract is exactly:\n\n```text\n\$ralplan\s*->\s*\$ralph\s*->\s*\$code-review/);
   });
 });

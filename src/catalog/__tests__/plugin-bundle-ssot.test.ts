@@ -61,7 +61,11 @@ describe("plugin bundle SSOT contract", () => {
 		assert.equal(result.checked, true);
 		assert.equal(result.changed, false);
 		assert.deepEqual(result.mirroredSkillNames, expectedSkillNames);
-		assert.equal(result.mirroredSkillNames.includes("pipeline"), true);
+		assert.equal(result.mirroredSkillNames.includes("ultragoal"), true);
+		assert.equal(result.mirroredSkillNames.includes("autopilot"), false);
+		assert.equal(result.mirroredSkillNames.includes("ralph"), false);
+		assert.equal(result.mirroredSkillNames.includes("ultrawork"), false);
+		assert.equal(result.mirroredSkillNames.includes("pipeline"), false);
 		const pluginMcp = JSON.parse(
 			await readFile(join(root, "plugins", "oh-my-codex", ".mcp.json"), "utf-8"),
 		) as { mcpServers?: Record<string, { enabled?: boolean }> };

@@ -1437,7 +1437,7 @@
       ]
     },
     "skills": {
-      "digest": "35f157f2d0020a51172e18c2a8822cf1d84bc556c14a8ec5da38c283e674dedd",
+      "digest": "0e63bb607abccf8bcd9dfa86f46b97b5711960a2e9ec7897662cd9b19da74920",
       "files": [
         {
           "digest": "4f1b7a5f096e846e51c57362bb5e06c908b17861f75a53057391f87c817285fe",
@@ -1460,11 +1460,11 @@
           "path": "skills/ask/SKILL.md"
         },
         {
-          "digest": "93fe1aaad240211c8617004b30df552335227399965c8db16ef45fef0a59a387",
+          "digest": "6040712bb6afaf883e1b38b99e587c18797d20105133e1b8e1a88cc0322160b4",
           "path": "skills/autopilot/SKILL.md"
         },
         {
-          "digest": "6ca757600cd96cb2c1fe3fe9dac83dbec9a65aa98f12a05abe49e03bb9b3ae6d",
+          "digest": "76fc1ce7144bcb22e27888be368d9cdebac96e9f1e1db3970c14ec594c5675dc",
           "path": "skills/autoresearch-goal/SKILL.md"
         },
         {
@@ -1540,7 +1540,7 @@
           "path": "skills/performance-goal/SKILL.md"
         },
         {
-          "digest": "f23018b67d7ea59bfca4e5321bfd0c5584f34d547598334fba625869fbdd7a37",
+          "digest": "8e914d9bc8fefc13bd68f24970d91d2aeb499a19405d76f9198b05576f9017d5",
           "path": "skills/pipeline/SKILL.md"
         },
         {
@@ -1556,7 +1556,7 @@
           "path": "skills/ralph-init/SKILL.md"
         },
         {
-          "digest": "cb0ce8dec4c36cfc0267afc2d4b142ad3722b2df99b16203cdb5926d12ef4b25",
+          "digest": "1cc239daa9d1c034aa0cb4e4fd6246f1453128c57b3004963b63ba39083b58dd",
           "path": "skills/ralph/SKILL.md"
         },
         {
@@ -1600,7 +1600,7 @@
           "path": "skills/ultraqa/SKILL.md"
         },
         {
-          "digest": "b363978ba2db76b700f51472f963388f686d19e8b8def976b5d7b9b64bfa1b13",
+          "digest": "42f490dc9e4e167a18817fc68d40a13b9e06379086f9db82b3c8a9f362047d3a",
           "path": "skills/ultrawork/SKILL.md"
         },
         {

@@ -135,15 +135,6 @@ const ULTRAQA_SKILL_PATTERNS = [
   rx('bounded runtimes|No unbounded waits'),
 ];
 
-const ULTRAWORK_SKILL_PATTERNS = [
-  ...SKILL_PATTERNS,
-  rx('Gather enough context before implementation'),
-  rx('Define pass/fail acceptance criteria before launching execution lanes'),
-  rx('run a direct-tool lane and one or more background evidence lanes'),
-  rx('Choose self vs delegate deliberately'),
-  rx('Manual QA notes are recorded when the task needs a human-visible or behavior-level check'),
-  rx('Ralph owns persistence, architect verification, deslop, and the full verified-completion promise'),
-];
 
 export const ROOT_TEMPLATE_CONTRACTS: GuidanceSurfaceContract[] = [
   { id: 'agents-template', path: 'templates/AGENTS.md', requiredPatterns: ROOT_TEMPLATE_PATTERNS },
@@ -254,10 +245,8 @@ export const SPECIALIZED_PROMPT_CONTRACTS: GuidanceSurfaceContract[] = [
 export const SKILL_CONTRACTS: GuidanceSurfaceContract[] = [
   ...[
     'analyze',
-    'autopilot',
     'code-review',
     'plan',
-    'ralph',
     'team',
   ].map((name) => ({
     id: name,
@@ -273,11 +262,6 @@ export const SKILL_CONTRACTS: GuidanceSurfaceContract[] = [
     id: 'ultraqa-plugin',
     path: 'plugins/oh-my-codex/skills/ultraqa/SKILL.md',
     requiredPatterns: ULTRAQA_SKILL_PATTERNS,
-  },
-  {
-    id: 'ultrawork',
-    path: 'skills/ultrawork/SKILL.md',
-    requiredPatterns: ULTRAWORK_SKILL_PATTERNS,
   },
 ];
 
@@ -327,13 +311,9 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
     ],
   },
   {
-    id: 'ralph-planning-gate',
+    id: 'ralph-sunset-stub',
     path: 'skills/ralph/SKILL.md',
-    requiredPatterns: [
-      rx('PRD'),
-      rx('snapshot grounding|pre-context intake'),
-      rx('Do not begin Ralph execution work|do not begin implementation|must not implement|no implementation'),
-    ],
+    requiredPatterns: [rx('was removed'), rx('\\$ultragoal')],
   },
   {
     id: 'ralplan-consensus-sequence',
@@ -366,27 +346,24 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
     ],
   },
   {
-    id: 'autopilot-default-ultragoal-loop',
+    id: 'autopilot-sunset-stub',
     path: 'skills/autopilot/SKILL.md',
-    requiredPatterns: [
-      rx('\\$deep-interview\\s*->\\s*\\$ralplan\\s*->\\s*\\$ultragoal.*\\$code-review\\s*->\\s*\\$ultraqa'),
-      rx('return[s]? to `?\\$ralplan`?|current_phase.*ralplan'),
-      rx('review_cycle'),
-      rx('review_verdict'),
-      rx('qa_verdict'),
-      rx('return_to_ralplan_reason'),
-      rx('ralplan_consensus_gate'),
-      rx('PRD/test-spec files alone are not completion evidence'),
-    ],
+    requiredPatterns: [rx('was removed'), rx('understand -> execute -> verify -> report')],
   },
   {
-    id: 'pipeline-ralplan-consensus-skip-gate',
+    id: 'pipeline-sunset-stub',
     path: 'skills/pipeline/SKILL.md',
-    requiredPatterns: [
-      rx('Skips only when both `prd-\\*\\.md` and `test-spec-\\*\\.md`'),
-      rx('Architect approval followed by Critic approval'),
-      rx('Plan/test-spec files alone are not consensus evidence'),
-    ],
+    requiredPatterns: [rx('was removed'), rx('\\$plan.*\\$team')],
+  },
+  {
+    id: 'ultrawork-sunset-stub',
+    path: 'skills/ultrawork/SKILL.md',
+    requiredPatterns: [rx('was removed'), rx('\\$team')],
+  },
+  {
+    id: 'autoresearch-goal-sunset-stub',
+    path: 'skills/autoresearch-goal/SKILL.md',
+    requiredPatterns: [rx('was removed'), rx('\\$autoresearch')],
   },
   {
     id: 'explore-read-only-role-boundary',
