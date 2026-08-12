@@ -17,21 +17,17 @@ describe('removed visual-verdict sunset stub', () => {
 });
 
 describe('ralph visual loop integration guidance', () => {
-  it('requires the built-in Visual Ralph verdict before next edit', () => {
+  it('documents ralph as sunset stub pointing to ultragoal', () => {
     const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
-    assert.match(ralphSkill, /Visual Ralph verdict step/i);
-    assert.match(ralphSkill, /before every next edit/i);
+    assert.match(ralphSkill, /was removed/i);
+    assert.match(ralphSkill, /\$ultragoal/i);
+    const ultragoalSkill = readFileSync(join(__dirname, '../../../skills/ultragoal/SKILL.md'), 'utf-8');
+    // Ultragoal inherits ralph-like verified loop; verify ultragoal remains present
+    assert.match(ultragoalSkill, /ultragoal/i);
   });
 
-  it('documents -i and --images-dir flags', () => {
-    const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
-    assert.match(ralphSkill, /-i <image-path>/);
-    assert.match(ralphSkill, /--images-dir <directory>/);
-  });
-
-  it('requires persisting visual feedback to ralph-progress ledger', () => {
-    const ralphSkill = readFileSync(join(__dirname, '../../../skills/ralph/SKILL.md'), 'utf-8');
-    assert.match(ralphSkill, /ralph-progress\.json/);
-    assert.match(ralphSkill, /numeric \+ qualitative feedback/i);
+  it('keeps Visual Ralph skill for visual QA independent of ralph sunset', () => {
+    const visualRalph = readFileSync(join(__dirname, '../../../skills/visual-ralph/SKILL.md'), 'utf-8');
+    assert.match(visualRalph, /visual/i);
   });
 });

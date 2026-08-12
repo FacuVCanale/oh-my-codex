@@ -33,7 +33,7 @@ describe('skill catalog hygiene', () => {
   });
 
   it('keeps the cleanup subset free of obsolete prompt/tool boilerplate', () => {
-    const cleanupSubset = ['analyze', 'plan', 'ultraqa', 'ultrawork'];
+    const cleanupSubset = ['analyze', 'plan', 'ultraqa'];
     const obsolete = [
       /ToolSearch\(/,
       /mcp__[^\s`]+/,
