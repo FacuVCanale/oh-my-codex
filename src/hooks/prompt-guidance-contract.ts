@@ -135,15 +135,6 @@ const ULTRAQA_SKILL_PATTERNS = [
   rx('bounded runtimes|No unbounded waits'),
 ];
 
-const ULTRAWORK_SKILL_PATTERNS = [
-  ...SKILL_PATTERNS,
-  rx('Gather enough context before implementation'),
-  rx('Define pass/fail acceptance criteria before launching execution lanes'),
-  rx('run a direct-tool lane and one or more background evidence lanes'),
-  rx('Choose self vs delegate deliberately'),
-  rx('Manual QA notes are recorded when the task needs a human-visible or behavior-level check'),
-  rx('Ralph owns persistence, architect verification, deslop, and the full verified-completion promise'),
-];
 
 export const ROOT_TEMPLATE_CONTRACTS: GuidanceSurfaceContract[] = [
   { id: 'agents-template', path: 'templates/AGENTS.md', requiredPatterns: ROOT_TEMPLATE_PATTERNS },

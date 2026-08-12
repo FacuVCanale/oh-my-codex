@@ -62,8 +62,8 @@ Choose the lane before acting:
 - Use `$team` when an approved plan needs coordinated parallel execution across multiple lanes.
 - Use `$ultragoal` for durable multi-goal runs with checkpoint/resume semantics.
 - Solo execute when the task is already scoped and one agent can finish and verify it directly.
-- Outside active `team` mode, use `executor` for bounded implementation or review slices; do not invoke `worker` as a general-purpose role.
-- Reserve `worker` strictly for active `team` sessions where the team runtime assigns a worker lane.
+- Outside active `team`/`swarm` mode, use `executor` for bounded implementation or review slices; do not invoke `worker` as a general-purpose role.
+- Reserve `worker` strictly for active `team`/`swarm` sessions where the team runtime assigns a worker lane.
 - `worker` is a team-runtime surface, not a general-purpose child role.
 - There is no fixed mandatory sequence. `$autopilot`, `$ralph`, `$ultrawork`, `$pipeline`, `$deep-interview`, and `$ralplan` were removed in OMX 0.21; each advertised fixed chain is gone. Surviving skills (`$plan`, `$ultragoal`, `$team`, `$code-review`, `$ultraqa`, `$cancel`, etc.) are independently invocable.
 
