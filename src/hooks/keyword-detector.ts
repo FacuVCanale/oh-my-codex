@@ -3481,7 +3481,6 @@ async function resolveGatedSupervisedChildPhase(
 // an advance was held by the completion transition rules), so callers can keep
 // skill-active-state in sync with it.
 async function resolveAutopilotSupervisedChildPhaseState(
-  cwd: string,
   stateDir: string,
   sessionId: string | undefined,
   childSkill: string,
@@ -3502,7 +3501,6 @@ async function resolveAutopilotSupervisedChildPhaseState(
 }
 
 async function persistAutopilotSupervisedChildPhaseState(
-  cwd: string,
   stateDir: string,
   sessionId: string | undefined,
   childSkill: string,
@@ -3552,11 +3550,11 @@ async function reconcileAutopilotSupervisedChildModeStates(
   options: { threadId?: string; turnId?: string } = {},
 ): Promise<{ completedPaths: string[]; effectivePhase: string }> {
   if (!isTrackedWorkflowMode(childSkill)) {
-    const effectivePhase = await persistAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
+    const effectivePhase = await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
     return { completedPaths: [], effectivePhase };
   }
 
-  const effectivePhase = await resolveAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill);
+  const effectivePhase = await resolveAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill);
   if (effectivePhase !== childSkill) {
     return { completedPaths: [], effectivePhase };
   }
@@ -3582,7 +3580,7 @@ async function reconcileAutopilotSupervisedChildModeStates(
     sessionId,
     source: 'autopilot-supervised-child',
   });
-  await persistAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
+  await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
   return { completedPaths: transition.completedPaths, effectivePhase };
 }
 

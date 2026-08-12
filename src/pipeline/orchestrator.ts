@@ -380,9 +380,6 @@ function normalizeHandoffArtifactKeys(artifacts: Record<string, unknown>): Recor
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(artifacts)) {
     normalized[toHandoffArtifactKey(key)] = value;
-    if (key === 'ralplan' && value && typeof value === 'object') {
-      const ralplanArtifacts = value as Record<string, unknown>;
-    }
   }
   return normalized;
 }

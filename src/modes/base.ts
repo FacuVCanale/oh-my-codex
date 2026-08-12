@@ -9,7 +9,6 @@ import { existsSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import {
   isTrackedWorkflowMode,
-  readActiveWorkflowModes,
 } from '../state/workflow-transition.js';
 import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
 import { syncCanonicalSkillStateForMode } from '../state/skill-active.js';
@@ -104,7 +103,7 @@ function stateDir(projectRoot?: string): string {
 
 export async function assertModeStartAllowed(
   mode: ModeName,
-  projectRoot?: string,
+  _projectRoot?: string,
 ): Promise<void> {
   if (!isTrackedWorkflowMode(mode)) return;
 }

@@ -222,7 +222,6 @@ export async function reconcileWorkflowTransition(
   } = {},
 ): Promise<ReconciledWorkflowTransition> {
   const {
-    action = 'activate',
     sessionId,
     nowIso = new Date().toISOString(),
     source = 'workflow-transition',
