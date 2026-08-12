@@ -53,6 +53,9 @@ Plan creates concise, actionable work plans. Auto-detects interview vs direct, s
 
 ### Output
 Every plan includes: Requirements Summary, Acceptance Criteria (testable), Implementation Steps (with file refs, adaptive count), Risks/Mitigations, Verification. Saved to `.omx/plans/`.
+
+Outcome-first framing: apply outcome-first framing, concise visible updates for multi-step planning. Local overrides for the active workflow branch apply via newer user task updates. If the user says `continue`, continue the current branch instead of restarting.
+
 </Steps>
 
 <Tool_Usage>
