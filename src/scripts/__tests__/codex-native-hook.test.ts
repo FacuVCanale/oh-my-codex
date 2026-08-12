@@ -7792,20 +7792,22 @@ deepMaxRounds = 21
 	});
 
 	it("keeps the documented deep-interview Suggested Config reflected in UserPromptSubmit context", async () => {
+		// deep-interview is now a sunset stub (merged into plan --interview); verify stub and that $deep-interview still activates deep-interview state
 		const skillDoc = await readFile(
 			join(process.cwd(), "skills", "deep-interview", "SKILL.md"),
 			"utf-8",
 		);
-		const markerIndex = skillDoc.indexOf("## Suggested Config (optional)");
-		assert.notEqual(markerIndex, -1);
-		const configMatch = skillDoc
-			.slice(markerIndex)
-			.match(/```toml\n([\s\S]*?)\n```/);
-		assert.ok(configMatch);
-		const documentedConfig = configMatch[1]?.trimEnd();
-		assert.ok(documentedConfig);
-		assert.match(documentedConfig, /standardThreshold = 0\.20/);
-		assert.match(documentedConfig, /standardMaxRounds = 12/);
+		assert.match(skillDoc, /was removed/i);
+		assert.match(skillDoc, /\$plan --interview/i);
+		const documentedConfig = `[omx.deepInterview]
+defaultProfile = "standard"
+quickThreshold = 0.30
+standardThreshold = 0.20
+deepThreshold = 0.15
+quickMaxRounds = 5
+standardMaxRounds = 12
+deepMaxRounds = 20
+enableChallengeModes = true`;
 
 		const cwd = await mkdtemp(
 			join(tmpdir(), "omx-native-hook-deep-interview-doc-config-"),

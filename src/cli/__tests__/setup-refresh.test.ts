@@ -176,7 +176,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       for (const skillName of [
         "autopilot",
-        "ralplan",
+        "plan",
         "ralph",
         "ultragoal",
         "code-review",
