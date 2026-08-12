@@ -1315,6 +1315,40 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+
+	it("retains current, previous, and pinned snapshots while retiring older unpinned managed roots", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-plugin-cache-bounded-"));
+		try {
+			const codexHomeDir = join(wd, ".codex");
+			const cacheBase = join(codexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex");
+			const seed = async (version: string, pinned = false) => {
+				const dir = join(cacheBase, version);
+				await mkdir(join(dir, ".codex-plugin"), { recursive: true });
+				await mkdir(join(dir, "hooks"), { recursive: true });
+				await mkdir(join(dir, "skills"), { recursive: true });
+				await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version, skills: "./skills/", hooks: "./hooks/hooks.json" }));
+				if (pinned) await writeFile(join(dir, ".omx-live-pin"), "pinned\n");
+				return dir;
+			};
+			const previous = await seed("0.20.4");
+			const older = await seed("0.20.3");
+			const pinned = await seed("0.20.2", true);
+			const foreign = join(cacheBase, "foreign");
+			await mkdir(join(foreign, ".codex-plugin"), { recursive: true });
+			await writeFile(join(foreign, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "foreign-plugin", version: "foreign" }));
+			const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
+			assert.ok(packagedMarketplace);
+			const result = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+			assert.equal(result.status, "materialized");
+			assert.equal(existsSync(previous), true);
+			assert.equal(existsSync(older), false);
+			assert.equal(existsSync(pinned), true);
+			assert.equal(existsSync(foreign), true);
+			assert.deepEqual(result.retiredDirs, [older]);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 	it("does not rewrite a published same-version plugin snapshot when hook contents drift", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));
 		try {

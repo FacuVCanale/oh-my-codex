@@ -400,6 +400,35 @@ export interface OmxPluginCacheMaterializeResult {
 	status: "unavailable" | "unchanged" | "materialized";
 	cacheDir?: string;
 	version?: string;
+	retiredDirs?: string[];
+}
+
+async function retireUnpinnedManagedSnapshots(
+	cacheBase: string,
+	currentVersion: string,
+): Promise<string[]> {
+	let entries;
+	try {
+		entries = await readdir(cacheBase, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const managed: Array<{ path: string; version: string; mtimeMs: number }> = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.name === currentVersion) continue;
+		const path = join(cacheBase, entry.name);
+		const state = await readOmxPluginCacheState(path);
+		if (state?.manifestVersion !== entry.name) continue;
+		if (existsSync(join(path, ".omx-live-pin"))) continue;
+		managed.push({ path, version: entry.name, mtimeMs: (await lstat(path)).mtimeMs });
+	}
+	managed.sort((left, right) => right.mtimeMs - left.mtimeMs || right.version.localeCompare(left.version));
+	const retired: string[] = [];
+	for (const candidate of managed.slice(1)) {
+		await rm(candidate.path, { recursive: true, force: true });
+		retired.push(candidate.path);
+	}
+	return retired;
 }
 
 export async function materializePackagedOmxPluginCache(
@@ -412,7 +441,14 @@ export async function materializePackagedOmxPluginCache(
 	if (!version) return { status: "unavailable" };
 	const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
 	if (await hasExpectedOmxPluginCache(codexHomeDir, packagedMarketplace, options)) {
-		return { status: "unchanged", cacheDir, version };
+		return {
+			status: "unchanged",
+			cacheDir,
+			version,
+			retiredDirs: options.dryRun
+				? []
+				: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+		};
 	}
 	if (!options.dryRun) {
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
@@ -435,7 +471,14 @@ export async function materializePackagedOmxPluginCache(
 			await rm(tempDir, { recursive: true, force: true });
 		}
 	}
-	return { status: "materialized", cacheDir, version };
+	return {
+		status: "materialized",
+		cacheDir,
+		version,
+		retiredDirs: options.dryRun
+			? []
+			: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+	};
 }
 
 function marketplaceTableHeaderPattern(): RegExp {
