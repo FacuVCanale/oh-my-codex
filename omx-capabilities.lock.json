@@ -2,7 +2,7 @@
   "kind": "omx_capabilities_lock",
   "surfaces": {
     "agents": {
-      "digest": "3b9784ad344162f76f1de411bd37010a06fc7b8879e787093376eae015f00692",
+      "digest": "c9d10436a36011c308e0e46b5e151d955445f277bbcfdb0c5774167d2aa4b87a",
       "files": [
         {
           "digest": "c4f74fb651155bb39281ea97fb582d22b6d5e8b33b45073633ec11baf1baa7f9",
@@ -81,7 +81,7 @@
           "path": "prompts/product-manager.md"
         },
         {
-          "digest": "5e8a183c3c4ab7bae3b83f70a50f10aa6025a6654f25958ae02fd28fde3d3c23",
+          "digest": "cfff374f8a3406ffe01e4ecb01ede99e6ad3b2a9ad37926126ebee4af8d68b46",
           "path": "prompts/qa-tester.md"
         },
         {
@@ -97,7 +97,7 @@
           "path": "prompts/researcher.md"
         },
         {
-          "digest": "9cf46f8a1c21ef3383be79bfd0430d7ba0ff97120c46011f74d811e6d1d67c9d",
+          "digest": "a6ab30fd26370e835f3d044c2ac0ad9ac97a8976b820eb455d0d2c0506204016",
           "path": "prompts/security-reviewer.md"
         },
         {
@@ -1417,7 +1417,7 @@
       ]
     },
     "skills": {
-      "digest": "4c0488e82f5c24073eab0f7d9b31ca4666ce84c7816858d97a0fc5b3318f443d",
+      "digest": "7e037f26bea4038c626ddcd078db0988fd1b6dcae6b4305aad5a42a247dca19b",
       "files": [
         {
           "digest": "227c02cb4304603fae65200878acb9708bc31523d0d851ea148861a8c6f72055",
@@ -1448,7 +1448,7 @@
           "path": "skills/best-practice-research/SKILL.md"
         },
         {
-          "digest": "246458233c1d493a704df676f9e1f4ae17f2a27a276ee473e0d113670b0a5518",
+          "digest": "661a728669c3d92f1dfa08b5f00c07143fc07eebcd068b00d0fae8a069b33340",
           "path": "skills/cancel/SKILL.md"
         },
         {
@@ -1464,7 +1464,7 @@
           "path": "skills/deep-interview/SKILL.md"
         },
         {
-          "digest": "793d9fb7ce9fbcb238ee27c96d31dc2c0edf4d77cdaf28d023138a4197b1f956",
+          "digest": "3f1bddf79820c83433f3ba97cc3e41a61cb72b009acbd08ba3f9dcc5e5ead67a",
           "path": "skills/design/SKILL.md"
         },
         {
@@ -1480,7 +1480,7 @@
           "path": "skills/hud/SKILL.md"
         },
         {
-          "digest": "21e56ba3e2cf070f2d8de7384185c0af2bf587d6090b6597a8062c4d102b2123",
+          "digest": "e5ba47df26aa0a040f0111df216ea4068e8badb67c74a4f41901a2a30050984b",
           "path": "skills/omx-setup/SKILL.md"
         },
         {
@@ -1504,15 +1504,15 @@
           "path": "skills/ralplan/SKILL.md"
         },
         {
-          "digest": "b459ca43f1cefbf9a367a39dd0b76283408cdef8cf52ad1890d806359d5bb9bb",
+          "digest": "bbd89ebc5adf8b478aa643dc6d086eb175e9899be20391a048be118803d65c07",
           "path": "skills/skill/SKILL.md"
         },
         {
-          "digest": "2e80b184f48a04ee685839a7085b73549dd90d70b2d13d6f5ba79adf8ed53057",
+          "digest": "c235609d4a6c57862890b3ab1a4ee6430f5d0c1fae77988be3a2040e6e831221",
           "path": "skills/team/SKILL.md"
         },
         {
-          "digest": "688572fe088e91cc21846d62485e591f856200ee63a34cc7ddcaf0169494186a",
+          "digest": "b9c194fb9ba4877c44add7e5c7df415341a91e5baddf24a1336ac49875804e46",
           "path": "skills/ultragoal/SKILL.md"
         },
         {
