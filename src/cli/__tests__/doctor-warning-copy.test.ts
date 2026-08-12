@@ -569,7 +569,7 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
-				/\[OK\] Native reviewer roles: required RALPLAN\/Autopilot native reviewer roles are available \(architect, critic\); advisory scholastic role is also available/,
+				/\[OK\] Native reviewer roles: required RALPLAN\/Autopilot native reviewer roles are available \(architect, critic\)/,
 			);
 			assert.doesNotMatch(res.stdout, /role-specific subagent calls may degrade/);
 			assert.match(
@@ -610,7 +610,7 @@ command = "node"
 			);
 			await writeFile(
 				join(codexDir, "config.toml"),
-				`${await readFile(join(codexDir, "config.toml"), "utf-8")}\n[agents.critic]\ndescription = "Critic reviewer"\n\n[agents.scholastic]\ndescription = "Scholastic advisory reviewer"\n`,
+				`${await readFile(join(codexDir, "config.toml"), "utf-8")}\n[agents.critic]\ndescription = "Critic reviewer"\n`,
 			);
 
 			const res = runOmx(wd, ["doctor"], {
@@ -621,7 +621,7 @@ command = "node"
 			assert.equal(res.status, 0, res.stderr || res.stdout);
 			assert.match(
 				res.stdout,
-				/\[OK\] Native reviewer roles: required RALPLAN\/Autopilot native reviewer roles are available \(architect, critic\); advisory scholastic role is also available/,
+				/\[OK\] Native reviewer roles: required RALPLAN\/Autopilot native reviewer roles are available \(architect, critic\)/,
 			);
 			assert.match(
 				res.stdout,

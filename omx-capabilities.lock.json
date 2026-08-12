@@ -143,7 +143,7 @@
       ]
     },
     "configured_tools": {
-      "digest": "4fa5a7b8baf12ed3b3454e5f31909d7596bc65601f323f5032cd5a7db310183e",
+      "digest": "79e2e21bcb711e5f7cf8142f8649a4e54dfeda911b929a2b5ce0155874fd2c7d",
       "disabled_first_party_servers": [],
       "external_servers": [],
       "tools": [
@@ -935,45 +935,6 @@
           "server": "memory"
         },
         {
-          "description": "Clear/delete state for a specific mode.",
-          "enabled": true,
-          "inputSchema": {
-            "properties": {
-              "all_sessions": {
-                "description": "Clear matching mode in global and all session scopes",
-                "type": "boolean"
-              },
-              "mode": {
-                "enum": [
-                  "autopilot",
-                  "autoresearch",
-                  "team",
-                  "ralph",
-                  "ultrawork",
-                  "ultraqa",
-                  "ralplan",
-                  "deep-interview",
-                  "skill-active"
-                ],
-                "type": "string"
-              },
-              "session_id": {
-                "description": "Optional session scope ID",
-                "type": "string"
-              },
-              "workingDirectory": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "mode"
-            ],
-            "type": "object"
-          },
-          "name": "state_clear",
-          "server": "state"
-        },
-        {
           "description": "Get detailed status for a specific mode or all modes.",
           "enabled": true,
           "inputSchema": {
@@ -1058,100 +1019,6 @@
             "type": "object"
           },
           "name": "state_read",
-          "server": "state"
-        },
-        {
-          "description": "Write/update state for a specific mode. Creates directories if needed.",
-          "enabled": true,
-          "inputSchema": {
-            "properties": {
-              "active": {
-                "type": "boolean"
-              },
-              "completed_at": {
-                "type": "string"
-              },
-              "current_phase": {
-                "type": "string"
-              },
-              "error": {
-                "type": "string"
-              },
-              "iteration": {
-                "type": "number"
-              },
-              "lifecycle_outcome": {
-                "enum": [
-                  "finished",
-                  "blocked",
-                  "failed",
-                  "userinterlude",
-                  "askuserQuestion"
-                ],
-                "type": "string"
-              },
-              "max_iterations": {
-                "type": "number"
-              },
-              "mode": {
-                "enum": [
-                  "autopilot",
-                  "autoresearch",
-                  "team",
-                  "ralph",
-                  "ultrawork",
-                  "ultraqa",
-                  "ralplan",
-                  "deep-interview",
-                  "skill-active"
-                ],
-                "type": "string"
-              },
-              "run_outcome": {
-                "enum": [
-                  "continue",
-                  "finish",
-                  "blocked_on_user",
-                  "failed",
-                  "cancelled"
-                ],
-                "type": "string"
-              },
-              "session_id": {
-                "description": "Optional session scope ID",
-                "type": "string"
-              },
-              "started_at": {
-                "type": "string"
-              },
-              "state": {
-                "description": "Additional custom fields",
-                "type": "object"
-              },
-              "task_description": {
-                "type": "string"
-              },
-              "terminal_outcome": {
-                "description": "Legacy alias for lifecycle_outcome; canonical writes should prefer lifecycle_outcome.",
-                "enum": [
-                  "finished",
-                  "blocked",
-                  "failed",
-                  "userinterlude",
-                  "askuserQuestion"
-                ],
-                "type": "string"
-              },
-              "workingDirectory": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "mode"
-            ],
-            "type": "object"
-          },
-          "name": "state_write",
           "server": "state"
         },
         {
@@ -1436,7 +1303,7 @@
       ]
     },
     "fixtures": {
-      "digest": "88d95e3b00265771de6c023c16df6da41dc90d4b6f6c1b82cab72dd889bcbfae",
+      "digest": "200564289c8a95e64ab816fff458ea77f4585f0f88868e4ea61eb70dcc053789",
       "fixtures": [
         {
           "allowed_tools": [
@@ -1470,11 +1337,9 @@
             "project_memory_add_note",
             "project_memory_read",
             "project_memory_write",
-            "state_clear",
             "state_get_status",
             "state_list_active",
             "state_read",
-            "state_write",
             "trace_summary",
             "trace_timeline",
             "wiki_add",
@@ -1523,11 +1388,9 @@
             "project_memory_add_note",
             "project_memory_read",
             "project_memory_write",
-            "state_clear",
             "state_get_status",
             "state_list_active",
             "state_read",
-            "state_write",
             "trace_summary",
             "trace_timeline",
             "wiki_add",
@@ -1554,7 +1417,7 @@
       ]
     },
     "skills": {
-      "digest": "01aa5dc85b721cb6d717a389de160b8c2de9ef3840c64d2895534ac216ffcf11",
+      "digest": "4c0488e82f5c24073eab0f7d9b31ca4666ce84c7816858d97a0fc5b3318f443d",
       "files": [
         {
           "digest": "227c02cb4304603fae65200878acb9708bc31523d0d851ea148861a8c6f72055",
@@ -1633,7 +1496,7 @@
           "path": "skills/plan/SKILL.md"
         },
         {
-          "digest": "cb0ce8dec4c36cfc0267afc2d4b142ad3722b2df99b16203cdb5926d12ef4b25",
+          "digest": "1cc239daa9d1c034aa0cb4e4fd6246f1453128c57b3004963b63ba39083b58dd",
           "path": "skills/ralph/SKILL.md"
         },
         {
@@ -1649,7 +1512,7 @@
           "path": "skills/team/SKILL.md"
         },
         {
-          "digest": "e7ae4c06137e1a175e260e60a592f0e6544c36d3190081bf7fe61e0e46f09dac",
+          "digest": "688572fe088e91cc21846d62485e591f856200ee63a34cc7ddcaf0169494186a",
           "path": "skills/ultragoal/SKILL.md"
         },
         {

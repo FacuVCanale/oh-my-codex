@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-08-12T15:22:21.975Z",
+  "generatedAt": "2026-08-12T17:39:56.004Z",
   "version": "2026.02.28.1",
   "counts": {
     "skillCount": 33,
     "promptCount": 30,
-    "activeSkillCount": 25,
+    "activeSkillCount": 20,
     "activeAgentCount": 16
   },
   "coreSkills": [
