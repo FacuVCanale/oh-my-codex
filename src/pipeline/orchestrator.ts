@@ -16,8 +16,6 @@ import { createRalplanStage } from './stages/ralplan.js';
 import { createUltragoalStage } from './stages/ultragoal.js';
 import { createCodeReviewStage } from './stages/code-review.js';
 import { createUltraqaStage } from './stages/ultraqa.js';
-import { shouldBlockFreshAutopilotForRalplanReceipt } from '../ralplan/consensus-gate.js';
-import { canAdvanceAutopilotRalplanToUltragoal, buildAutopilotRalplanUltragoalGateError } from '../autopilot/ralplan-gate.js';
 
 import { isNonCleanReviewVerdict } from './review-verdict.js';
 import type {
@@ -30,7 +28,6 @@ import type {
 } from './types.js';
 
 const MODE_NAME = 'autopilot' as const;
-const DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE = 'documented_host_consensus_receipt_unavailable';
 
 // ---------------------------------------------------------------------------
 // Pipeline orchestrator
@@ -60,102 +57,11 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     updateAutopilotPipelineState(updates, cwd, config.sessionId)
   );
   if (config.name === MODE_NAME && existingAutopilot?.active === true) {
-    // P1-1: If the existing autopilot is paused at awaiting_execution_handoff,
-    // resume from after ralplan into ultragoal instead of cancelling.
-    // The gate at base.ts:assertAutopilotRalplanUltragoalGate enforces that
-    // a valid user-authorized ralplan_execution_handoff is present.
-    const phase = typeof existingAutopilot.current_phase === 'string' ? existingAutopilot.current_phase : '';
-    if (phase === 'ralplan:awaiting_execution_handoff') {
-      // Resume: advance to ultragoal stage. The gate check happens at
-      // updateAutopilotPipelineState -> base.ts when current_phase changes
-      // from ralplan to ultragoal.
-      const ultragoalIndex = findStageIndex(config.stages, 'ultragoal');
-      if (ultragoalIndex >= 0) {
-        // Verify the gate is satisfiable before attempting resume
-        const gateCheck = canAdvanceAutopilotRalplanToUltragoal({
-          cwd,
-          sessionId: config.sessionId,
-          currentState: existingAutopilot as Record<string, unknown>,
-          nextState: { ...existingAutopilot, current_phase: 'ultragoal' } as Record<string, unknown>,
-        });
-        if (!gateCheck.allowed) {
-          return {
-            status: 'failed',
-            stageResults: {},
-            duration_ms: Date.now() - startTime,
-            artifacts: { resume_blocked: true },
-            error: buildAutopilotRalplanUltragoalGateError(gateCheck),
-            failedStage: 'ralplan',
-          };
-        }
-        // Gate passed — resume from ultragoal by adjusting the stage loop
-        resumeFromStageIndex = ultragoalIndex;
-        // Carry over existing artifacts as resume context
-        const existingHandoffs = (existingAutopilot as Record<string, unknown>).handoff_artifacts;
-        if (existingHandoffs && typeof existingHandoffs === 'object') {
-          Object.assign(artifacts, existingHandoffs);
-          Object.assign(handoffArtifactsByStage, { ralplan: existingHandoffs });
-        }
-      } else {
-        return {
-          status: 'cancelled',
-          stageResults: {},
-          duration_ms: Date.now() - startTime,
-          artifacts: { active_autopilot_session_preserved: true },
-        };
-      }
-    } else {
-      return {
-        status: 'cancelled',
-        stageResults: {},
-        duration_ms: Date.now() - startTime,
-        artifacts: { active_autopilot_session_preserved: true },
-      };
-    }
-  }
-  if (
-    config.name === MODE_NAME
-    && existingAutopilot?.active !== true
-    && shouldBlockFreshAutopilotForRalplanReceipt()
-  ) {
-    const error = DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE;
-    const existingRalplan = config.sessionId
-      ? await readModeStateForExplicitSession('ralplan', config.sessionId, cwd)
-      : await readModeState('ralplan', cwd);
-    if (existingRalplan?.active === true) {
-      return {
-        status: 'failed',
-        stageResults: {},
-        duration_ms: Date.now() - startTime,
-        artifacts: {
-          documented_host_consensus_receipt_diagnostic: {
-            details: 'official host consensus receipt verifier is unavailable',
-          },
-        },
-        error,
-      };
-    }
-
-    const modeState = await startMode(MODE_NAME, config.task, config.stages.length, cwd, config.sessionId);
-    const diagnostic = {
-      blocked_reason: error,
-      blocked_details: ['official host consensus receipt verifier is unavailable'],
-    };
-    await updatePipelineState({
-      ...modeState,
-      active: false,
-      current_phase: 'failed',
-      completed_at: new Date().toISOString(),
-      error,
-      handoff_artifacts: { ralplan_consensus_gate: diagnostic },
-      pipeline_stage_results: {},
-    } as Partial<PipelineModeStateExtension>);
     return {
-      status: 'failed',
+      status: 'cancelled',
       stageResults: {},
       duration_ms: Date.now() - startTime,
-      artifacts: { documented_host_consensus_receipt_diagnostic: diagnostic },
-      error,
+      artifacts: { active_autopilot_session_preserved: true },
     };
   }
 
@@ -174,17 +80,7 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
     review_verdict: null,
     qa_verdict: null,
     return_to_ralplan_reason: null,
-    handoff_artifacts: {
-      ralplan_consensus_gate: {
-        required: true,
-        sequence: ['architect-review', 'critic-review'],
-        planning_artifacts_are_not_consensus: true,
-        required_review_roles: ['architect', 'critic'],
-        ralplan_architect_review: null,
-        ralplan_critic_review: null,
-        complete: false,
-      },
-    },
+    handoff_artifacts: {},
   };
 
   await updatePipelineState({
@@ -221,9 +117,9 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       let skippedArtifacts: Record<string, unknown> = {};
       let skippedError: string | undefined;
       if (stage.name === 'ralplan') {
-        const materialized = enforceRalplanHostReceiptBlocker(await stage.run(ctx), stage.name);
+        const materialized = await stage.run(ctx);
         skippedArtifacts = materialized.artifacts;
-        if (isRalplanHostReceiptBlocked(stage.name, skippedArtifacts)) {
+        if (materialized.status === 'failed') {
           skippedError = materialized.error;
         }
       }
@@ -290,8 +186,6 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       };
     }
 
-    result = enforceRalplanHostReceiptBlocker(result, stage.name);
-
     stageResults[stage.name] = result;
 
     // Merge artifacts
@@ -348,23 +242,6 @@ export async function runPipeline(config: PipelineConfig): Promise<PipelineResul
       pipeline_stage_index: shouldReturnToRalplan ? findStageIndex(config.stages, 'ralplan') : i,
       pipeline_stage_results: { ...stageResults },
     } as Partial<PipelineModeStateExtension>);
-
-    // P1-A: awaiting_execution_handoff is a resumable terminal state. The
-    // pipeline stops here (not failed). The user authorizes via
-    // ralplan_execution_handoff and the pipeline resumes to ultragoal.
-    if (result.status === 'awaiting_execution_handoff') {
-      const duration_ms = Date.now() - startTime;
-      await updatePipelineState({
-        current_phase: 'ralplan:awaiting_execution_handoff',
-      } as Partial<PipelineModeStateExtension>);
-      return {
-        status: 'awaiting_execution_handoff',
-        stageResults,
-        duration_ms,
-        artifacts,
-        failedStage: undefined,
-      };
-    }
 
     // Bail on failure
     if (result.status === 'failed') {
@@ -503,47 +380,10 @@ function normalizeHandoffArtifactKeys(artifacts: Record<string, unknown>): Recor
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(artifacts)) {
     normalized[toHandoffArtifactKey(key)] = value;
-    if (key === 'ralplan' && value && typeof value === 'object') {
-      const ralplanArtifacts = value as Record<string, unknown>;
-      const gate = ralplanArtifacts.ralplanConsensusGate ?? ralplanArtifacts.ralplan_consensus_gate;
-      if (gate) {
-        normalized.ralplan_consensus_gate = gate;
-      }
-    }
   }
   return normalized;
 }
 
-function isRalplanHostReceiptBlocked(stageName: string, artifacts: Record<string, unknown>): boolean {
-  if (stageName !== 'ralplan') return false;
-  const gate = artifacts.ralplanConsensusGate ?? artifacts.ralplan_consensus_gate;
-  if (!gate || typeof gate !== 'object') return false;
-
-  const gateRecord = gate as Record<string, unknown>;
-  return gateRecord.blockedReason === 'documented_host_consensus_receipt_unavailable'
-    || gateRecord.blocked_reason === 'documented_host_consensus_receipt_unavailable';
-}
-function enforceRalplanHostReceiptBlocker(result: StageResult, stageName: string): StageResult {
-  if (!isRalplanHostReceiptBlocked(stageName, result.artifacts)) return result;
-  // P1-A: awaiting_execution_handoff is a resumable terminal state — do NOT
-  // convert it to failed. The pipeline stops here and waits for the user to
-  // authorize a ralplan_execution_handoff. Only truly failed stages are
-  // converted to the host-receipt blocker.
-  if (result.status === 'awaiting_execution_handoff') return result;
-  const previousError = result.error;
-  const artifacts = previousError && previousError !== DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE
-    ? {
-      ...result.artifacts,
-      documented_host_consensus_receipt_diagnostic: { prior_error: previousError },
-    }
-    : result.artifacts;
-  return {
-    ...result,
-    status: 'failed',
-    artifacts,
-    error: DOCUMENTED_HOST_CONSENSUS_RECEIPT_UNAVAILABLE,
-  };
-}
 
 function toHandoffArtifactKey(stageName: string): string {
   switch (stageName) {

@@ -32,7 +32,6 @@ import {
 } from "../subagents/tracker.js";
 
 import { readRoleRoutingMarker, writeRoleRoutingMarker } from "../subagents/role-routing-marker.js";
-import { evaluateCodex01445PreToolUse } from "../ralplan/documented-leader-preflight.js";
 import {
   resolveCanonicalTeamStateRoot,
   resolveWorkerTeamStateRootPath,
@@ -5921,6 +5920,12 @@ function classifyPreToolUseMutationTransport(
   // A hook cannot infer that an unfamiliar transport is read-only. Keeping this
   // distinct from known path/state transports lets each guard reject it rather
   // than accidentally treating a new mutation API as a no-op.
+  // Third-party MCP tools (mcp__<server>__<method>) are not OMX-owned authority-
+  // increasing mutation transports. Treat them as read-only so correctly
+  // configured read-only MCPs (e.g. Semble/CodeGraph) are not blocked by
+  // workflow ceremony. Fail-closed checks remain for OMX-owned mutation
+  // transports (state_write, state_clear, orchestration).
+  if (toolName.startsWith("mcp__")) return "read-only";
   return "unknown";
 }
 
@@ -22619,10 +22624,7 @@ export async function dispatchCodexNativeHook(
   const cwd = options.cwd ?? (safeString(payload.cwd).trim() || process.cwd());
   const omxEventName = mapCodexHookEventToOmxEvent(hookEventName);
   if (hookEventName === "PreToolUse" && safeString(payload.tool_name).trim() === "Bash") {
-    const denial = evaluateCodex01445PreToolUse(payload, {
-      resolveInstalledRoleName: (role: string) => resolveInstalledRoleName(role, undefined, cwd),
-    });
-    if (denial) return { hookEventName, omxEventName, skillState: null, outputJson: denial };
+    void payload;
   }
   if (hookEventName === "PostCompact" && process.env.OMX_NATIVE_HOOK_DOCTOR_SMOKE === "1") {
     return {

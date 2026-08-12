@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildWorkflowTransitionMessage,
-  buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   readActiveWorkflowModes,
 } from '../workflow-transition.js';
@@ -39,7 +38,7 @@ async function withIsolatedStateEnv(fn: () => Promise<void>): Promise<void> {
 }
 
 describe('workflow transition rules', () => {
-  it('allows the approved overlap matrix and denies unsupported combinations', () => {
+  it('allows all combinations (no deny kind after #3492)', () => {
     const cases: Array<{
       current: string[];
       requested: 'team' | 'ralph' | 'ultrawork' | 'autopilot' | 'autoresearch';
@@ -53,9 +52,9 @@ describe('workflow transition rules', () => {
       { current: ['ultrawork'], requested: 'team', allowed: true, resulting: ['ultrawork', 'team'] },
       { current: ['ralph'], requested: 'ultrawork', allowed: true, resulting: ['ralph', 'ultrawork'] },
       { current: ['ultrawork'], requested: 'ralph', allowed: true, resulting: ['ultrawork', 'ralph'] },
-      { current: ['autopilot'], requested: 'team', allowed: false, resulting: ['autopilot'] },
-      { current: ['team'], requested: 'autopilot', allowed: false, resulting: ['team'] },
-      { current: ['autoresearch'], requested: 'ralph', allowed: false, resulting: ['autoresearch'] },
+      { current: ['autopilot'], requested: 'team', allowed: true, resulting: ['autopilot', 'team'] },
+      { current: ['team'], requested: 'autopilot', allowed: true, resulting: ['team', 'autopilot'] },
+      { current: ['autoresearch'], requested: 'ralph', allowed: true, resulting: ['autoresearch', 'ralph'] },
       { current: ['team', 'ralph'], requested: 'ultrawork', allowed: true, resulting: ['team', 'ralph', 'ultrawork'] },
       { current: ['team', 'ultrawork'], requested: 'ralph', allowed: true, resulting: ['team', 'ultrawork', 'ralph'] },
     ];
@@ -65,16 +64,6 @@ describe('workflow transition rules', () => {
       assert.equal(decision.allowed, testCase.allowed, `${testCase.current.join(',')} -> ${testCase.requested}`);
       assert.deepEqual(decision.resultingModes, testCase.resulting, `${testCase.current.join(',')} -> ${testCase.requested}`);
     }
-  });
-
-  it('builds actionable denial guidance that names both clearing paths', () => {
-    const error = buildWorkflowTransitionError(['team'], 'autopilot', 'start');
-    assert.match(error, /Cannot start autopilot: team is already active\./);
-    assert.match(error, /Unsupported workflow overlap: team \+ autopilot\./);
-    assert.match(error, /Current state is unchanged\./);
-    assert.match(error, /Clear incompatible workflow state yourself via/);
-    assert.match(error, /`omx state clear --input '{"mode":"<mode>"}' --json`/);
-    assert.match(error, /explicit MCP compatibility is enabled/);
   });
 
   it('returns auto-complete decisions for allowlisted forward transitions', () => {
@@ -119,21 +108,12 @@ describe('workflow transition rules', () => {
     assert.deepEqual(ralplanToAutoresearch.resultingModes, ['autoresearch']);
   });
 
-  it('builds rollback denial guidance for execution-to-planning transitions', () => {
-    const error = buildWorkflowTransitionError(['ralph'], 'ralplan', 'start');
-    assert.match(error, /Execution-to-planning rollback auto-complete is not allowed\./);
-    assert.match(error, /First clear current state first and retry if this action is intended\./);
-    assert.match(error, /Clear incompatible workflow state yourself via/);
-  });
-
-
   it('does not auto-complete Autopilot when starting ralplan as a child-stage name', () => {
     const decision = evaluateWorkflowTransition(['autopilot'], 'ralplan');
-    assert.equal(decision.allowed, false);
-    assert.equal(decision.kind, 'deny');
-    assert.equal(decision.denialReason, 'rollback');
+    assert.equal(decision.allowed, true);
+    assert.equal(decision.kind, 'overlap');
     assert.deepEqual(decision.autoCompleteModes, []);
-    assert.deepEqual(decision.resultingModes, ['autopilot']);
+    assert.deepEqual(decision.resultingModes, ['autopilot', 'ralplan']);
   });
 
   it('formats transition audit messages', () => {
@@ -272,7 +252,7 @@ describe('workflow transition rules', () => {
     });
   });
 
-  it('still rejects planning rollback when root Team detail is genuinely active', async () => {
+  it('allows planning rollback when root Team detail is genuinely active (no deny after #3492)', async () => {
     await withIsolatedStateEnv(async () => {
       const wd = await mkdtemp(join(tmpdir(), 'omx-workflow-foreign-team-active-'));
       try {
@@ -291,10 +271,8 @@ describe('workflow transition rules', () => {
           active_skills: [{ skill: 'team', phase: 'team-exec', active: true }],
         }, null, 2));
 
-        await assert.rejects(
-          reconcileWorkflowTransition(wd, 'deep-interview', { action: 'write', source: 'test' }),
-          /team is already active/,
-        );
+        const result = await reconcileWorkflowTransition(wd, 'deep-interview', { action: 'write', source: 'test' });
+        assert.equal(result.decision.allowed, true);
       } finally {
         await rm(wd, { recursive: true, force: true });
       }
@@ -379,13 +357,13 @@ describe('workflow transition rules', () => {
     }
   });
 
-  it('denies deep-interview to ralplan reconciliation when only handoff-cleared question evidence exists', async () => {
+  it('allows deep-interview to ralplan reconciliation unconditionally (hard gate removed)', async () => {
     await withIsolatedStateEnv(async () => {
-      const root = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-ralplan-gate-deny-'));
+      const root = await mkdtemp(join(tmpdir(), 'omx-workflow-reconcile-ralplan-no-gate-'));
       try {
         const wd = join(root, 'source');
         const baseStateDir = join(root, 'boxed-state');
-        const sessionId = 'sess-transition-gate-deny';
+        const sessionId = 'sess-transition-no-gate';
         const sessionDir = join(baseStateDir, 'sessions', sessionId);
         await mkdir(sessionDir, { recursive: true });
         await writeFile(
@@ -425,19 +403,18 @@ describe('workflow transition rules', () => {
           'utf-8',
         );
 
-        await assert.rejects(
-          reconcileWorkflowTransition(wd, 'ralplan', {
+        const result = await reconcileWorkflowTransition(wd, 'ralplan', {
             action: 'start',
             sessionId,
             source: 'test',
             baseStateDir,
-          }),
-          /cleared deep-interview question obligations with handoff\/error are not completion evidence/i,
-        );
+        });
+        assert.equal(result.decision.allowed, true);
+        assert.equal(result.decision.kind, 'auto-complete');
 
         const boxedMode = JSON.parse(await readFile(join(sessionDir, 'deep-interview-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(boxedMode.active, true);
-        assert.equal(boxedMode.current_phase, 'interviewing');
+        assert.equal(boxedMode.active, false);
+        assert.equal(boxedMode.current_phase, 'completed');
       } finally {
         await rm(root, { recursive: true, force: true });
       }

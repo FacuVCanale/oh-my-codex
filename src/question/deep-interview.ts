@@ -14,7 +14,6 @@ import {
 } from './state.js';
 import type { TerminalLifecycleOutcome } from '../runtime/terminal-lifecycle.js';
 import type { QuestionInput, QuestionRecord } from './types.js';
-import type { DownstreamAuthority } from '../state/workflow-transition.js';
 import {
   AUTOPILOT_DEEP_INTERVIEW_QUESTION_OWNER_ENV,
   claimAutopilotDeepInterviewQuestionWaiting,
@@ -40,7 +39,7 @@ interface DeepInterviewStateRecord {
   updated_at?: string;
   lifecycle_outcome?: TerminalLifecycleOutcome;
   question_enforcement?: DeepInterviewQuestionEnforcementState;
-  downstream_authority?: DownstreamAuthority;
+  downstream_authority?: 'plan_then_execute' | 'execute_now';
   [key: string]: unknown;
 }
 

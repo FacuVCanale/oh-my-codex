@@ -9,7 +9,7 @@ export const RALPLAN_ACTIVE_PHASES = [
 ] as const;
 
 export type RalplanActivePhase = (typeof RALPLAN_ACTIVE_PHASES)[number];
-export type RalplanTerminalPhase = 'complete' | 'cancelled' | 'failed' | 'awaiting_execution_handoff';
+export type RalplanTerminalPhase = 'complete' | 'cancelled' | 'failed';
 export type RalplanReviewVerdict = 'approve' | 'iterate' | 'reject';
 export type RalplanExecutionLane = 'ultragoal' | 'team' | 'ralph' | 'conductor' | 'execution' | 'none';
 
@@ -101,7 +101,7 @@ export interface RunRalplanConsensusOptions {
 }
 
 export interface RalplanRuntimeResult {
-  status: 'completed' | 'failed' | 'cancelled' | 'awaiting_execution_handoff';
+  status: 'completed' | 'failed' | 'cancelled';
   iteration: number;
   phase: RalplanTerminalPhase;
   planningComplete: boolean;
@@ -212,13 +212,13 @@ function reviewBlocker(
   criticReview: RalplanReviewResult | undefined,
   requireNativeSubagents: boolean,
   nativeEvidenceComplete = true,
-): string {
+): string | null {
   if (architectReview?.verdict !== 'approve') return 'architect_review_missing_or_not_approved';
   if (criticReview?.verdict !== 'approve') return 'critic_review_missing_or_not_approved';
   if (!isApprovingReviewPair(architectReview, criticReview, requireNativeSubagents) || !nativeEvidenceComplete) {
     return 'native_subagent_consensus_evidence_missing';
   }
-  return 'documented_host_consensus_receipt_unavailable';
+  return null;
 }
 
 async function hasCompletedNativeReviewEvidence(
@@ -253,9 +253,10 @@ function buildRalplanConsensusGate(
   const ralplanCriticReview = latestCritic
     ? { ...latestCritic, agent_role: 'critic' as const, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 2 }
     : null;
+  const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete);
   return {
     required: true,
-    complete: false,
+    complete: blockedReason === null,
     sequence: ['architect-review', 'critic-review'],
     planning_artifacts_are_not_consensus: true,
     required_review_roles: ['architect', 'critic'],
@@ -263,7 +264,7 @@ function buildRalplanConsensusGate(
     ralplan_critic_review: ralplanCriticReview,
     architect_review: ralplanArchitectReview,
     critic_review: ralplanCriticReview,
-    blocked_reason: reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete),
+    blocked_reason: blockedReason,
   };
 }
 
@@ -524,48 +525,38 @@ export async function runRalplanConsensus(
         review_history: reviewHistory,
       });
 
-
-      if (consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable' || iteration >= maxIterations) {
-        const hostReceiptUnavailable = consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable';
-        const reviewsApproved = hostReceiptUnavailable
-          && isApprovingReviewPair(architectReview, criticReview, options.requireNativeSubagents === true)
-          && (options.requireNativeSubagents !== true
-            || await hasCompletedNativeReviewEvidence(cwd, options.sessionId, architectReview, criticReview));
-        if (reviewsApproved) {
-          // #3463: Architect→Critic lifecycle consensus is complete. The host
-          // receipt verifier is unavailable, but the transition is reachable
-          // via a user-authorized execution handoff (ralplan_execution_handoff).
-          // Terminalize as awaiting_execution_handoff so the workflow surfaces
-          // the actionable next step instead of an unreachable hard failure.
-          await updateRalplanState(cwd, {
-            active: false,
-            iteration,
-            current_phase: 'awaiting_execution_handoff',
-            completed_at: new Date().toISOString(),
+      if (consensusGate.complete) {
+        // Architect→Critic lifecycle consensus is complete; planning is done and
+        // execution may proceed without any host consensus receipt.
+        await updateRalplanState(cwd, {
+          active: false,
+          iteration,
+          current_phase: 'complete',
+          completed_at: new Date().toISOString(),
             planning_complete: true,
-            latest_plan_path: latestPlanPath,
-            latest_critic_verdict: criticReview.verdict,
-            latest_critic_summary: criticReview.summary,
-            ralplan_consensus_gate: consensusGate,
-            review_history: reviewHistory,
-            status_message: 'Status: awaiting_execution_handoff — Architect and Critic lifecycle consensus is complete. Authorize the transition to Ultragoal with a ralplan_execution_handoff (authorized_by_user: true, session-bound, review-cycle-bound). This is a user-authorized handoff distinct from host-consensus authority.',
-          });
-          return {
-            status: 'awaiting_execution_handoff',
-            iteration,
-            phase: 'awaiting_execution_handoff',
+          latest_plan_path: latestPlanPath,
+          latest_critic_verdict: criticReview.verdict,
+          latest_critic_summary: criticReview.summary,
+          ralplan_consensus_gate: consensusGate,
+          review_history: reviewHistory,
+          status_message: 'Status: complete — Architect and Critic consensus is complete; proceed to execution.',
+        });
+        return {
+          status: 'completed',
+          iteration,
+          phase: 'complete',
             planningComplete: true,
-            drafts,
-            architectReviews,
-            criticReviews,
-            ralplanConsensusGate: consensusGate,
-            latestPlanPath,
-            artifacts: aggregatedArtifacts,
-          };
-        }
-        const error = hostReceiptUnavailable
-          ? 'documented_host_consensus_receipt_unavailable'
-          : `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
+          drafts,
+          architectReviews,
+          criticReviews,
+          ralplanConsensusGate: consensusGate,
+          latestPlanPath,
+          artifacts: aggregatedArtifacts,
+        };
+      }
+
+      if (iteration >= maxIterations) {
+        const error = `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
         await updateRalplanState(cwd, {
           active: false,
           iteration,
@@ -577,9 +568,7 @@ export async function runRalplanConsensus(
           latest_critic_summary: criticReview.summary,
           ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
-          status_message: hostReceiptUnavailable
-            ? 'Status: failed — Architect and Critic lifecycle evidence cannot authorize a release without an official host consensus receipt verifier.'
-            : `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
+          status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,
         });
         return {

@@ -34,7 +34,7 @@ export interface StageContext {
  * Result returned by each pipeline stage after execution.
  */
 export interface StageResult {
-  status: 'completed' | 'failed' | 'skipped' | 'awaiting_execution_handoff';
+  status: 'completed' | 'failed' | 'skipped';
 
   /** Artifacts produced by this stage (merged into StageContext.artifacts). */
   artifacts: Record<string, unknown>;
@@ -118,7 +118,7 @@ export interface PipelineConfig {
  */
 export interface PipelineResult {
   /** Overall pipeline status. */
-  status: 'completed' | 'failed' | 'cancelled' | 'awaiting_execution_handoff';
+  status: 'completed' | 'failed' | 'cancelled';
 
   /** Per-stage results keyed by stage name. */
   stageResults: Record<string, StageResult>;

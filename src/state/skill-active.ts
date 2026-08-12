@@ -4,11 +4,7 @@ import { mkdir, readFile, readdir, rename, rm, rmdir, stat, unlink, writeFile } 
 import { basename, dirname, join } from 'path';
 import { getBaseStateDir, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import { isTerminalRunOutcome, normalizeRunOutcome, normalizeTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
-import {
-  assertWorkflowTransitionAllowed,
-  isTrackedWorkflowMode,
-  pickPrimaryWorkflowMode,
-} from './workflow-transition.js';
+import { pickPrimaryWorkflowMode } from './workflow-transition.js';
 import { readNeutralizedRoutingOverlay } from '../ralplan/documented-leader-preflight.js';
 
 export const SKILL_ACTIVE_STATE_MODE = 'skill-active';
@@ -871,15 +867,6 @@ async function syncCanonicalSkillStateForModeUnlocked(
       ))
     ))
     : [];
-  const visibleEntries = listTransitionActiveSkills(existingSession ?? existingRoot ?? {}, sessionId);
-
-  if (active && isTrackedWorkflowMode(mode)) {
-    const currentWorkflowModes = visibleEntries
-      .map((entry) => entry.skill)
-      .filter(isTrackedWorkflowMode);
-    assertWorkflowTransitionAllowed(currentWorkflowModes, mode, 'write');
-  }
-
   if (!normalizedSessionId && existingRoot && !isTransitionCanonicalStateOwned(existingRoot)) return;
 
   const applyEntriesToState = (

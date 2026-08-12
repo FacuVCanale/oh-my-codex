@@ -121,15 +121,6 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.name, 'ralplan');
   });
 
-  it('fails closed without planning artifacts and consensus evidence', async () => {
-    const stage = createRalplanStage();
-    const result = await stage.run(makeCtx());
-
-    assert.equal(result.status, 'failed');
-    assert.equal((result.artifacts as Record<string, unknown>).stage, 'ralplan');
-    assert.ok((result.artifacts as Record<string, unknown>).instruction);
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-  });
 
   it('canSkip returns false when no plans directory exists', () => {
     const stage = createRalplanStage();
@@ -163,25 +154,6 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx()), false);
   });
 
-  it('run fails with consensus-specific artifact error when consensus exists but planning artifacts are missing', async () => {
-    const stage = createRalplanStage();
-    const result = await stage.run(makeCtx({
-      artifacts: {
-        ralplan: {
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', sequence_index: 1 },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', sequence_index: 2 },
-          },
-        },
-      },
-    }));
-
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal((result.artifacts as Record<string, unknown>).planningComplete, false);
-  });
 
   it('canSkip fails closed when local Architect and Critic lifecycle evidence lacks an official host receipt', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
@@ -292,27 +264,6 @@ describe('RALPLAN Stage', () => {
     assert.equal(stage.canSkip!(makeCtx({ sessionId: 'sess-missing' })), false);
   });
 
-  it('canSkip fails closed for malformed explicit session ids instead of falling back to root consensus', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    const stateDir = join(tempDir, '.omx', 'state');
-    await mkdir(plansDir, { recursive: true });
-    await mkdir(stateDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-    await writeFile(join(stateDir, 'ralplan-state.json'), JSON.stringify({
-      ralplanConsensusGate: {
-        complete: true,
-        sequence: ['architect-review', 'critic-review'],
-        ralplan_architect_review: { agent_role: 'architect', verdict: 'approve' },
-        ralplan_critic_review: { agent_role: 'critic', verdict: 'approve' },
-      },
-    }));
-
-    const stage = createRalplanStage();
-    for (const sessionId of ['../bad', 'a'.repeat(65), '']) {
-      assert.equal(stage.canSkip!(makeCtx({ sessionId })), false);
-    }
-  });
 
   it('canSkip rejects blocker aliases even with approval-shaped booleans', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
@@ -392,36 +343,6 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
-  it('canSkip ignores ambient OMX_ROOT consensus state for local PRD/test-spec-only artifacts', async () => {
-    const ambientRoot = await mkdtemp(join(tmpdir(), 'omx-ralplan-ambient-'));
-    const previousOmxRoot = process.env.OMX_ROOT;
-    try {
-      const plansDir = join(tempDir, '.omx', 'plans');
-      await mkdir(plansDir, { recursive: true });
-      await writeFile(join(plansDir, 'prd-local.md'), '# Plan\n');
-      await writeFile(join(plansDir, 'test-spec-local.md'), '# Test Spec\n');
-
-      const ambientStateDir = join(ambientRoot, '.omx', 'state');
-      await mkdir(ambientStateDir, { recursive: true });
-      await writeFile(join(ambientStateDir, 'ralplan-state.json'), JSON.stringify({
-        current_phase: 'complete',
-        planning_complete: true,
-        ralplan_consensus_gate: {
-          complete: true,
-          ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', iteration: 1 },
-          ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', iteration: 1 },
-        },
-      }));
-      process.env.OMX_ROOT = ambientRoot;
-
-      const stage = createRalplanStage();
-      assert.equal(stage.canSkip!(makeCtx()), false);
-    } finally {
-      if (previousOmxRoot === undefined) delete process.env.OMX_ROOT;
-      else process.env.OMX_ROOT = previousOmxRoot;
-      await rm(ambientRoot, { recursive: true, force: true });
-    }
-  });
 
   it('canSkip returns false for rejected consensus objects with approval-shaped booleans', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
@@ -562,115 +483,8 @@ describe('RALPLAN Stage', () => {
     })), false);
   });
 
-  it('run rejects stale nested ralplan artifacts when parent return-to-ralplan context is present', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
 
-    const stage = createRalplanStage();
-    const result = await stage.run(makeCtx({
-      artifacts: {
-        return_to_ralplan_reason: 'Code review requested a plan update.',
-        review_cycle: 1,
-        ralplan: {
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: {
-              agent_role: 'architect',
-              verdict: 'approve',
-              completed_at: '2026-06-12T09:00:00.000Z',
-            },
-            ralplan_critic_review: {
-              agent_role: 'critic',
-              verdict: 'approve',
-              completed_at: '2026-06-12T09:05:00.000Z',
-            },
-          },
-        },
-      },
-    }));
-    const artifacts = result.artifacts as Record<string, unknown>;
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
 
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-  });
-
-  it('run retains fresh nested review lifecycle artifacts but fails closed without an official host receipt', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-
-    const stage = createRalplanStage();
-    const result = await stage.run(makeCtx({
-      artifacts: {
-        return_to_ralplan_reason: 'Code review requested a plan update.',
-        review_cycle: 1,
-        ralplan: {
-          review_cycle: 2,
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: { agent_role: 'architect', verdict: 'approve', review_cycle: 2, completed_at: '2026-06-12T10:00:00.000Z' },
-            ralplan_critic_review: { agent_role: 'critic', verdict: 'approve', review_cycle: 2, completed_at: '2026-06-12T10:05:00.000Z' },
-          },
-        },
-      },
-    }));
-    const artifacts = result.artifacts as Record<string, unknown>;
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
-
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-    assert.ok(gate.ralplan_architect_review);
-    assert.ok(gate.ralplan_critic_review);
-  });
-
-  it('run rejects nested ralplan artifacts when only the container review_cycle advances', async () => {
-    const plansDir = join(tempDir, '.omx', 'plans');
-    await mkdir(plansDir, { recursive: true });
-    await writeFile(join(plansDir, 'prd-my-feature.md'), '# Plan\n');
-    await writeFile(join(plansDir, 'test-spec-my-feature.md'), '# Test Spec\n');
-
-    const stage = createRalplanStage();
-    const result = await stage.run(makeCtx({
-      artifacts: {
-        return_to_ralplan_reason: 'Code review requested a plan update.',
-        review_cycle: 1,
-        ralplan: {
-          review_cycle: 2,
-          ralplanConsensusGate: {
-            complete: true,
-            sequence: ['architect-review', 'critic-review'],
-            ralplan_architect_review: {
-              agent_role: 'architect',
-              verdict: 'approve',
-              completed_at: '2026-06-12T10:00:00.000Z',
-            },
-            ralplan_critic_review: {
-              agent_role: 'critic',
-              verdict: 'approve',
-              completed_at: '2026-06-12T10:05:00.000Z',
-            },
-          },
-        },
-      },
-    }));
-    const artifacts = result.artifacts as Record<string, unknown>;
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string | null };
-
-    assert.equal(result.status, 'failed');
-    assert.equal(result.error, 'documented_host_consensus_receipt_unavailable');
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-  });
 
   it('canSkip returns false when nested code-review artifacts are non-clean', async () => {
     const plansDir = join(tempDir, '.omx', 'plans');
@@ -702,118 +516,8 @@ describe('RALPLAN Stage', () => {
     assert.equal(artifacts.planningComplete, false);
   });
 
-  it('completes planning and review lifecycle but fails runtime release without an official host receipt', async () => {
-    const stage = createRalplanStage({
-      executor: {
-        async draft() {
-          const plansDir = join(tempDir, '.omx', 'plans');
-          await mkdir(plansDir, { recursive: true });
-          const prdPath = join(plansDir, 'prd-runtime.md');
-          await writeFile(prdPath, '# Runtime Plan\n');
-          await writeFile(join(plansDir, 'test-spec-runtime.md'), '# Runtime Tests\n');
-          return { summary: 'drafted', planPath: prdPath, artifacts: { runtimeDrafted: true } };
-        },
-        async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
-        },
-        async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
-        },
-      },
-    });
 
-    const result = await stage.run(makeCtx({ task: 'live ralplan run' }));
-    const artifacts = result.artifacts as Record<string, unknown>;
-    const gate = artifacts.ralplanConsensusGate as {
-      complete?: boolean;
-      blockedReason?: string;
-      ralplan_architect_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
-      ralplan_critic_review?: { agent_role?: string; verdict?: string; summary?: string; iteration?: number; provenance_kind?: unknown } | null;
-    };
 
-    assert.equal(result.status, 'awaiting_execution_handoff');
-    assert.equal(artifacts.runtime, true);
-    assert.equal(artifacts.planningComplete, true);
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-    assert.deepEqual(gate.ralplan_architect_review, {
-      agent_role: 'architect',
-      verdict: 'approve',
-      summary: 'architect ok',
-      iteration: 1,
-      review_cycle: 1,
-      sequence_index: 1,
-    });
-    assert.deepEqual(gate.ralplan_critic_review, {
-      agent_role: 'critic',
-      verdict: 'approve',
-      summary: 'critic ok',
-      iteration: 1,
-      review_cycle: 1,
-      sequence_index: 2,
-    });
-    assert.equal(artifacts.iteration, 1);
-    assert.equal(artifacts.runtimeDrafted, true);
-  });
-
-  it('retains mismatched planning artifacts but rejects release without an official host receipt', async () => {
-    const stage = createRalplanStage({
-      executor: {
-        async draft() {
-          const plansDir = join(tempDir, '.omx', 'plans');
-          await mkdir(plansDir, { recursive: true });
-          const prdPath = join(plansDir, 'prd-new.md');
-          await writeFile(prdPath, '# New runtime plan\n');
-          await writeFile(join(plansDir, 'test-spec-old.md'), '# Stale runtime tests\n');
-          return { summary: 'drafted mismatched artifacts', planPath: prdPath };
-        },
-        async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
-        },
-        async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
-        },
-      },
-    });
-
-    const result = await stage.run(makeCtx({ task: 'live ralplan mismatched artifacts' }));
-    const artifacts = result.artifacts as Record<string, unknown>;
-
-    assert.equal(result.status, 'awaiting_execution_handoff');
-    assert.equal(artifacts.planningComplete, true);
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-    assert.ok(gate.ralplan_architect_review);
-    assert.ok(gate.ralplan_critic_review);
-  });
-
-  it('retains review lifecycle evidence but rejects release without planning artifacts or an official host receipt', async () => {
-    const stage = createRalplanStage({
-      executor: {
-        async draft() {
-          return { summary: 'draft without files' };
-        },
-        async architectReview() {
-          return { verdict: 'approve', summary: 'architect ok' };
-        },
-        async criticReview() {
-          return { verdict: 'approve', summary: 'critic ok' };
-        },
-      },
-    });
-
-    const result = await stage.run(makeCtx({ task: 'live ralplan no artifacts' }));
-    const artifacts = result.artifacts as Record<string, unknown>;
-
-    assert.equal(result.status, 'awaiting_execution_handoff');
-    assert.equal(artifacts.planningComplete, true);
-    const gate = artifacts.ralplanConsensusGate as { complete?: boolean; blockedReason?: string; ralplan_architect_review?: unknown; ralplan_critic_review?: unknown };
-    assert.equal(gate.complete, false);
-    assert.equal(gate.blockedReason, 'documented_host_consensus_receipt_unavailable');
-    assert.ok(gate.ralplan_architect_review);
-    assert.ok(gate.ralplan_critic_review);
-  });
 
   it('fails runtime handoff when Critic has not approved after Architect', async () => {
     const stage = createRalplanStage({

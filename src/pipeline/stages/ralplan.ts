@@ -5,6 +5,8 @@
  * into a PipelineStage. Produces a plan artifact at `.omx/plans/`.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PipelineStage, StageContext, StageResult } from '../types.js';
 import { isPlanningComplete, readPlanningArtifacts } from '../../planning/artifacts.js';
 import { isNonCleanReviewVerdict } from '../review-verdict.js';
@@ -13,13 +15,7 @@ import {
   type RalplanConsensusExecutor,
   type RalplanExecutionLane,
 } from '../../ralplan/runtime.js';
-import {
-  buildRalplanConsensusGateForCwd,
-  buildRalplanConsensusGateFromSources,
-  hasDurableRalplanConsensusEvidenceForCwd,
-  type RalplanConsensusBlockedReason,
-  type RalplanConsensusGateEvidence,
-} from '../../ralplan/consensus-gate.js';
+import { getBaseStateDir } from '../../mcp/state-paths.js';
 
 export interface CreateRalplanStageOptions {
   executor?: RalplanConsensusExecutor;
@@ -28,16 +24,18 @@ export interface CreateRalplanStageOptions {
   selectedExecutionLane?: RalplanExecutionLane;
 }
 
+interface ConsensusGateEvidence {
+  complete: boolean;
+  sequence: ['architect-review', 'critic-review'];
+  ralplan_architect_review: Record<string, unknown> | null;
+  ralplan_critic_review: Record<string, unknown> | null;
+  source: string | null;
+  blockedReason: string | null;
+  blockedDetails?: string[];
+}
+
 /**
  * Create a RALPLAN pipeline stage.
- *
- * The RALPLAN stage performs consensus planning by coordinating planner,
- * architect, and critic agents. It outputs a plan file that downstream
- * stages consume.
- *
- * By default this remains a structural adapter — actual agent orchestration
- * happens at the skill layer. When an executor is provided, the stage can
- * drive the real ralplan runtime and persist live mode state.
  */
 export function createRalplanStage(options: CreateRalplanStageOptions = {}): PipelineStage {
   return {
@@ -49,7 +47,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
       }
       const planningArtifacts = readPlanningArtifacts(ctx.cwd);
       return isPlanningComplete(planningArtifacts)
-        && hasDurableRalplanConsensusEvidence(ctx, options.requireNativeSubagents);
+        && hasDurableRalplanConsensusEvidence(ctx.cwd, ctx.sessionId);
     },
 
     async run(ctx: StageContext): Promise<StageResult> {
@@ -66,14 +64,10 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
           });
 
           const planningArtifacts = readPlanningArtifacts(ctx.cwd);
-          const consensusGate = buildRalplanConsensusGate(
-            runtimeResult,
-            ctx,
-            options.requireNativeSubagents,
-          );
+          const consensusGate = resolveConsensusGateFromState(ctx.cwd, ctx.sessionId);
           const consensusComplete = consensusGate.complete === true;
           return {
-            status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : runtimeResult.status === 'awaiting_execution_handoff' ? 'awaiting_execution_handoff' : 'failed',
+            status: runtimeResult.status === 'completed' && consensusComplete ? 'completed' : 'failed',
             artifacts: {
               ...runtimeResult.artifacts,
               plansDir: planningArtifacts.plansDir,
@@ -93,16 +87,12 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
               ralplanConsensusGate: consensusGate,
             },
             duration_ms: Date.now() - startTime,
-            error: runtimeResult.status === 'awaiting_execution_handoff' ? undefined : (runtimeResult.error ?? (consensusComplete ? undefined : consensusGate.blockedReason ?? 'ralplan_consensus_evidence_missing')),
+            error: runtimeResult.error ?? (consensusComplete ? undefined : consensusGate.blockedReason ?? 'ralplan_consensus_evidence_missing'),
           };
         }
 
         const planningArtifacts = readPlanningArtifacts(ctx.cwd);
-        const consensusGate = buildRalplanConsensusGateForCwd(ctx.cwd, {
-          artifacts: ctx.artifacts,
-          sessionId: ctx.sessionId,
-          requireNativeSubagents: options.requireNativeSubagents,
-        });
+        const consensusGate = resolveConsensusGateFromState(ctx.cwd, ctx.sessionId);
         const planningComplete = isPlanningComplete(planningArtifacts);
         const consensusComplete = consensusGate.complete === true;
 
@@ -130,7 +120,7 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
             ralplanConsensusGate: consensusGate,
             instruction: consensusComplete
               ? `Run RALPLAN consensus planning for: ${ctx.task}`
-              : `Remain in RALPLAN for: ${ctx.task}. Architect and Critic reviews are lifecycle evidence only; do not hand off to execution until an official host-issued receipt is verified through the documented non-user-mintable host surface. Until then record documented_host_consensus_receipt_unavailable.`,
+              : `Remain in RALPLAN for: ${ctx.task}. Complete Architect then Critic approval before handing off to execution.`,
           },
           duration_ms: Date.now() - startTime,
           error,
@@ -147,61 +137,62 @@ export function createRalplanStage(options: CreateRalplanStageOptions = {}): Pip
   };
 }
 
-function buildRalplanConsensusGate(runtimeResult: {
-  status: string;
-  planningComplete: boolean;
-  ralplanConsensusGate?: unknown;
-  architectReviews: unknown[];
-  criticReviews: unknown[];
-}, ctx: StageContext, requireNativeSubagents?: boolean): RalplanConsensusGateEvidence {
-  const runtimeGate = runtimeConsensusGateDiagnostic(runtimeResult.ralplanConsensusGate);
-  if (runtimeGate) return runtimeGate;
+/**
+ * Reads the ralplan consensus gate evidence from persisted state files.
+ * The runtime stamps the gate with `complete: true` when architect+critic
+ * approve. This is lifecycle evidence only — no host receipt is required.
+ */
+function resolveConsensusGateFromState(
+  cwd: string,
+  sessionId?: string,
+): ConsensusGateEvidence {
+  const baseStateDir = getBaseStateDir(cwd);
+  const statePaths = sessionId
+    ? [
+      join(baseStateDir, 'sessions', sessionId, 'ralplan-state.json'),
+      join(baseStateDir, 'ralplan-state.json'),
+    ]
+    : [join(baseStateDir, 'ralplan-state.json')];
 
-  return buildRalplanConsensusGateFromSources([{
-    source: 'runtime-result',
-    value: runtimeResult,
-  }], {
-    cwd: ctx.cwd,
-    sessionId: ctx.sessionId,
-    requireNativeSubagents,
-  });
-}
+  for (const statePath of statePaths) {
+    if (!existsSync(statePath)) continue;
+    try {
+      const state = JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, unknown>;
+      const gate = state.ralplan_consensus_gate ?? state.ralplanConsensusGate;
+      if (gate && typeof gate === 'object') {
+        const gateRecord = gate as Record<string, unknown>;
+        return {
+          complete: gateRecord.complete === true,
+          sequence: ['architect-review', 'critic-review'],
+          ralplan_architect_review: gateRecord.ralplan_architect_review as Record<string, unknown> | null ?? null,
+          ralplan_critic_review: gateRecord.ralplan_critic_review as Record<string, unknown> | null ?? null,
+          source: statePath,
+          blockedReason: typeof gateRecord.blocked_reason === 'string' ? gateRecord.blocked_reason : null,
+          ...(Array.isArray(gateRecord.blocked_details)
+            ? { blockedDetails: (gateRecord.blocked_details as unknown[]).filter((d): d is string => typeof d === 'string') }
+            : {}),
+        };
+      }
+    } catch {
+      // Continue to next path
+    }
+  }
 
-function runtimeConsensusGateDiagnostic(value: unknown): RalplanConsensusGateEvidence | null {
-  if (!value || typeof value !== 'object') return null;
-
-  const gate = value as Record<string, unknown>;
-  const blockedReason = gate.blocked_reason ?? gate.blockedReason;
-  if (typeof blockedReason !== 'string') return null;
-
-  const blockedDetailsValue = gate.blocked_details ?? gate.blockedDetails;
-  const blockedDetails = Array.isArray(blockedDetailsValue)
-    ? blockedDetailsValue.filter((detail): detail is string => typeof detail === 'string')
-    : [];
   return {
     complete: false,
     sequence: ['architect-review', 'critic-review'],
-    ralplan_architect_review: asRecord(gate.ralplan_architect_review ?? gate.architect_review),
-    ralplan_critic_review: asRecord(gate.ralplan_critic_review ?? gate.critic_review),
-    source: 'runtime-result',
-    blockedReason: blockedReason as RalplanConsensusBlockedReason,
-    ...(blockedDetails.length > 0 ? { blockedDetails } : {}),
+    ralplan_architect_review: null,
+    ralplan_critic_review: null,
+    source: null,
+    blockedReason: 'ralplan_consensus_evidence_missing',
   };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
-}
-
 function hasDurableRalplanConsensusEvidence(
-  ctx: StageContext,
-  requireNativeSubagents?: boolean,
+  cwd: string,
+  sessionId?: string,
 ): boolean {
-  return hasDurableRalplanConsensusEvidenceForCwd(ctx.cwd, {
-    artifacts: ctx.artifacts,
-    sessionId: ctx.sessionId,
-    requireNativeSubagents,
-  });
+  return resolveConsensusGateFromState(cwd, sessionId).complete === true;
 }
 
 function hasReviewLoopContext(artifacts: Record<string, unknown>): boolean {
