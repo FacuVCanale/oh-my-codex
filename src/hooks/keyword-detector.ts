@@ -15,14 +15,6 @@ import { access, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'no
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { classifyTaskSize, isHeavyMode, type TaskSizeResult, type TaskSizeThresholds } from './task-size-detector.js';
-import { isApprovedExecutionFollowupShortcut, type FollowupMode } from '../team/followup-planner.js';
-import { isPlanningComplete, readPlanningArtifacts } from '../planning/artifacts.js';
-import {
-  buildRalplanConsensusGateForCwd,
-  shouldBlockFreshAutopilotForRalplanReceipt,
-  type RalplanConsensusBlockedReason,
-  type RalplanHostConsensusReceiptVerifierCapability,
-} from '../ralplan/consensus-gate.js';
 
 
 import { getExplicitSkillDefinition, KEYWORD_TRIGGER_DEFINITIONS, compareKeywordMatches } from './keyword-registry.js';
@@ -36,10 +28,8 @@ import {
   type SkillActiveEntry,
 } from '../state/skill-active.js';
 import {
-  buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   isTrackedWorkflowMode,
-  type DownstreamAuthority,
   type TrackedWorkflowMode,
 } from '../state/workflow-transition.js';
 import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
@@ -54,9 +44,6 @@ import {
 } from '../config/deep-interview.js';
 import { inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import { resolveAutopilotPlannerRouting } from '../autopilot/planner-routing.js';
-import { deriveAutopilotChildPhase, AUTOPILOT_CHILD_PHASES } from '../autopilot/fsm.js';
-import { canAdvanceAutopilotDeepInterviewToRalplan } from '../autopilot/deep-interview-gate.js';
-import { canAdvanceAutopilotRalplanToUltragoal } from '../autopilot/ralplan-gate.js';
 import { validateAutopilotCompletionTransition } from '../autopilot/completion-gate.js';
 import {
   preflightSelectedTargetOwner,
@@ -169,11 +156,6 @@ export interface RecordSkillActivationInput {
   onProvenanceRejected?: (diagnostic: PromptDiagnosticDescriptor) => void | Promise<void>;
 }
 
-interface RecordSkillActivationDependencies {
-  getRalplanHostConsensusReceiptVerifierCapability?: () => RalplanHostConsensusReceiptVerifierCapability;
-}
-
-
 export interface DeepInterviewModeStatePersistenceInput {
   sessionId?: string;
   threadId?: string;
@@ -234,8 +216,6 @@ export interface DeepInterviewModeState {
   turn_id?: string;
   input_lock?: DeepInterviewInputLock;
   question_enforcement?: DeepInterviewQuestionEnforcementState;
-  downstream_authority?: DownstreamAuthority;
-  bypass_planning_gate_until?: string;
   [key: string]: unknown;
 }
 
@@ -595,8 +575,6 @@ export async function persistDeepInterviewModeState(
         ...configStateFields,
         ...(nextSkill.input_lock ? { input_lock: nextSkill.input_lock } : {}),
         ...(nextQuestionEnforcement ? { question_enforcement: nextQuestionEnforcement } : {}),
-        ...(previousModeState?.downstream_authority ? { downstream_authority: previousModeState.downstream_authority } : {}),
-        ...(previousModeState?.bypass_planning_gate_until ? { bypass_planning_gate_until: previousModeState.bypass_planning_gate_until } : {}),
       },
       { nowIso },
     );
@@ -632,8 +610,6 @@ export async function persistDeepInterviewModeState(
           ),
         }
       : {}),
-    ...(previousModeState?.downstream_authority ? { downstream_authority: previousModeState.downstream_authority } : {}),
-    ...(previousModeState?.bypass_planning_gate_until ? { bypass_planning_gate_until: previousModeState.bypass_planning_gate_until } : {}),
   };
   await writeFile(statePath, JSON.stringify(nextState, null, 2));
 }
@@ -674,35 +650,6 @@ function isResettableTerminalModeState(state: Record<string, unknown> | null, ex
     || lifecycleOutcome === 'failed'
     || lifecycleOutcome === 'userinterlude'
     || (expectedMode === 'ralph' && lifecycleOutcome === 'blocked');
-}
-
-async function persistBlockedFreshAutopilotState(
-  stateDir: string,
-  sessionId: string | undefined,
-  nowIso: string,
-): Promise<void> {
-  const { absolutePath } = resolveSeedStateFilePath(stateDir, 'autopilot', sessionId);
-  await mkdir(dirname(absolutePath), { recursive: true });
-  const error = 'documented_host_consensus_receipt_unavailable';
-  const state = withModeRuntimeContext({}, {
-    active: false,
-    mode: 'autopilot',
-    current_phase: 'failed',
-    iteration: 0,
-    max_iterations: 10,
-    started_at: nowIso,
-    completed_at: nowIso,
-    updated_at: nowIso,
-    error,
-    status_message: 'Status: failed — Autopilot cannot start without an official host consensus receipt verifier.',
-    handoff_artifacts: {
-      ralplan_consensus_gate: {
-        blocked_reason: error,
-        blocked_details: ['official host consensus receipt verifier is unavailable'],
-      },
-    },
-  }, { nowIso });
-  await writeFile(absolutePath, JSON.stringify(state, null, 2));
 }
 
 async function persistStatefulSkillSeedState(
@@ -824,15 +771,6 @@ async function persistStatefulSkillSeedState(
       handoff_artifacts: {
         deep_interview: null,
         ralplan: null,
-        ralplan_consensus_gate: {
-          required: true,
-          sequence: ['architect-review', 'critic-review'],
-          planning_artifacts_are_not_consensus: true,
-          required_review_roles: ['architect', 'critic'],
-          ralplan_architect_review: null,
-          ralplan_critic_review: null,
-          complete: false,
-        },
         ultragoal: null,
         code_review: null,
         ultraqa: null,
@@ -3518,21 +3456,14 @@ const AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS: TrackedWorkflowMode[] = [
   'ultraqa',
 ];
 
-// Mirror the `state_write` backend: an Autopilot phase advance across a planning
-// gate boundary (deep-interview -> ralplan, ralplan -> ultragoal) must satisfy
-// the same gate regardless of transport. The keyword handoff previously wrote
-// `current_phase` directly here, bypassing the gate that CLI/MCP `state_write`
-// enforces. When the gate is not satisfied we keep the current phase (do not
-// advance) so a `$child` keyword alone cannot skip the gate.
+// Mirror the `state_write` backend completion contract: an Autopilot phase advance
+// that would violate the completion transition rules keeps the current phase (does
+// not advance), regardless of transport.
 async function resolveGatedSupervisedChildPhase(
-  cwd: string,
-  stateDir: string,
-  sessionId: string | undefined,
   existing: Record<string, unknown> | null,
   requestedChildSkill: string,
 ): Promise<string> {
   if (!existing) return requestedChildSkill;
-  const currentChildPhase = deriveAutopilotChildPhase(existing);
   const heldPhase = safeString(existing.current_phase).trim() || requestedChildSkill;
   const nextState = { ...existing, current_phase: requestedChildSkill };
 
@@ -3544,52 +3475,11 @@ async function resolveGatedSupervisedChildPhase(
     return heldPhase;
   }
 
-  if (currentChildPhase === 'deep-interview' && requestedChildSkill === 'ralplan') {
-    const gate = await canAdvanceAutopilotDeepInterviewToRalplan({
-      cwd,
-      sessionId,
-      baseStateDir: stateDir,
-      currentState: existing,
-      nextState,
-    });
-    return gate.allowed ? requestedChildSkill : heldPhase;
-  }
-
-  if (currentChildPhase === 'ralplan' && requestedChildSkill === 'ultragoal') {
-    const gate = canAdvanceAutopilotRalplanToUltragoal({
-      cwd,
-      sessionId,
-      currentState: existing,
-      nextState,
-    });
-    return gate.allowed ? requestedChildSkill : heldPhase;
-  }
-
-  // From a gated planning phase, the only forward advance is the immediate next
-  // gated phase (handled above). A keyword that jumps further ahead would skip a
-  // gate the state_write backend enforces, so hold the current phase.
-  if (
-    (currentChildPhase === 'deep-interview' || currentChildPhase === 'ralplan')
-    && isForwardChildPhaseSkip(currentChildPhase, requestedChildSkill)
-  ) {
-    return heldPhase;
-  }
-
   return requestedChildSkill;
 }
-
-// True when `requestedChildSkill` is a child phase strictly beyond the immediate
-// next phase after `currentChildPhase` in the canonical Autopilot order — i.e. a
-// forward jump that skips at least one phase.
-function isForwardChildPhaseSkip(currentChildPhase: string, requestedChildSkill: string): boolean {
-  const currentIndex = (AUTOPILOT_CHILD_PHASES as readonly string[]).indexOf(currentChildPhase);
-  const requestedIndex = (AUTOPILOT_CHILD_PHASES as readonly string[]).indexOf(requestedChildSkill);
-  return currentIndex >= 0 && requestedIndex > currentIndex + 1;
-}
-
-// Returns the phase actually written to autopilot-state.json (the gate-held
-// phase when an advance was blocked), so callers can keep skill-active-state in
-// sync with it.
+// Returns the phase actually written to autopilot-state.json (the held phase when
+// an advance was held by the completion transition rules), so callers can keep
+// skill-active-state in sync with it.
 async function resolveAutopilotSupervisedChildPhaseState(
   cwd: string,
   stateDir: string,
@@ -3608,13 +3498,7 @@ async function resolveAutopilotSupervisedChildPhaseState(
     throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
   }
 
-  return resolveGatedSupervisedChildPhase(
-    cwd,
-    stateDir,
-    sessionId,
-    existing,
-    childSkill,
-  );
+  return resolveGatedSupervisedChildPhase(existing, childSkill);
 }
 
 async function persistAutopilotSupervisedChildPhaseState(
@@ -3637,13 +3521,7 @@ async function persistAutopilotSupervisedChildPhaseState(
     throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
   }
 
-  const effectivePhase = await resolveGatedSupervisedChildPhase(
-    cwd,
-    stateDir,
-    sessionId,
-    existing,
-    childSkill,
-  );
+  const effectivePhase = await resolveGatedSupervisedChildPhase(existing, childSkill);
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await writeFile(absolutePath, JSON.stringify(withModeRuntimeContext(
@@ -3824,7 +3702,6 @@ async function preflightKeywordTargetState(
 
 export async function recordSkillActivation(
   input: RecordSkillActivationInput,
-  dependencies: RecordSkillActivationDependencies = {},
 ): Promise<SkillActiveState | null> {
 
   const classification = input.classification ?? classifyKeywordInput(input.text);
@@ -3929,43 +3806,9 @@ export async function recordSkillActivation(
       matchedSeedConfig.scope,
     ).absolutePath)
     : null;
-  const freshAutopilot = match.skill === 'autopilot'
-    && !(previous?.active === true && previous.skill === 'autopilot')
-    && matchedModeState?.active !== true;
   const matchedModeTerminal = matchedSeedConfig
     ? isResettableTerminalModeState(matchedModeState as Record<string, unknown> | null, matchedSeedConfig.mode)
     : false;
-  if (
-    match.skill === 'autopilot'
-    && matchedModeState?.active === true
-    && !matchedModeTerminal
-    && shouldBlockFreshAutopilotForRalplanReceipt(
-      dependencies.getRalplanHostConsensusReceiptVerifierCapability?.(),
-    )
-  ) {
-    const phase = safeString(matchedModeState.current_phase).trim() || 'deep-interview';
-    const preserved = previous ?? {
-      version: 1 as const,
-      active: true,
-      skill: 'autopilot',
-      keyword: match.keyword,
-      phase,
-      activated_at: safeString(matchedModeState.started_at).trim() || nowIso,
-      updated_at: safeString(matchedModeState.updated_at).trim() || nowIso,
-      source: 'keyword-detector' as const,
-      session_id: input.sessionId,
-      active_skills: [{ skill: 'autopilot', active: true, phase, session_id: input.sessionId }],
-    };
-    return {
-      ...preserved,
-      initialized_mode: 'autopilot',
-      initialized_state_path: resolveSeedStateFilePath(
-        input.stateDir,
-        'autopilot',
-        input.sessionId ?? preserved.session_id,
-      ).relativePath,
-    };
-  }
   if (classification.reservedInput === 'omx-question-answered' && matchedModeTerminal) return null;
   const preserveActivatedAt = sameSkill && !matchedModeTerminal && (sameKeyword || sameSkillContinuation);
   const previousEntries = listActiveSkills(previous ?? {});
@@ -4080,81 +3923,6 @@ export async function recordSkillActivation(
         nextWorkflowEntries.map((entry) => entry.skill),
         requestedMode,
       );
-      const hasStandaloneRalplanPreflightDenial = freshAutopilot
-        && previous?.active === true
-        && previous.skill === 'ralplan'
-        && decision.currentModes.length === 1
-        && decision.currentModes[0] === 'ralplan';
-      if (!decision.allowed && !hasStandaloneRalplanPreflightDenial) {
-        return {
-          ...(previous ?? {}),
-          version: 1,
-          active: previous?.active ?? nextWorkflowEntries.length > 0,
-          skill: previous?.skill || match.skill,
-          keyword: previous?.keyword || match.keyword,
-          phase: previous?.phase || initialWorkflowPhaseForMode(trackedMatchSkill as TrackedWorkflowMode),
-          activated_at: previous?.activated_at || nowIso,
-          updated_at: nowIso,
-          source: 'keyword-detector',
-          session_id: input.sessionId ?? previous?.session_id,
-          thread_id: input.threadId ?? previous?.thread_id,
-          turn_id: input.turnId ?? previous?.turn_id,
-          active_skills: previousEntries,
-          ...(previous?.input_lock ? { input_lock: previous.input_lock } : {}),
-          transition_error: buildWorkflowTransitionError(
-            nextWorkflowEntries.map((entry) => entry.skill),
-            requestedMode,
-            'activate',
-          ),
-        };
-      }
-
-      if (freshAutopilot
-        && requestedMode === 'autopilot'
-        && shouldBlockFreshAutopilotForRalplanReceipt(
-          dependencies.getRalplanHostConsensusReceiptVerifierCapability?.(),
-        )) {
-        const error = 'documented_host_consensus_receipt_unavailable';
-        if (previous?.active === true && previous.skill === 'ralplan') {
-          return {
-            ...previous,
-            updated_at: nowIso,
-            transition_error: error,
-          };
-        }
-
-        const state: SkillActiveState = {
-          version: 1,
-          active: false,
-          skill: 'autopilot',
-          keyword: match.keyword,
-          phase: 'failed',
-          activated_at: nowIso,
-          updated_at: nowIso,
-          source: 'keyword-detector',
-          session_id: input.sessionId,
-          thread_id: input.threadId,
-          turn_id: input.turnId,
-          active_skills: [],
-          error,
-          transition_error: error,
-          status_message: 'Status: failed — Autopilot cannot start without an official host consensus receipt verifier.',
-        };
-        const nextState = applyProvenanceOwner(state);
-        try {
-          await persistBlockedFreshAutopilotState(input.stateDir, input.sessionId, nowIso);
-          await writeSkillActiveStateCopiesForStateDir(
-            input.stateDir,
-            nextState,
-            input.sessionId,
-            selectRootSkillStateCopy(previousRoot, nextState, input.sessionId, suppressRootMutation),
-          );
-        } catch (error) {
-          console.warn('[omx] warning: failed to persist keyword activation state', error);
-        }
-        return nextState;
-      }
-
       if (decision.autoCompleteModes.length > 0) {
         let transition: Awaited<ReturnType<typeof reconcileWorkflowTransition>>;
         try {
@@ -4358,180 +4126,6 @@ export async function recordSkillActivation(
   }
 
   return state;
-}
-
-/**
- * Pre-execution gate — ported from OMC src/hooks/keyword-detector/index.ts
- *
- * In OMC these functions run at prompt time in bridge.ts (mandatory enforcement).
- * In OMX they generate AGENTS.md instructions and serve as test infrastructure.
- * See task-size-detector.ts for full advisory-nature documentation.
- */
-
-/**
- * Execution mode keywords subject to the ralplan-first gate.
- * These modes spin up heavy orchestration and should not run on vague requests.
- */
-export const EXECUTION_GATE_KEYWORDS = new Set<string>([
-  'ralph',
-  'autopilot',
-  'team',
-  'ultrawork',
-]);
-
-/**
- * Escape hatch prefixes that bypass the ralplan gate.
- */
-export const GATE_BYPASS_PREFIXES = ['force:', '!'];
-
-/**
- * Positive signals that the prompt IS well-specified enough for direct execution.
- * If ANY of these are present, the prompt auto-passes the gate (fast path).
- */
-export const WELL_SPECIFIED_SIGNALS: RegExp[] = [
-  // References specific files by extension
-  /\b[\w/.-]+\.(?:ts|js|py|go|rs|java|tsx|jsx|vue|svelte|rb|c|cpp|h|css|scss|html|json|yaml|yml|toml)\b/,
-  // References specific paths with directory separators
-  /(?:src|lib|test|spec|app|pages|components|hooks|utils|services|api|dist|build|scripts)\/\w+/,
-  // References specific functions/classes/methods by keyword
-  /\b(?:function|class|method|interface|type|const|let|var|def|fn|struct|enum)\s+\w{2,}/i,
-  // CamelCase identifiers (likely symbol names: processKeyword, getUserById)
-  /\b[a-z]+(?:[A-Z][a-z]+)+\b/,
-  // PascalCase identifiers (likely class/type names: KeywordDetector, UserModel)
-  /\b[A-Z][a-z]+(?:[A-Z][a-z0-9]*)+\b/,
-  // snake_case identifiers with 2+ segments (likely symbol names: user_model, get_user)
-  /\b[a-z]+(?:_[a-z]+)+\b/,
-  // Bare issue/PR number (#123, #42)
-  /(?:^|\s)#\d+\b/,
-  // Has numbered steps or bullet list (structured request)
-  /(?:^|\n)\s*(?:\d+[.)]\s|-\s+\S|\*\s+\S)/m,
-  // Has acceptance criteria or test spec keywords
-  /\b(?:acceptance\s+criteria|test\s+(?:spec|plan|case)|should\s+(?:return|throw|render|display|create|delete|update))\b/i,
-  // Has specific error or issue reference
-  /\b(?:error:|bug\s*#?\d+|issue\s*#\d+|stack\s*trace|exception|TypeError|ReferenceError|SyntaxError)\b/i,
-  // Has a code block with substantial content
-  /```[\s\S]{20,}?```/,
-  // PR or commit reference
-  /\b(?:PR\s*#\d+|commit\s+[0-9a-f]{7}|pull\s+request)\b/i,
-  // "in <specific-path>" pattern
-  /\bin\s+[\w/.-]+\.(?:ts|js|py|go|rs|java|tsx|jsx)\b/,
-  // Test runner commands (explicit test target)
-  /\b(?:npm\s+test|npx\s+(?:vitest|jest)|pytest|cargo\s+test|go\s+test|make\s+test)\b/i,
-];
-
-/**
- * Check if a prompt is underspecified for direct execution.
- * Returns true if the prompt lacks enough specificity for heavy execution modes.
- *
- * Conservative: only gates clearly vague prompts. Borderline cases pass through.
- */
-export function isUnderspecifiedForExecution(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return true;
-
-  // Escape hatch: force: or ! prefix bypasses the gate
-  for (const prefix of GATE_BYPASS_PREFIXES) {
-    if (trimmed.startsWith(prefix)) return false;
-  }
-
-  // If any well-specified signal is present, pass through
-  if (WELL_SPECIFIED_SIGNALS.some(p => p.test(trimmed))) return false;
-
-  // Strip mode keywords for effective word counting
-  const stripped = trimmed
-    .replace(/\b(?:ralph|autopilot|team|ultrawork|ulw)\b/gi, '')
-    .trim();
-  const effectiveWords = stripped.split(/\s+/).filter(w => w.length > 0).length;
-
-  // Short prompts without well-specified signals are underspecified
-  if (effectiveWords <= 15) return true;
-
-  return false;
-}
-
-/**
- * Apply the ralplan-first gate: if execution keywords are present
- * but the prompt is underspecified, redirect to ralplan.
- *
- * Returns the modified keyword list and gate metadata.
- */
-export interface ApplyRalplanGateOptions {
-  cwd?: string;
-  priorSkill?: string | null;
-  requireNativeSubagents?: boolean;
-}
-export interface ApplyRalplanGateResult {
-  keywords: string[];
-  gateApplied: boolean;
-  gatedKeywords: string[];
-  blockedReason: RalplanConsensusBlockedReason | null;
-}
-
-export function applyRalplanGate(
-  keywords: string[],
-  text: string,
-  options: ApplyRalplanGateOptions = {},
-): ApplyRalplanGateResult {
-  if (keywords.length === 0) {
-    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
-  }
-
-  // Don't gate if cancel is present (cancel always wins)
-  if (keywords.includes('cancel')) {
-    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
-  }
-
-  // Don't gate if ralplan is already in the list
-  if (keywords.includes('ralplan')) {
-    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
-  }
-
-  // Check if any execution keywords are present
-  const executionKeywords = keywords.filter(k => EXECUTION_GATE_KEYWORDS.has(k));
-  if (executionKeywords.length === 0) {
-    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
-  }
-
-  // Check if prompt is underspecified
-  if (!isUnderspecifiedForExecution(text)) {
-    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
-  }
-
-  const cwd = options.cwd ?? process.cwd();
-  const planningComplete = isPlanningComplete(readPlanningArtifacts(cwd));
-  const consensusEvidence = buildRalplanConsensusGateForCwd(cwd, {
-    requireNativeSubagents: options.requireNativeSubagents,
-  });
-  const consensusComplete = consensusEvidence.complete;
-  const consensusBlockedFollowup = planningComplete
-    && executionKeywords.some((keyword) => keyword === 'team' || keyword === 'ralph');
-  const shortFollowupBypasses = executionKeywords.filter((keyword) => {
-    if (keyword !== 'team' && keyword !== 'ralph') return false;
-    return isApprovedExecutionFollowupShortcut(
-      keyword as FollowupMode,
-      text,
-      {
-        planningComplete: planningComplete && consensusComplete,
-        priorSkill: options.priorSkill,
-      },
-    );
-  });
-  if (shortFollowupBypasses.length > 0) {
-    return { keywords, gateApplied: false, gatedKeywords: [], blockedReason: null };
-  }
-
-  // Gate: replace execution keywords with ralplan
-  const filtered = keywords.filter(k => !EXECUTION_GATE_KEYWORDS.has(k));
-  if (!filtered.includes('ralplan')) {
-    filtered.push('ralplan');
-  }
-
-  return {
-    keywords: filtered,
-    gateApplied: true,
-    gatedKeywords: executionKeywords,
-    blockedReason: consensusBlockedFollowup ? consensusEvidence.blockedReason : null,
-  };
 }
 
 /**
