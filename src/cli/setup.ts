@@ -281,7 +281,25 @@ const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const SKIP_NATIVE_AGENT_REFRESH_ENV = "OMX_SKIP_NATIVE_AGENT_REFRESH";
-const HARD_DEPRECATED_SKILL_NAMES = new Set(["web-clone"]);
+const HARD_DEPRECATED_SKILL_NAMES = new Set([
+	"ask-claude",
+	"ask-gemini",
+	"build-fix",
+	"deepsearch",
+	"ecomode",
+	"frontend-ui-ux",
+	"help",
+	"note",
+	"prometheus-strict",
+	"ralph-init",
+	"review",
+	"security-review",
+	"swarm",
+	"tdd",
+	"trace",
+	"visual-verdict",
+	"web-clone",
+]);
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
 const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
 const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
@@ -5714,6 +5732,9 @@ export async function installSkills(
 	const staleCandidateSkillNames = new Set(
 		manifest?.skills.map((skill) => skill.name) ?? [],
 	);
+	for (const skillName of HARD_DEPRECATED_SKILL_NAMES) {
+		staleCandidateSkillNames.add(skillName);
+	}
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
 		staleCandidateSkillNames.add(entry.name);

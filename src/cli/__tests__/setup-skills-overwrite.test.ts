@@ -35,7 +35,7 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project' });
 
       const installedSetupSkill = join(wd, '.codex', 'skills', 'omx-setup', 'SKILL.md');
-      const shippedHelpSkill = join(previousCwd, 'skills', 'help', 'SKILL.md');
+      const shippedSetupSkill = join(previousCwd, 'skills', 'omx-setup', 'SKILL.md');
 
       assert.ok(
         (await readFile(installedSetupSkill, 'utf-8')).includes(
@@ -43,8 +43,8 @@ describe('omx setup skills overwrite behavior', () => {
         ),
       );
       assert.ok(
-        (await readFile(shippedHelpSkill, 'utf-8')).includes(
-          'description: Help deprecated skill',
+        (await readFile(shippedSetupSkill, 'utf-8')).includes(
+          'description: Setup and configure oh-my-codex using current CLI behavior',
         ),
       );
     } finally {
@@ -97,7 +97,7 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
-  it('removes stale web-clone installs during normal hard-deprecation refresh', async () => {
+  it('removes stale removed-skill installs during normal refresh', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();
     try {
@@ -297,7 +297,6 @@ describe('omx setup skills overwrite behavior', () => {
 
       const output = logs.join('\n');
       assert.match(output, /removed stale skill swarm\//);
-      assert.match(output, /removed stale skill ecomode\//);
       assert.match(output, /skills: updated=/);
     } finally {
       console.log = originalLog;
