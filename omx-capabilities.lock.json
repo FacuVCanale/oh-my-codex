@@ -1437,7 +1437,7 @@
       ]
     },
     "skills": {
-      "digest": "292a6f63b1031abc280164d222ffbb845e54e89d626bbc11cf553bfa35460659",
+      "digest": "35f157f2d0020a51172e18c2a8822cf1d84bc556c14a8ec5da38c283e674dedd",
       "files": [
         {
           "digest": "4f1b7a5f096e846e51c57362bb5e06c908b17861f75a53057391f87c817285fe",
@@ -1592,7 +1592,7 @@
           "path": "skills/trace/SKILL.md"
         },
         {
-          "digest": "e7ae4c06137e1a175e260e60a592f0e6544c36d3190081bf7fe61e0e46f09dac",
+          "digest": "688572fe088e91cc21846d62485e591f856200ee63a34cc7ddcaf0169494186a",
           "path": "skills/ultragoal/SKILL.md"
         },
         {
