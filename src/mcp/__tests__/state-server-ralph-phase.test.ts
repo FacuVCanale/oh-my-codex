@@ -22,7 +22,7 @@ describe('state-server Ralph phase contract', () => {
             started_at: '2026-02-22T00:00:00.000Z',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(response.isError, undefined);
 
       const file = join(wd, '.omx', 'state', 'ralph-state.json');
@@ -50,7 +50,7 @@ describe('state-server Ralph phase contract', () => {
             current_phase: 'bananas',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(response.isError, true);
       const body = JSON.parse(response.content[0]?.text || '{}') as { error?: string };
       assert.match(body.error || '', /Invalid Ralph phase|must be one of/i);
@@ -75,7 +75,7 @@ describe('state-server Ralph phase contract', () => {
             current_phase: 'complete',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(response.isError, true);
       const body = JSON.parse(response.content[0]?.text || '{}') as { error?: string };
       assert.match(body.error || '', /terminal Ralph phases require active=false/i);
@@ -102,10 +102,36 @@ describe('state-server Ralph phase contract', () => {
             max_iterations: 10.5,
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(response.isError, true);
       const body = JSON.parse(response.content[0]?.text || '{}') as { error?: string };
       assert.match(body.error || '', /finite integer/i);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects state_write on the MCP server surface (read-only projection)', async () => {
+    process.env.OMX_STATE_SERVER_DISABLE_AUTO_START = '1';
+    const { handleStateToolCall } = await import('../state-server.js');
+
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ralph-phase-ro-'));
+    try {
+      const response = await handleStateToolCall({
+        params: {
+          name: 'state_write',
+          arguments: {
+            workingDirectory: wd,
+            mode: 'ralph',
+            active: true,
+            current_phase: 'executing',
+          },
+        },
+      });
+      assert.equal(response.isError, true);
+      const body = JSON.parse(response.content[0]?.text || '{}') as { error?: string; code?: string };
+      assert.equal(body.code, 'mcp_state_server_read_only');
+      assert.match(body.error || '', /read-only/i);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

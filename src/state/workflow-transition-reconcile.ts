@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import { mkdir, readFile, writeFile } from 'fs/promises';
+import { mkdir, readFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getStatePath, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import {
@@ -24,6 +24,7 @@ import {
   buildAutopilotDeepInterviewRalplanGateError,
   canAdvanceAutopilotDeepInterviewToRalplan,
 } from '../autopilot/deep-interview-gate.js';
+import { writeStateFile } from './operations.js';
 
 interface TransitionStateLike {
   active?: unknown;
@@ -179,7 +180,7 @@ async function completeSourceModeState(
     await mkdir(dirname(candidatePath), { recursive: true });
     const payload = JSON.stringify(nextState, null, 2);
     await beforeCommit?.({ site: 'transition.source-mode-detail', kind: 'write', path: candidatePath });
-    await writeFile(candidatePath, payload);
+    await writeStateFile(candidatePath, payload);
     completedPaths.push(candidatePath);
   }
 

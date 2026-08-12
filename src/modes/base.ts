@@ -3,7 +3,7 @@
  * All execution modes (autopilot, autoresearch, deep-interview, ralph, ultrawork, team, ultraqa, ralplan) share this base.
  */
 
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { readFile, mkdir, readdir } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
@@ -30,7 +30,7 @@ import {
   getStateFilename,
   resolveWritableStateScope,
 } from '../mcp/state-paths.js';
-import { completeRalplanSession, validateRalplanTerminalConsensus } from '../state/operations.js';
+import { completeRalplanSession, validateRalplanTerminalConsensus, writeStateFile } from '../state/operations.js';
 import { readNeutralizedRoutingOverlay } from '../ralplan/documented-leader-preflight.js';
 
 
@@ -212,7 +212,7 @@ export async function startMode(
   const payload = JSON.stringify(state, null, 2);
   const path = join(scope.stateDir, getStateFilename(mode));
   await beforeCommit({ site: 'mode.primary', kind: 'write', path });
-  await writeFile(path, payload);
+  await writeStateFile(path, payload);
   await syncRunStateFromModeState(state, projectRoot, scope.sessionId, {
     beforeCommit,
     targetPath: join(scope.stateDir, 'run-state.json'),
@@ -444,7 +444,7 @@ async function updateModeStateInternal(
   const payload = JSON.stringify(updated, null, 2);
   const path = join(scope.stateDir, getStateFilename(mode));
   await beforeCommit({ site: 'mode.primary', kind: 'write', path });
-  await writeFile(path, payload);
+  await writeStateFile(path, payload);
   await syncRunStateFromModeState(updated, projectRoot, scope.sessionId, {
     beforeCommit,
     targetPath: join(scope.stateDir, 'run-state.json'),

@@ -94,7 +94,7 @@ describe('state-server directory initialization', () => {
           name: 'state_list_active',
           arguments: { workingDirectory: wd },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(existsSync(stateDir), false);
       assert.equal(existsSync(tmuxHookConfig), false);
@@ -130,7 +130,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(response.isError, undefined);
       assert.equal(existsSync(join(box, '.omx', 'state', 'ralph-state.json')), true);
@@ -172,7 +172,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(response.isError, undefined);
       const boxedSessionDir = join(box, '.omx', 'state', 'sessions', sessionId);
@@ -219,7 +219,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(response.isError, undefined);
       const teamSessionDir = join(teamStateRoot, 'sessions', sessionId);
@@ -270,7 +270,7 @@ describe('state-server directory initialization', () => {
             },
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(deepInterview.isError, undefined);
 
       const ralplan = await handleStateToolCall({
@@ -284,7 +284,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(ralplan.isError, undefined);
       const teamSessionDir = join(teamStateRoot, 'sessions', sessionId);
@@ -324,7 +324,7 @@ describe('state-server directory initialization', () => {
           name: 'state_read',
           arguments: { workingDirectory: wd, mode: 'deep-interview' },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(existsSync(stateDir), false);
       assert.equal(existsSync(tmuxHookConfig), false);
@@ -353,7 +353,7 @@ describe('state-server directory initialization', () => {
           name: 'state_get_status',
           arguments: { workingDirectory: wd },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(existsSync(stateDir), false);
       assert.equal(existsSync(tmuxHookConfig), false);
@@ -392,7 +392,7 @@ describe('state-server directory initialization', () => {
                 current_phase: 'deep-interview',
               },
             },
-          });
+          }, { allowWriterTools: true });
           const payload = JSON.parse(response.content[0]?.text || '{}');
           assert.equal(payload.success, true);
         },
@@ -427,7 +427,7 @@ describe('state-server directory initialization', () => {
             },
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(writeResponse.isError, undefined);
       assert.deepEqual(
@@ -447,7 +447,7 @@ describe('state-server directory initialization', () => {
             mode: 'deep-interview',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(readResponse.isError, undefined);
       const readBody = JSON.parse(readResponse.content[0]?.text || '{}') as Record<string, unknown>;
@@ -479,7 +479,7 @@ describe('state-server directory initialization', () => {
             },
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(writeResponse.isError, undefined);
 
@@ -491,7 +491,7 @@ describe('state-server directory initialization', () => {
             mode: 'deep-interview',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const readBody = JSON.parse(readResponse.content[0]?.text || '{}') as Record<string, unknown>;
       assert.equal(readBody.lifecycle_outcome, 'askuserQuestion');
@@ -517,7 +517,7 @@ describe('state-server directory initialization', () => {
             run_outcome: 'cancelled',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const readResponse = await handleStateToolCall({
         params: {
@@ -527,7 +527,7 @@ describe('state-server directory initialization', () => {
             mode: 'team',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const readBody = JSON.parse(readResponse.content[0]?.text || '{}') as Record<string, unknown>;
       assert.equal(readBody.lifecycle_outcome, 'userinterlude');
@@ -555,7 +555,7 @@ describe('state-server directory initialization', () => {
           name: 'state_get_status',
           arguments: { workingDirectory: wd, session_id: 'sess1' },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(existsSync(stateDir), false);
       assert.equal(existsSync(sessionDir), false);
@@ -586,7 +586,7 @@ describe('state-server directory initialization', () => {
             lifecycle_outcome: 'askuserQuestion',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(response.isError, undefined);
       const state = JSON.parse(await readFile(join(wd, '.omx', 'state', 'autopilot-state.json'), 'utf-8')) as {
@@ -624,7 +624,7 @@ describe('state-server directory initialization', () => {
             lifecycle_outcome: 'userinterlude',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(response.isError, undefined);
       const state = JSON.parse(await readFile(join(wd, '.omx', 'state', 'autopilot-state.json'), 'utf-8')) as {
@@ -653,7 +653,7 @@ describe('state-server directory initialization', () => {
             state: { [`k${i}`]: i },
           },
         },
-      }));
+      }, { allowWriterTools: true }));
 
       const responses = await Promise.all(writes);
       for (const response of responses) {
@@ -689,7 +689,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const canonicalPath = join(wd, '.omx', 'state', 'sessions', 'sess-sync', 'skill-active-state.json');
       const canonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
@@ -713,7 +713,7 @@ describe('state-server directory initialization', () => {
             mode: 'ralph',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const clearedCanonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
         active: boolean;
@@ -754,7 +754,7 @@ describe('state-server directory initialization', () => {
             mode: 'deep-interview',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const sessionState = JSON.parse(
         await readFile(join(sessionDir, 'deep-interview-state.json'), 'utf-8'),
@@ -770,7 +770,7 @@ describe('state-server directory initialization', () => {
             workingDirectory: wd,
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.deepEqual(JSON.parse(listResponse.content[0]?.text || '{}'), { active_modes: [] });
 
       const readResponse = await handleStateToolCall({
@@ -781,7 +781,7 @@ describe('state-server directory initialization', () => {
             mode: 'deep-interview',
           },
         },
-      });
+      }, { allowWriterTools: true });
       const readBody = JSON.parse(readResponse.content[0]?.text || '{}') as Record<string, unknown>;
       assert.equal(readBody.active, false);
       assert.equal(readBody.current_phase, 'cleared');
@@ -807,7 +807,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'running',
           },
         },
-      });
+      }, { allowWriterTools: true });
       await handleStateToolCall({
         params: {
           name: 'state_write',
@@ -821,7 +821,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const canonicalPath = join(wd, '.omx', 'state', 'sessions', 'sess-overlap', 'skill-active-state.json');
       const canonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
@@ -838,7 +838,7 @@ describe('state-server directory initialization', () => {
             mode: 'team',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const clearedCanonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
         active: boolean;
@@ -870,7 +870,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'running',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const denied = await handleStateToolCall({
         params: {
@@ -883,7 +883,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'ralplan',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(denied.isError, true);
       assert.match(denied.content[0]?.text || '', /Unsupported workflow overlap: team \+ autopilot\./);
@@ -943,7 +943,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(allowed.isError, undefined);
       assert.equal(
@@ -971,7 +971,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'running',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       await handleStateToolCall({
         params: {
@@ -982,7 +982,7 @@ describe('state-server directory initialization', () => {
             all_sessions: true,
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const canonicalPath = join(wd, '.omx', 'state', 'skill-active-state.json');
       const canonical = JSON.parse(await readFile(canonicalPath, 'utf-8')) as {
@@ -1012,7 +1012,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'running',
           },
         },
-      });
+      }, { allowWriterTools: true });
       await handleStateToolCall({
         params: {
           name: 'state_write',
@@ -1026,7 +1026,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       await handleStateToolCall({
         params: {
@@ -1036,7 +1036,7 @@ describe('state-server directory initialization', () => {
             mode: 'team',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const sessionCanonical = JSON.parse(
         await readFile(
@@ -1066,7 +1066,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'running',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(teamWrite.isError, undefined);
 
       const ralphWrite = await handleStateToolCall({
@@ -1082,7 +1082,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(ralphWrite.isError, undefined);
 
       const rootCanonical = JSON.parse(
@@ -1133,7 +1133,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(autopilotWrite.isError, undefined);
 
       const invalidTeamWrite = await handleStateToolCall({
@@ -1147,7 +1147,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'starting',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(invalidTeamWrite.isError, true);
       const body = JSON.parse(invalidTeamWrite.content[0]?.text || '{}') as { error?: string };
@@ -1205,7 +1205,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(response.isError, undefined);
       const body = JSON.parse(response.content[0]?.text || '{}') as { transition?: string };
@@ -1247,7 +1247,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const denied = await handleStateToolCall({
         params: {
@@ -1260,7 +1260,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(denied.isError, true);
       const body = JSON.parse(denied.content[0]?.text || '{}') as { error?: string };
@@ -1294,7 +1294,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'definitely-invalid',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(denied.isError, true);
       const body = JSON.parse(denied.content[0]?.text || '{}') as { error?: string };
@@ -1328,7 +1328,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(first.isError, undefined);
 
       const second = await handleStateToolCall({
@@ -1342,7 +1342,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(second.isError, undefined);
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -1366,7 +1366,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'interview-a',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(writeA.isError, undefined);
 
       const writeB = await handleStateToolCall({
@@ -1382,7 +1382,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'executing',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(writeB.isError, undefined);
 
       await handleStateToolCall({
@@ -1394,7 +1394,7 @@ describe('state-server directory initialization', () => {
             mode: 'ralph',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const sessionAState = JSON.parse(
         await readFile(join(wd, '.omx', 'state', 'sessions', 'sess-a', 'deep-interview-state.json'), 'utf-8'),
@@ -1431,7 +1431,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'asking',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       const rootWrite = await handleStateToolCall({
         params: {
@@ -1443,7 +1443,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'planning',
           },
         },
-      });
+      }, { allowWriterTools: true });
       assert.equal(rootWrite.isError, undefined);
 
       const sessionState = JSON.parse(
@@ -1485,7 +1485,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'asking',
           },
         },
-      });
+      }, { allowWriterTools: true });
       await handleStateToolCall({
         params: {
           name: 'state_write',
@@ -1496,7 +1496,7 @@ describe('state-server directory initialization', () => {
             current_phase: 'root-asking',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       await handleStateToolCall({
         params: {
@@ -1506,7 +1506,7 @@ describe('state-server directory initialization', () => {
             mode: 'deep-interview',
           },
         },
-      });
+      }, { allowWriterTools: true });
 
       assert.equal(existsSync(join(wd, '.omx', 'state', 'deep-interview-state.json')), false);
       const sessionState = JSON.parse(

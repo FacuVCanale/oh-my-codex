@@ -6134,6 +6134,17 @@ async function completePreLaunchSetup(
     degraded.push("orphan-reaping");
     logCliOperationFailure(error);
   }
+  // 0.4. Upgrade-time neutralization of stale workflow-state projections (#3498).
+  try {
+    const { neutralizeStaleWorkflowStateProjections } = await import("../state/operations.js");
+    const result = await neutralizeStaleWorkflowStateProjections(cwd);
+    if (result.ran && result.neutralizedFiles.length > 0) {
+      console.log(`[omx] Neutralized ${result.neutralizedFiles.length} stale workflow-state projection(s) from pre-0.21.`);
+    }
+  } catch (err) {
+    logCliOperationFailure(err);
+    // Non-fatal: stale-state neutralization must never block a session.
+  }
 
   let instructions: string;
   try {
