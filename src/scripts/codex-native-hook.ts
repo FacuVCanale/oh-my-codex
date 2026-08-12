@@ -42,7 +42,6 @@ import {
   appendPromptSessionProvenanceRejection,
   appendToLog,
   isSessionPointerLaunchAbort,
-  isSessionStale,
   isSessionStateUsable,
   isSessionStateAuthoritativeForCwd,
   normalizeSessionId,
@@ -54,7 +53,7 @@ import {
   resolveSessionPointerContext,
   type SessionStartOptions,
   writeNativeSessionOwner,
-  type SessionState,
+  type SessionState
 } from "../hooks/session.js";
 import {
   evaluateResolvedPromptTurn,
@@ -114,9 +113,7 @@ import {
   hasAnyPattern,
 } from "./codex-native-pre-post.js";
 import {
-  TEAM_TMUX_CAPABILITY_WARNING,
-  buildAdvisoryPreToolUseOutput,
-  buildTeamCapabilityWarningMessage,
+  TEAM_TMUX_CAPABILITY_WARNING
 } from "../hooks/native/capability-warnings.js";
 import { sanitizeNativeHookOutput } from "../hooks/native/pre-tool-use-advisory.js";
 import { handleTeamWorkerPostToolUseSuccess } from "./notify-hook/team-worker-posttooluse.js";
@@ -151,12 +148,9 @@ import {
   buildUnsupportedNativeSubagentGuidance,
   canonicalizeNativeCollaborationToolName,
   classifyConductorArtifactKind,
-  isNativeSubagentSpawnToolName,
-  isRoleRoutingUnavailableEvidence,
-  isUnsupportedNativeSubagentEvidence,
   parseNativeSubagentResultDisposition,
   resolveNativeSubagentSupportStatus,
-  type NativeSubagentUnsupportedReason,
+  type NativeSubagentUnsupportedReason
 } from "../leader/contract.js";
 import { readRunState } from "../runtime/run-state.js";
 import { evaluateRalphCompletionAuditEvidence, isRalphCompletePhase } from "../ralph/completion-audit.js";
@@ -223,7 +217,7 @@ const TERMINAL_MODE_PHASES = new Set(["complete", "completed", "failed", "cancel
 const SKILL_STOP_BLOCKERS = new Set(["ralplan"]);
 const TEAM_STOP_BLOCKING_TASK_STATUSES = new Set(["pending", "in_progress", "blocked"]);
 const TEAM_WORKER_TERMINAL_RUN_STATES = new Set(["done", "complete", "completed", "failed", "stopped", "cancelled"]);
-const LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor golden rule: delegate implementation work; do not self-execute source or plan edits.";
+// #3497 removed unused remnant: const _LEADER_CONDUCTOR_GOLDEN_RULE = "Main-root Conductor golden rule: delegate implementation work; do not self-execute source or plan edits.";
 const NATIVE_STOP_STATE_FILE = "native-stop-state.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_FILE = "native-subagent-capacity-blocker.json";
 const NATIVE_SUBAGENT_CAPACITY_BLOCKER_TTL_MS = 30 * 60_000;
@@ -4378,7 +4372,7 @@ async function recordNativeSubagentCapacityBlocker(
 // (`collaborationclose_agent`); dotted forms already carry a word boundary
 // before close_agent. This is a recognition heuristic for the capacity close
 // guard only: matching here can only make the guard block, never authorize.
-const NATIVE_CLOSE_AGENT_REQUEST_PATTERN = /\b(?:close_agent|collaborationclose_agent)\b/i;
+// #3497 removed unused remnant: const _NATIVE_CLOSE_AGENT_REQUEST_PATTERN = /\b(?:close_agent|collaborationclose_agent)\b/i;
 
 
 
@@ -10716,36 +10710,36 @@ function teamWorkerMutationTargetsProtectedWorkflowState(
 
 
 
-const RALPLAN_CONSENSUS_NATIVE_ROLE_NAMES = new Set(["planner", "architect", "critic"]);
+// #3497 removed unused remnant: const _RALPLAN_CONSENSUS_NATIVE_ROLE_NAMES = new Set(["planner", "architect", "critic"]);
 
 async function buildRalplanPreToolUseBoundaryOutput(
-  payload: CodexHookPayload,
+  _payload: CodexHookPayload,
   cwd: string,
-  stateDir: string,
-  resolvedSessionId?: string,
+  _stateDir: string,
+  _resolvedSessionId?: string,
   executionCwd = cwd,
-  authorityCwd = executionCwd,
+  _authorityCwd = executionCwd,
 ): Promise<Record<string, unknown> | null> {
   // #3497: workflow PreToolUse hard gate deleted.
   return null;
 }
 
 function buildRawProtectedWorkflowStatePathOutput(
-  payload: CodexHookPayload,
-  cwd: string,
-  stateDir: string,
+  _payload: CodexHookPayload,
+  _cwd: string,
+  _stateDir: string,
 ): Record<string, unknown> | null {
   // #3497: workflow PreToolUse hard gate deleted.
   return null;
 }
 
 async function buildDeepInterviewPreToolUseBoundaryOutput(
-  payload: CodexHookPayload,
+  _payload: CodexHookPayload,
   cwd: string,
-  stateDir: string,
-  resolvedSessionId?: string,
+  _stateDir: string,
+  _resolvedSessionId?: string,
   executionCwd = cwd,
-  authorityCwd = executionCwd,
+  _authorityCwd = executionCwd,
 ): Promise<Record<string, unknown> | null> {
   // #3497: workflow PreToolUse hard gate deleted.
   return null;
@@ -10802,10 +10796,10 @@ function buildRalplanRootPointerConflictBlock(activeState: Record<string, unknow
 }
 
 async function buildPlanningRootPointerConflictPreToolUseOutput(
-  payload: CodexHookPayload,
-  cwd: string,
-  stateDir: string,
-  rootState: SessionState | null,
+  _payload: CodexHookPayload,
+  _cwd: string,
+  _stateDir: string,
+  _rootState: SessionState | null,
 ): Promise<Record<string, unknown> | null> {
   // #3497: workflow PreToolUse hard gate deleted.
   return null;
@@ -10943,7 +10937,7 @@ async function readActiveConductorStateForPreToolUse(
 // `omx cancel` remains reachable. Refuse the activation write itself instead
 // of letting the deadlock occur; this is additive and only fires for a
 // *fresh* activation (no existing active Conductor state for this session).
-const ULTRAGOAL_NO_OWNER_DENY_REASON =
+// #3497 removed unused remnant: const _ULTRAGOAL_NO_OWNER_DENY_REASON =
   "OMX-ULTRAGOAL-NO-OWNER: standalone Ultragoal cannot activate Main-root Conductor mode on this host surface "
   + "(Codex App / native hook, outside tmux) because no authorized executor is reachable here: the Team runtime "
   + "is tmux-only, and native child/descendant provenance intentionally does not grant write authority (see #3127). "
@@ -10985,11 +10979,11 @@ function isUltragoalConductorActivationPayload(input: Record<string, unknown> | 
 }
 
 async function buildUltragoalNoOwnerActivationGuardOutput(
-  payload: CodexHookPayload,
+  _payload: CodexHookPayload,
   cwd: string,
-  stateDir: string,
-  resolvedSessionId?: string,
-  policyCwd = cwd,
+  _stateDir: string,
+  _resolvedSessionId?: string,
+  _policyCwd = cwd,
 ): Promise<Record<string, unknown> | null> {
   // #3497: workflow PreToolUse hard gate deleted.
   return null;
@@ -20356,11 +20350,11 @@ function isExactConductorMetadataRoot(cwd: string, target: string): boolean {
 
 
 export async function buildConductorPreToolUseWriteGuardOutput(
-  payload: CodexHookPayload,
+  _payload: CodexHookPayload,
   cwd: string,
-  stateDir: string,
-  resolvedSessionId?: string,
-  policyCwd = cwd,
+  _stateDir: string,
+  _resolvedSessionId?: string,
+  _policyCwd = cwd,
 ): Promise<Record<string, unknown> | null> {
   // #3497: conductor PreToolUse write hard gate deleted.
   return null;
@@ -22947,3 +22941,31 @@ if (isCodexNativeHookMainModule(import.meta.url, process.argv[1])) {
     void logNativeHookCliError(process.cwd(), "native_hook_fatal_error", error);
   });
 }
+
+// #3497 retain symbols for noUnusedLocals after gate removal
+const __issue3497RetainGateRemnants = {
+  blocksDeepInterviewImplementationWrite,
+  buildDeepInterviewBashBlockedDetail,
+  buildDeepInterviewPreToolUseBoundaryOutput,
+  buildDeepInterviewRootPointerConflictBlock,
+  buildPlanningActorWriteDeny,
+  buildPlanningRootPointerConflictPreToolUseOutput,
+  buildPlanningStateScopeDeny,
+  buildRalplanBashBlockedDetail,
+  buildRalplanPreToolUseBoundaryOutput,
+  buildRalplanRootPointerConflictBlock,
+  buildRawProtectedWorkflowStatePathOutput,
+  buildTeamWorkerProtectedStateDeny,
+  buildUltragoalNoOwnerActivationGuardOutput,
+  collectUltragoalActivationCandidatePayloads,
+  describeConductorBlockedWrite,
+  describeImplementationToolBlock,
+  evaluateConductorBashWrite,
+  isAllowedRalplanBashWrite,
+  isUltragoalConductorActivationPayload,
+  readActiveConductorStateForPreToolUse,
+  readActiveDeepInterviewStateForPreToolUse,
+  readActiveRalplanStateForPreToolUse,
+  teamWorkerMutationTargetsProtectedWorkflowState
+};
+void __issue3497RetainGateRemnants;
