@@ -577,6 +577,7 @@ describe('ultragoal artifacts', () => {
           goalId: first.goal!.id,
           status: 'complete',
           evidence: 'Actual planned work done for .omx/ultragoal/goals.json G001-first; validation complete; reviews clean.',
+          strict: true,
           codexGoal: { goal: { objective: taskObjective, status: 'complete' } },
         }),
         /quality-gate-json|quality gate/i,
@@ -1575,6 +1576,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
         }),
         /quality-gate-json|quality gate/i,
       );
@@ -1585,6 +1587,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             codeReview: { recommendation: 'COMMENT', architectStatus: 'CLEAR', evidence: 'not clean' },
@@ -1599,6 +1602,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             aiSlopCleaner: { status: 'not_applicable', evidence: 'skipped cleaner' },
@@ -1613,6 +1617,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             codeReview: {
@@ -1631,6 +1636,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             codeReview: {
@@ -1655,6 +1661,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             codeReview: {
@@ -1677,6 +1684,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             codeReview: {
@@ -1729,6 +1737,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: cleanQualityGate(),
         }),
         /missing proof for required invariant from \.omx\/ultragoal\/brief\.md: Preserve the existing parser boundary/i,
@@ -1804,6 +1813,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             architectureInvariantGate: {
@@ -1867,6 +1877,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             architectureInvariantGate: {
@@ -1895,6 +1906,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             architectureInvariantGate: {
@@ -1934,6 +1946,7 @@ describe('ultragoal artifacts', () => {
           status: 'complete',
           evidence: 'tests passed',
           codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
           qualityGate: {
             ...cleanQualityGate(),
             architectureInvariantGate: {
@@ -3260,3 +3273,103 @@ describe('ultragoal artifacts', () => {
   });
 
 });
+
+  it('ordinary final checkpoint completes without cohort gate; strict requires it', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+      // Ordinary (default) completes with no cohort gate.
+      await checkpointUltragoal(cwd, {
+        goalId: started.goal!.id,
+        status: 'complete',
+        evidence: 'tests passed',
+        codexGoal: { goal: { objective, status: 'complete' } },
+      });
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals[0]?.status, 'complete');
+      assert.equal(isUltragoalDone(plan), true);
+    });
+
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          strict: true,
+        }),
+        /quality-gate-json|quality gate/i,
+      );
+      // Strict with valid gate succeeds.
+      await checkpointUltragoal(cwd, {
+        goalId: started.goal!.id,
+        status: 'complete',
+        evidence: 'tests passed',
+        codexGoal: { goal: { objective, status: 'complete' } },
+        qualityGate: cleanQualityGate(),
+        strict: true,
+      });
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals[0]?.status, 'complete');
+    });
+  });
+
+  it('ordinary treats review lanes as advisory while strict enforces them', async () => {
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+      const advisoryGate = {
+        ...cleanQualityGate(),
+        codeReview: { recommendation: 'COMMENT', architectStatus: 'CLEAR', evidence: 'advisory only' },
+      };
+      // Ordinary ignores cohort fields and completes.
+      await checkpointUltragoal(cwd, {
+        goalId: started.goal!.id,
+        status: 'complete',
+        evidence: 'tests passed',
+        codexGoal: { goal: { objective, status: 'complete' } },
+        qualityGate: advisoryGate,
+      });
+      const plan = await readUltragoalPlan(cwd);
+      assert.equal(plan.goals[0]?.status, 'complete');
+    });
+
+    await withTempRepo(async (cwd) => {
+      await createUltragoalPlan(cwd, {
+        brief: 'brief',
+        goals: [{ title: 'Final', objective: 'Complete final milestone.' }],
+      });
+      const started = await startNextUltragoal(cwd);
+      const objective = started.plan.codexObjective!;
+      const advisoryGate = {
+        ...cleanQualityGate(),
+        codeReview: { recommendation: 'COMMENT', architectStatus: 'CLEAR', evidence: 'advisory only' },
+      };
+      await assert.rejects(
+        () => checkpointUltragoal(cwd, {
+          goalId: started.goal!.id,
+          status: 'complete',
+          evidence: 'tests passed',
+          codexGoal: { goal: { objective, status: 'complete' } },
+          qualityGate: advisoryGate,
+          strict: true,
+        }),
+        /APPROVE/,
+      );
+    });
+  });

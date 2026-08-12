@@ -23,6 +23,7 @@ export interface UltragoalCheckpointGuidance {
   checkpoint_policy: 'fresh_leader_get_goal_required';
   checkpoint_command_template: string;
   final_checkpoint_command_template: string;
+  final_strict_checkpoint_command_template: string;
   evidence_requirements: string[];
   command_templates: {
     intermediate_story: string;
@@ -221,6 +222,7 @@ export function buildUltragoalCheckpointGuidance(
   const goalId = context.activeGoalId;
   const intermediateStoryCommand = `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-active-get_goal-json-or-path>`;
   const finalStoryCommand = `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-complete-get_goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>`;
+  const finalStrictCommand = `omx ultragoal checkpoint --goal-id ${goalId} --status complete --evidence "<team evidence mentioning .omx/ultragoal and ${goalId}>" --codex-goal-json <fresh-complete-get_goal-json-or-path> --quality-gate-json <quality-gate-json-or-path> --strict`;
   return {
     goal_id: goalId,
     ...(context.activeGoalTitle ? { goal_title: context.activeGoalTitle } : {}),
@@ -230,6 +232,7 @@ export function buildUltragoalCheckpointGuidance(
     checkpoint_policy: context.checkpointPolicy,
     checkpoint_command_template: intermediateStoryCommand,
     final_checkpoint_command_template: finalStoryCommand,
+    final_strict_checkpoint_command_template: finalStrictCommand,
     evidence_requirements: [
       'team tasks are terminal',
       'verification passed',

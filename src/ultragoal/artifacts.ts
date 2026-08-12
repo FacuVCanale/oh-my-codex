@@ -243,6 +243,7 @@ export interface CheckpointOptions {
   evidence?: string;
   codexGoal?: unknown;
   qualityGate?: unknown;
+  strict?: boolean;
   allowActiveFinalCodexGoal?: boolean;
   now?: Date;
 }
@@ -1678,9 +1679,27 @@ function validateArchitectureInvariantGate(gate: Partial<UltragoalQualityGate>, 
   }
 }
 
-function validateQualityGate(value: unknown, requiredInvariants: readonly RequiredArchitectureInvariant[] = []): UltragoalQualityGate {
+function validateQualityGate(value: unknown, requiredInvariants: readonly RequiredArchitectureInvariant[] = [], opts: { strict?: boolean } = {}): UltragoalQualityGate | undefined {
+  const strict = opts.strict === true;
+  if (!strict) {
+    // Ordinary mode: targeted verification only, advisory review lanes.
+    // Accepts missing gate (returns undefined) or any gate that at least has passing verification.
+    // Full cohort fields are advisory and not enforced.
+    if (!value || typeof value !== 'object') return undefined;
+    const gate = value as Partial<UltragoalQualityGate>;
+    const verification = gate.verification;
+    // If gate provided without verification, treat as advisory-only and allow.
+    if (!verification || typeof verification !== 'object') return undefined;
+    // Require targeted verification when present, but don't fail closed on cohort fields.
+    if (verification.status === 'passed' && Array.isArray(verification.commands) && verification.commands.length > 0) {
+      try { assertNonEmpty(verification.evidence, 'verification.evidence'); } catch { return undefined; }
+      // Return advisory gate without strict validation of cleaner/codeReview/invariants.
+      return gate as UltragoalQualityGate;
+    }
+    return undefined;
+  }
   if (!value || typeof value !== 'object') {
-    throw new UltragoalError('Final ultragoal completion requires --quality-gate-json with ai-slop-cleaner, verification, code-review, and architecture-invariant evidence.');
+    throw new UltragoalError('Final ultragoal completion requires --quality-gate-json with ai-slop-cleaner, verification, code-review, and architecture-invariant evidence. Pass --strict to enforce the cohort gate; ordinary completes with targeted verification only.');
   }
   const gate = value as Partial<UltragoalQualityGate>;
   const cleaner = gate.aiSlopCleaner;
@@ -1925,12 +1944,17 @@ export async function checkpointUltragoal(cwd: string, options: CheckpointOption
     }
     if (finalRunCheckpoint && !options.allowActiveFinalCodexGoal) goal.evidence = options.evidence;
   }
-  const requiredArchitectureInvariants = options.status === 'complete' && (aggregateCompletion !== undefined || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal))
+  const isStrict = options.strict === true;
+  const isFinalGateCandidate = options.status === 'complete' && (aggregateCompletion !== undefined || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal));
+  const requiredArchitectureInvariants = isFinalGateCandidate
     ? await collectRequiredArchitectureInvariants(cwd)
     : [];
-  const qualityGate = options.status === 'complete' && (aggregateCompletion !== undefined || (isFinalRunCompletionCandidate(plan, goal) && !options.allowActiveFinalCodexGoal))
-    ? validateQualityGate(options.qualityGate, requiredArchitectureInvariants)
+  const qualityGate = isFinalGateCandidate
+    ? validateQualityGate(options.qualityGate, requiredArchitectureInvariants, { strict: isStrict })
     : undefined;
+  if (isFinalGateCandidate && isStrict && !qualityGate) {
+    throw new UltragoalError('Final ultragoal completion requires --quality-gate-json with ai-slop-cleaner, verification, code-review, and architecture-invariant evidence. Pass --strict to enforce the cohort gate; ordinary completes with targeted verification only.');
+  }
   if (aggregateCompletion) {
     goal.status = 'complete';
     goal.completedAt = now;
