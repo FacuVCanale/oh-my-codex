@@ -59,8 +59,8 @@ Loop until `omx ultragoal status` reports all goals complete:
 4. If no active Codex goal exists, call `create_goal` with the printed payload. In aggregate mode, if the same aggregate Codex objective is already active, continue the current OMX story without creating a new Codex goal.
 5. Complete the current OMX story only.
 6. Run a completion audit against the story objective and real artifacts/tests.
-7. In aggregate mode, do **not** call `update_goal` for intermediate stories; checkpoint with a fresh `get_goal` snapshot whose aggregate objective is still `active`. On the final story only, first run the mandatory final cleanup/review gate below; call `update_goal({status: "complete"})` only after that gate is clean, then call `get_goal` again for a fresh `complete` snapshot.
-8. Checkpoint the durable ledger with that snapshot. Intermediate aggregate checkpoints use only `--codex-goal-json`; final clean checkpoints also require `--quality-gate-json`:
+7. In aggregate mode, do **not** call `update_goal` for intermediate stories; checkpoint with a fresh `get_goal` snapshot whose aggregate objective is still `active`. On the final story only, ordinary mode requires targeted verification only (evidence + verification commands/evidence, advisory cleaner/review) before `update_goal`; with `--strict` first run the mandatory final cohort gate below, call `update_goal({status: "complete"})` only after that gate is clean, then call `get_goal` again for a fresh `complete` snapshot.
+8. Checkpoint the durable ledger with that snapshot. Intermediate aggregate checkpoints use only `--codex-goal-json`; final ordinary checkpoints need only `--evidence` (verification is the required gate, cleaner/review advisory), final `--strict` checkpoints also require `--quality-gate-json` with the cohort gate:
    `omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<evidence>" --codex-goal-json <get_goal-json-or-path> [--quality-gate-json <quality-gate-json-or-path>]`
 9. If blocked or failed, checkpoint failure:
    `omx ultragoal checkpoint --goal-id <id> --status failed --evidence "<blocker/evidence>"`
@@ -133,7 +133,8 @@ The final ultragoal story is not complete until the active agent has run the fin
 
 
    ```sh
-   omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<tests/files/review evidence>" --codex-goal-json <fresh-complete-get-goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>
+   # ordinary: `omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<tests/files/review evidence>" --codex-goal-json <fresh-complete-get-goal-json-or-path>`
+   # strict cohort: same plus ` --quality-gate-json <quality-gate-json-or-path> --strict`
    ```
 
 `--quality-gate-json` must include:

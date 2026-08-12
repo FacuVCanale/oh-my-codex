@@ -16938,8 +16938,8 @@ function hasExactConductorOrchestrationOptionSchema(commandName: string, words: 
     permitted = new Set(["--kind", "--target-goal-id", "--evidence", "--rationale", "--json"]);
     required = new Set(["--kind", "--target-goal-id", "--evidence", "--rationale"]);
   } else if (command === "ultragoal" && subcommand === "checkpoint") {
-    permitted = new Set(["--goal-id", "--status", "--codex-goal-json", "--quality-gate-json", "--evidence", "--json"]);
-    required = new Set(["--goal-id", "--status", "--codex-goal-json", "--quality-gate-json", "--evidence", "--json"]);
+    permitted = new Set(["--goal-id", "--status", "--codex-goal-json", "--quality-gate-json", "--evidence", "--strict", "--json"]);
+    required = new Set(["--goal-id", "--status", "--codex-goal-json", "--evidence", "--json"]);
   } else if (command === "performance-goal" && subcommand === "complete") {
     permitted = new Set(["--slug", "--codex-goal-json", "--evidence", "--json"]);
     required = new Set(["--slug", "--codex-goal-json", "--evidence", "--json"]);
@@ -16953,7 +16953,7 @@ function hasExactConductorOrchestrationOptionSchema(commandName: string, words: 
     const raw = args[index] ?? "";
     const option = shellWordLiteral(raw);
     if (!option || !option.startsWith("--") || option === "--" || !conductorOrchestrationWordIsStatic(raw)) return false;
-    if (option === "--json" || (isUltragoalCreate && option === "--force")) {
+    if (option === "--json" || option === "--strict" || (isUltragoalCreate && option === "--force")) {
       if (!permitted.has(option) || seen.has(option)) return false;
       seen.set(option, "");
       continue;

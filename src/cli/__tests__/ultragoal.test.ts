@@ -921,3 +921,50 @@ describe('cli/ultragoal', () => {
     });
   });
 });
+
+  it('checkpoint --strict enforces cohort gate while ordinary does not', async () => {
+    await withCwd(async (cwd) => {
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- Final milestone']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+      const goals = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { codexObjective: string };
+      // Ordinary completes without gate.
+      const ordinary = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', 'G001-final-milestone',
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: goals.codexObjective, status: 'complete' } }),
+        '--json',
+      ]));
+      assert.equal(ordinary.exitCode, undefined);
+
+      // New plan for strict test
+      await capture(() => ultragoalCommand(['create-goals', '--brief', '- Second milestone', '--force']));
+      await capture(() => ultragoalCommand(['complete-goals']));
+      const goals2 = JSON.parse(await readFile(join(cwd, '.omx/ultragoal/goals.json'), 'utf-8')) as { codexObjective: string; goals: Array<{ id: string }> };
+      const gid = goals2.goals[0]!.id;
+      const strictFail = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', gid,
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: goals2.codexObjective, status: 'complete' } }),
+        '--strict',
+        '--json',
+      ]));
+      assert.equal(strictFail.exitCode, 1);
+      assert.match(strictFail.stderr.join('\n'), /quality-gate-json|quality gate/i);
+
+      const strictOk = await capture(() => ultragoalCommand([
+        'checkpoint',
+        '--goal-id', gid,
+        '--status', 'complete',
+        '--evidence', 'tests passed',
+        '--codex-goal-json', JSON.stringify({ goal: { objective: goals2.codexObjective, status: 'complete' } }),
+        '--quality-gate-json', cleanQualityGate(),
+        '--strict',
+        '--json',
+      ]));
+      assert.equal(strictOk.exitCode, undefined);
+    });
+  });
