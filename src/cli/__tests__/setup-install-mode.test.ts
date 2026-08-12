@@ -973,7 +973,7 @@ describe("omx setup install mode behavior", () => {
 				);
 				assert.match(output, /Native agent role TOML files written to \.codex\/agents\//);
 
-				for (const role of ["architect", "critic", "scholastic"]) {
+				for (const role of ["architect", "critic"]) {
 					const tomlPath = join(codexHomeDir, "agents", `${role}.toml`);
 					assert.equal(existsSync(tomlPath), true, `${role}.toml should exist`);
 					const toml = await readFile(tomlPath, "utf-8");

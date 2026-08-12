@@ -135,14 +135,13 @@ describe("plugin bundle SSOT contract", () => {
 			const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as {
 				skills: Array<{ name: string; status: string; canonical?: string }>;
 			};
-			const skill = manifest.skills.find((entry) => entry.name === "help");
-			assert.ok(skill, "fixture should include help skill");
-			skill.status = "deprecated";
-			skill.canonical = "omx-setup";
-			await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+			const skill = manifest.skills.find((entry) => entry.name === "deep-interview");
+			assert.ok(skill, "fixture should include deep-interview skill");
+			// deep-interview is already deprecated sunset stub; ensure it remains non-installed
+			assert.equal(skill.status, "deprecated");
 
 			const result = await syncPluginMirror({ root: fixtureRoot });
-			assert.equal(result.mirroredSkillNames.includes("help"), false);
+			assert.equal(result.mirroredSkillNames.includes("deep-interview"), false);
 
 			const checkResult = await syncPluginMirror({ root: fixtureRoot, check: true });
 			assert.equal(checkResult.checked, true);
@@ -155,7 +154,7 @@ describe("plugin bundle SSOT contract", () => {
 		const fixtureRoot = await copyBundleFixture();
 		try {
 			await cp(
-				join(fixtureRoot, "skills", "help"),
+				join(fixtureRoot, "skills", "plan"),
 				join(fixtureRoot, "skills", "uncataloged-skill"),
 				{ recursive: true },
 			);

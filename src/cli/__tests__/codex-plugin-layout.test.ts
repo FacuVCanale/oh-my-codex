@@ -1560,7 +1560,7 @@ process.stdin.on('end', () => {
       'docs/troubleshooting.md',
       'docs/hooks-extension.md',
       'skills/doctor/SKILL.md',
-      'skills/help/SKILL.md',
+      'skills/omx-setup/SKILL.md',
       'plugins/oh-my-codex/skills/doctor/SKILL.md',
       'plugins/oh-my-codex/skills/omx-setup/SKILL.md',
     ];

@@ -40,15 +40,7 @@ describe('explore + sparkshell guidance contract', () => {
     ]);
   });
 
-  it('keeps the deprecated explore routing isolated to compatibility surfaces', () => {
-    for (const surface of ['prompts/explore.md', 'prompts/explore-harness.md']) {
-      expectPatterns(surface, [
-        /deprecated/i,
-        /compatibility-only/i,
-        /normal path/i,
-      ]);
-    }
-
+  it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
     // Slim role cards keep their role contract without repeating repository-routing prose.
     for (const surface of ['prompts/planner.md', 'prompts/executor.md']) {
       const content = loadSurface(surface);
@@ -57,6 +49,7 @@ describe('explore + sparkshell guidance contract', () => {
     }
 
     expectPatterns('skills/plan/SKILL.md', [
+      /omx explore.*deprecated/i,
       /normal repository inspection/i,
       /omx sparkshell/i,
     ]);

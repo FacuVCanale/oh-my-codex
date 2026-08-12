@@ -2690,6 +2690,11 @@ function buildAdditionalContextMessage(
   if (payload && isTypedAgentRolePayload(payload, cwd)) {
     return promptPriorityMessage;
   }
+  // Sunset stub: removed skills produce a clean "removed, use X" additionalContext immediately
+  if (classification.removedMatches && classification.removedMatches.length > 0) {
+    const msg = classification.removedMatches.map((m) => m.message).join(" ");
+    return `OMX native UserPromptSubmit: ${msg} ${promptPriorityMessage}`.trim();
+  }
   const teamMode = readTeamModeConfig(cwd);
   const matches = classification.matches.filter((entry) => teamMode.enabled || entry.skill !== "team");
   const match = matches[0] ?? null;

@@ -35,7 +35,7 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project' });
 
       const installedSetupSkill = join(wd, '.codex', 'skills', 'omx-setup', 'SKILL.md');
-      const shippedHelpSkill = join(previousCwd, 'skills', 'help', 'SKILL.md');
+      const shippedSetupSkill = join(previousCwd, 'skills', 'omx-setup', 'SKILL.md');
 
       assert.ok(
         (await readFile(installedSetupSkill, 'utf-8')).includes(
@@ -43,8 +43,8 @@ describe('omx setup skills overwrite behavior', () => {
         ),
       );
       assert.ok(
-        (await readFile(shippedHelpSkill, 'utf-8')).includes(
-          'description: Help deprecated skill',
+        (await readFile(shippedSetupSkill, 'utf-8')).includes(
+          'description: Setup and configure oh-my-codex using current CLI behavior',
         ),
       );
     } finally {
@@ -70,7 +70,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(installed.has('worker'), true);
       assert.equal(installed.has('autoresearch'), true);
       assert.equal(installed.has('swarm'), false);
-      assert.equal(installed.has('ecomode'), false);
+      assert.equal(installed.has('ecomode'), false); // removed in #3493
       assert.equal(installed.has('ultraqa'), true);
       assert.equal(installed.has('ralph-init'), false);
       assert.equal(installed.has('visual-ralph'), true);
@@ -97,7 +97,7 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
-  it('removes stale web-clone installs during normal hard-deprecation refresh', async () => {
+  it('removes stale removed-skill installs during normal refresh', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();
     try {
@@ -133,7 +133,7 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const staleSkills = ['swarm', 'ecomode', 'configure-discord', 'configure-telegram', 'configure-slack', 'configure-openclaw'];
+      const staleSkills = ['configure-discord', 'configure-telegram', 'configure-slack', 'configure-openclaw'];
       for (const staleSkill of staleSkills) {
         const staleDir = join(wd, '.codex', 'skills', staleSkill);
         await mkdir(staleDir, { recursive: true });
@@ -296,9 +296,7 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project', force: true, verbose: true });
 
       const output = logs.join('\n');
-      assert.match(output, /skipped review\/ \(status: deprecated\)/);
-      assert.match(output, /skipped ralph-init\/ \(status: deprecated\)/);
-      assert.match(output, /removed stale skill swarm\/ \(status: deprecated\)/);
+      assert.match(output, /removed stale skill swarm\//);
       assert.match(output, /skills: updated=/);
     } finally {
       console.log = originalLog;

@@ -90,22 +90,19 @@ describe('anti-slop workflow surfaces', () => {
     assert.match(skill, /Never present an unverified cleanup as\s+complete/i);
   });
 
-  it('documents reviewer-only separation in review and plan review mode', () => {
+  it('documents plan review mode and sunset stub for removed review skill', () => {
     assertCanonicalPluginParity('skills/plan/SKILL.md');
 
-    const reviewSkill = read('skills/review/SKILL.md');
     const planSkill = read('skills/plan/SKILL.md');
-
-    assertMatchesAll(reviewSkill, [
-      /Hard-deprecated/i,
-      /Do not invoke or route this skill/i,
-      /Use `\$code-review` directly/i,
-    ]);
 
     assertMatchesAll(planSkill, [
       /### Review \(`--review`\)/,
       /Critic evaluation/i,
       /APPROVED\/REVISE\/REJECT/i,
     ]);
+
+    const sunset = read('src/hooks/sunset-stub.ts');
+    assert.match(sunset, /"review":/);
+    assert.match(sunset, /removed.*Use \"\$code-review\"/i);
   });
 });

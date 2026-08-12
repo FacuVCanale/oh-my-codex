@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { classifyKeywordInput } from '../keyword-detector.js';
 
 const repoRoot = new URL('../../..', import.meta.url).pathname;
 const skillsRoot = join(repoRoot, 'skills');
@@ -17,40 +18,22 @@ function skillNames(): string[] {
 }
 
 describe('skill catalog hygiene', () => {
-  it('keeps deprecated public compatibility shims non-routing', () => {
+  it('has removed deprecated shims and surfaces sunset stubs', () => {
     const names = skillNames();
-    const shims = [
-      { name: 'swarm', canonical: /\$team|omx team/i },
-      { name: 'ask-claude', canonical: /\$ask claude|omx ask claude/i },
-      { name: 'ask-gemini', canonical: /\$ask gemini|omx ask gemini/i },
-      { name: 'frontend-ui-ux', canonical: /\$design|\$visual-ralph/i },
-      { name: 'review', canonical: /\$code-review|code review/i },
-      { name: 'ralph-init', canonical: /\$ralph|PRD\/test-spec/i },
-    ];
-
-    for (const { name, canonical } of shims) {
-      assert(names.includes(name), `${name} should remain as a public compatibility shim`);
-      const content = skillContent(name);
-      assert.match(
-        content,
-        /Hard-deprecated/i,
-        `${name} should remain only as a hard-deprecated compatibility shim`,
-      );
-      assert.match(
-        content,
-        /Do not invoke or route this skill/i,
-        `${name} should be non-routing compatibility guidance`,
-      );
-      assert.match(
-        content,
-        canonical,
-        `${name} should point to its canonical replacement surface`,
-      );
+    assert.equal(names.length, 29, `expected 29 skills after sunset, got ${names.length}: ${names.join(', ')}`);
+    const removed = ['swarm','ask-claude','ask-gemini','frontend-ui-ux','review','ralph-init','ecomode','deepsearch','tdd','build-fix','security-review','visual-verdict','web-clone','help','note','trace','prometheus-strict'];
+    for (const name of removed) {
+      assert(!names.includes(name), `${name} should have been removed`);
+      assert(!existsSync(join(skillsRoot, name)), `${name} directory should not exist`);
+      const c = classifyKeywordInput(`$${name} test`);
+      assert.equal(c.removedMatches.length, 1, `${name} should have sunset stub`);
+      assert.match(c.removedMatches[0].message, /removed/i, `${name} message should contain removed`);
+      assert.match(c.removedMatches[0].message, /use/i, `${name} message should contain use`);
     }
   });
 
   it('keeps the cleanup subset free of obsolete prompt/tool boilerplate', () => {
-    const cleanupSubset = ['analyze', 'ecomode', 'git-master', 'plan', 'tdd', 'ultraqa', 'web-clone'];
+    const cleanupSubset = ['analyze', 'plan', 'ultraqa'];
     const obsolete = [
       /ToolSearch\(/,
       /mcp__[^\s`]+/,
@@ -71,9 +54,8 @@ describe('skill catalog hygiene', () => {
   it('keeps primary workflow guidance CLI-first instead of MCP-first', () => {
     const primaryWorkflows = [
       'code-review',
-      'ecomode',
       'plan',
-      'tdd',
+      'ralph',
       'ultraqa',
       'wiki',
     ];

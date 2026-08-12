@@ -104,11 +104,7 @@ describe('agents/definitions', () => {
       'ux-researcher': 'medium',
       'information-architect': 'low',
       'product-analyst': 'low',
-      'prometheus-strict-metis': 'high',
-      'prometheus-strict-momus': 'high',
-      'prometheus-strict-oracle': 'high',
       critic: 'high',
-      scholastic: 'high',
       vision: 'low',
     } as const satisfies Record<string, AgentDefinition['reasoningEffort']>;
 
@@ -140,32 +136,9 @@ describe('agents/definitions', () => {
     }
   });
 
-  it('defines the Prometheus Strict clean-room planner panel agents', () => {
-    const panel = [
-      AGENT_DEFINITIONS['prometheus-strict-metis'],
-      AGENT_DEFINITIONS['prometheus-strict-momus'],
-      AGENT_DEFINITIONS['prometheus-strict-oracle'],
-    ];
 
-    assert.deepEqual(panel.map((agent) => agent.name), [
-      'prometheus-strict-metis',
-      'prometheus-strict-momus',
-      'prometheus-strict-oracle',
-    ]);
-    assert.ok(panel.every((agent) => agent.category === 'coordination'));
-    assert.ok(panel.every((agent) => agent.routingRole === 'leader'));
-  });
 
-  it('defines the Scholastic ontology reviewer as a first-class coordination agent', () => {
-    const scholastic = AGENT_DEFINITIONS.scholastic;
 
-    assert.equal(scholastic.name, 'scholastic');
-    assert.equal(scholastic.category, 'coordination');
-    assert.equal(scholastic.routingRole, 'leader');
-    assert.equal(scholastic.modelClass, 'frontier');
-    assert.equal(scholastic.tools, 'read-only');
-    assert.match(scholastic.description, /Ontology-first reasoning reviewer/);
-  });
 
   it('keeps the installable agent model split aligned with the OMX subagent matrix', () => {
     assert.equal(AGENT_DEFINITIONS.architect.modelClass, 'frontier');
