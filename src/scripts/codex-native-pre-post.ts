@@ -8,6 +8,12 @@ import {
   readConfiguredLoreCommitGuardValue,
 } from "../config/commit-lore-guard.js";
 import { resolveCodexExecutionSurface } from "./codex-execution-surface.js";
+import {
+  buildAdvisoryPreToolUseOutput,
+  buildHudCapabilityWarningMessage,
+  buildQuestionCapabilityWarningMessage,
+  buildTeamCapabilityWarningMessage,
+} from "../hooks/native/capability-warnings.js";
 
 type CodexHookPayload = Record<string, unknown>;
 
@@ -1287,12 +1293,8 @@ function buildNativeOmxHudPreToolUseEnforcementOutput(
   payload: CodexHookPayload,
 ): Record<string, unknown> | null {
   if (!isNativeOutsideTmuxSurface(payload) || !commandInvokesOmxHud(command)) return null;
-
-  return {
-    decision: "block",
-    reason: "omx hud cannot be launched directly from Codex App/native outside-tmux Bash sessions.",
-    systemMessage: "omx hud is blocked from Bash in Codex App/native outside-tmux sessions; use SessionStart/HUD context instead, or launch OMX CLI from an attached tmux shell first for the tmux HUD runtime.",
-  };
+  // #3497: capability warning only — do not lock PreToolUse.
+  return buildAdvisoryPreToolUseOutput(buildHudCapabilityWarningMessage());
 }
 
 function buildNativeOmxTeamPreToolUseEnforcementOutput(
@@ -1300,12 +1302,10 @@ function buildNativeOmxTeamPreToolUseEnforcementOutput(
   payload: CodexHookPayload,
 ): Record<string, unknown> | null {
   if (!isNativeOutsideTmuxSurface(payload) || !commandInvokesOmxTeam(command)) return null;
-
-  return {
-    decision: "block",
-    reason: "omx team cannot be launched directly from Codex App/native outside-tmux Bash sessions.",
-    systemMessage: `omx team is blocked from Bash in Codex App/native outside-tmux sessions; launch OMX CLI from an attached tmux shell first. Original command: ${command}`,
-  };
+  // #3497: team-only features warn cleanly when tmux is absent; never lock.
+  return buildAdvisoryPreToolUseOutput(
+    buildTeamCapabilityWarningMessage(`Original command: ${command}`),
+  );
 }
 
 export type OmxQuestionPreToolUseClassification =
@@ -1320,13 +1320,10 @@ export function classifyOmxQuestionPreToolUse(
   if (!commandInvokesOmxQuestion(command)) return { kind: "not-question" };
 
   if (isNativeOutsideTmuxSurface(payload)) {
+    // #3497: advisory capability warning, not a hard PreToolUse lock.
     return {
       kind: "denied",
-      output: {
-        decision: "block",
-        reason: "omx question cannot be launched directly from Codex App/native outside-tmux Bash sessions.",
-        systemMessage: `omx question is blocked from Codex App/native outside-tmux Bash because no attached tmux pane is available. Use the native structured question tool when available, or ask exactly one concise plain-text question. Original command: ${command}`,
-      },
+      output: buildAdvisoryPreToolUseOutput(buildQuestionCapabilityWarningMessage(command)),
     };
   }
 
@@ -1334,11 +1331,9 @@ export function classifyOmxQuestionPreToolUse(
 
   return {
     kind: "denied",
-    output: {
-      decision: "block",
-      reason: "omx question Bash invocations must preserve the leader pane return target.",
-      systemMessage: `omx question is blocked from Bash until the command preserves the leader pane with \`OMX_QUESTION_RETURN_PANE=$TMUX_PANE\` or an explicit \`%pane\` value. Original command: ${command}`,
-    },
+    output: buildAdvisoryPreToolUseOutput(
+      `Capability warning: omx question Bash invocations should preserve the leader pane return target with \`OMX_QUESTION_RETURN_PANE=$TMUX_PANE\` or an explicit \`%pane\` value. Original command: ${command}`,
+    ),
   };
 }
 
