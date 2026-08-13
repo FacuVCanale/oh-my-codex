@@ -3974,12 +3974,11 @@ deepMaxRounds = 21
   });
 
   it('keeps the documented deep-interview Suggested Config executable through activation state', async () => {
-    // Deep-interview is now a sunset stub (merged into plan --interview); verify stub exists and activation still routes via deep-interview explicit token
     const skillDoc = await readFile(join(process.cwd(), 'skills', 'deep-interview', 'SKILL.md'), 'utf-8');
-    assert.match(skillDoc, /was removed/i);
-    assert.match(skillDoc, /\$plan --interview/i);
+    assert.match(skillDoc, /Socratic deep interview/i);
+    assert.match(skillDoc, /Suggested Config/i);
 
-    // Verify $deep-interview activation still creates deep-interview state (one-release stub)
+    // Verify $deep-interview activation creates the independent deep-interview state.
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-deep-interview-doc-config-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-deep-interview-doc-config';

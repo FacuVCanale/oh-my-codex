@@ -147,12 +147,13 @@ describe('ultragoal docs contract', () => {
     assert.match(nativeHooksDoc, /keyword routing still takes precedence/i);
   });
 
-  it('documents the lightweight independently-invocable README workflow', () => {
+  it('documents the restored canonical README workflow', () => {
     const readme = loadDoc('README.md');
 
-    assert.match(readme, /ordinary workflow is `understand -> execute -> verify -> report`/);
-    assert.match(readme, /Each skill is independently invocable; there is no fixed mandatory sequence/);
-    assert.match(readme, /`\$plan` — optional planning; use `\$plan --interview` for clarification/);
+    assert.match(readme, /canonical staged workflow is `\$deep-interview -> \$ralplan -> \$ultragoal`/);
+    assert.match(readme, /Each skill is also independently invocable when earlier stages are already satisfied/);
+    assert.match(readme, /`\$deep-interview` — iterative Socratic ambiguity clearance/);
+    assert.match(readme, /not an alias for `\$plan --interview`/);
     assert.match(readme, /`\$ultragoal` — durable multi-goal execution/);
     assert.match(readme, /Inside an Ultragoal story, use `\$team` only when that story benefits from coordinated parallel execution/);
   });

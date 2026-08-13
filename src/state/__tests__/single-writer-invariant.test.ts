@@ -153,6 +153,22 @@ describe('State SSOT single-writer invariant (#3498)', () => {
     );
   });
 
+  it('question and keyword workflow state writers route through writeStateFile', async () => {
+    for (const relPath of [
+      'question/deep-interview.ts',
+      'question/autopilot-wait.ts',
+      'hooks/keyword-detector.ts',
+    ]) {
+      const content = await readFile(join(srcDir, relPath), 'utf-8');
+      assert.match(content, /writeStateFile/, `${relPath} must use the canonical state writer`);
+      assert.doesNotMatch(
+        content,
+        /writeFile\s*\(\s*(?:statePath|absolutePath)\s*,\s*(?:`\$\{JSON\.stringify|JSON\.stringify)/,
+        `${relPath} must not persist mode state through raw writeFile`,
+      );
+    }
+  });
+
   it('src/state/ modules route writes through writeStateFile (no raw writeFile on mode-state paths)', async () => {
     // Within src/state/, only operations.ts, skill-active.ts (canonical copies),
     // and workflow-transition-reconcile.ts should write state files, and all

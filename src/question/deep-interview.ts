@@ -1,6 +1,7 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { getStateFilePath, readCurrentSessionId } from '../mcp/state-paths.js';
+import { writeStateFile } from '../state/operations.js';
 import {
   OmxQuestionError,
   runOmxQuestion,
@@ -76,8 +77,7 @@ async function writeDeepInterviewState(
   sessionId?: string,
 ): Promise<void> {
   const statePath = getStateFilePath(DEEP_INTERVIEW_STATE_FILE, cwd, sessionId);
-  await mkdir(dirname(statePath), { recursive: true });
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  await writeStateFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export function createDeepInterviewQuestionObligation(

@@ -89,7 +89,7 @@
     {
       "name": "deep-interview",
       "category": "planning",
-      "status": "deprecated",
+      "status": "active",
       "core": false,
       "internalRequired": false
     },

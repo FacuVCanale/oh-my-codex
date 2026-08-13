@@ -55,12 +55,15 @@ describe('explore + sparkshell guidance contract', () => {
     ]);
     assert.match(loadSurface('skills/ralph/SKILL.md'), /was removed/i);
     assert.match(loadSurface('skills/ralph/SKILL.md'), /\$ultragoal/i);
-    // Sunset stubs should point to successor
-    for (const stub of ['skills/deep-interview/SKILL.md', 'skills/ralplan/SKILL.md']) {
-      const content = loadSurface(stub);
-      assert.match(content, /was removed/i);
-      assert.match(content, /\$plan/i);
-    }
+    const deepInterview = loadSurface('skills/deep-interview/SKILL.md');
+    assert.match(deepInterview, /omx explore.*deprecated/i);
+    assert.match(deepInterview, /normal repository inspection/i);
+    assert.match(deepInterview, /omx sparkshell/i);
+    assert.match(deepInterview, /Socratic deep interview/i);
+
+    const ralplan = loadSurface('skills/ralplan/SKILL.md');
+    assert.match(ralplan, /was removed/i);
+    assert.match(ralplan, /\$plan/i);
   });
 
   it('keeps QA evidence raw while Team remains a slim runtime card', () => {

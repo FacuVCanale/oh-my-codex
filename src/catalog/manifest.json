@@ -79,8 +79,7 @@
     {
       "name": "deep-interview",
       "category": "planning",
-      "status": "deprecated",
-      "description": "Removed in OMX 0.21; use plan --interview. One-release sunset stub."
+      "status": "active"
     },
     {
       "name": "best-practice-research",

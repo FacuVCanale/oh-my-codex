@@ -310,19 +310,20 @@ Most users should think of OMX as **better task routing + better workflow + bett
 3. Run `omx doctor`
 4. Run a real execution smoke test: `codex login status` and `omx exec --skip-git-repo-check -C . "Reply with exactly OMX-EXEC-OK"`
 5. Launch with a named worktree from a git repo, for example `omx --worktree=feat/task --madmax --xhigh`; if you run concurrent `--madmax` sessions, use distinct named worktrees such as `--worktree=feature/auth`
-6. Use `$plan --interview "..."` when the request or boundaries are still unclear
-7. Use `$plan "..."` to approve the plan and review tradeoffs
+6. Use `$deep-interview "..."` when the request or boundaries are still unclear
+7. Use `$ralplan "..."` to approve the plan and review tradeoffs
 8. Use `$ultragoal` or `$team` when the task needs durable or parallel execution; add `/goal` when durable objective/checkpoint structure should be explicit
 
 ## Recommended workflow
 
-The ordinary workflow is `understand -> execute -> verify -> report`. Each skill is independently invocable; there is no fixed mandatory sequence.
+The canonical staged workflow is `$deep-interview -> $ralplan -> $ultragoal`. Each skill is also independently invocable when earlier stages are already satisfied.
 
-1. `$plan` — optional planning; use `$plan --interview` for clarification.
-2. `$ultragoal` — durable multi-goal execution with `.omx/ultragoal` ledger checkpoints.
-3. `$team` — coordinated parallel execution when a story benefits from multiple lanes.
+1. `$deep-interview` — iterative Socratic ambiguity clearance, resumable state, and execution-ready requirements artifacts.
+2. `$ralplan` — architecture, feasibility, and consensus planning over the deep-interview artifact.
+3. `$ultragoal` — durable multi-goal execution with `.omx/ultragoal` ledger checkpoints.
+4. `$team` — coordinated parallel execution when a story benefits from multiple lanes.
 
-`$plan` stops at planning artifacts. Code changes require an explicit execution lane (`$ultragoal` or `$team`); plan does not implement directly.
+`$deep-interview` is an independent requirements stage, not an alias for `$plan --interview`, and never implements directly. Planning skills stop at planning artifacts; code changes require an explicit execution lane (`$ultragoal` or `$team`).
 
 Inside an Ultragoal story, use `$team` only when that story benefits from coordinated parallel execution.
 
