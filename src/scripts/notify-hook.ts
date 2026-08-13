@@ -947,9 +947,8 @@ async function main() {
 
   // 4.45. Skill activation tracking: update skill-active-state.json before any nudge logic.
   if (isTeamWorker || canWriteLeaderScopedState) {
-    let activationResult: SkillActiveState | null = null;
     if (latestUserInput) {
-      activationResult = await recordNotifySkillActivationNonFatal({
+      await recordNotifySkillActivationNonFatal({
         stateDir,
         sourceCwd: cwd,
         text: latestUserInput,
@@ -969,13 +968,6 @@ async function main() {
         }),
       });
     }
-    if (activationResult?.skill === 'autopilot'
-      && activationResult.active === false
-      && activationResult.error === 'documented_host_consensus_receipt_unavailable') {
-      await dispatchTurnCompleteHookEvents(payload, cwd, payloadSessionId, getEffectiveSessionId());
-      return;
-    }
-
     try {
       skillSyncResult = await syncSkillStateFromTurn(
         stateDir,
