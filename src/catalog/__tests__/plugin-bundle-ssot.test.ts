@@ -62,6 +62,7 @@ describe("plugin bundle SSOT contract", () => {
 		assert.equal(result.changed, false);
 		assert.deepEqual(result.mirroredSkillNames, expectedSkillNames);
 		assert.equal(result.mirroredSkillNames.includes("ultragoal"), true);
+		assert.equal(result.mirroredSkillNames.includes("deep-interview"), true);
 		assert.equal(result.mirroredSkillNames.includes("autopilot"), false);
 		assert.equal(result.mirroredSkillNames.includes("ralph"), false);
 		assert.equal(result.mirroredSkillNames.includes("ultrawork"), false);
@@ -128,7 +129,7 @@ describe("plugin bundle SSOT contract", () => {
 		}
 	});
 
-	it("allows catalog-deprecated root skill dirs as non-installed compatibility shims", async () => {
+	it("mirrors active deep-interview and excludes it when a fixture deprecates it", async () => {
 		const fixtureRoot = await copyBundleFixture();
 		try {
 			const manifestPath = join(fixtureRoot, "templates", "catalog-manifest.json");
@@ -137,8 +138,9 @@ describe("plugin bundle SSOT contract", () => {
 			};
 			const skill = manifest.skills.find((entry) => entry.name === "deep-interview");
 			assert.ok(skill, "fixture should include deep-interview skill");
-			// deep-interview is already deprecated sunset stub; ensure it remains non-installed
-			assert.equal(skill.status, "deprecated");
+			assert.equal(skill.status, "active");
+			skill.status = "deprecated";
+			await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
 			const result = await syncPluginMirror({ root: fixtureRoot });
 			assert.equal(result.mirroredSkillNames.includes("deep-interview"), false);

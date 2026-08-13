@@ -282,7 +282,13 @@ export const PROMPT_REFACTOR_INVARIANT_CONTRACTS: GuidanceSurfaceContract[] = [
   {
     id: 'deep-interview-question-gate',
     path: 'skills/deep-interview/SKILL.md',
-    requiredPatterns: [rx('was removed'), rx('\\$plan --interview')],
+    requiredPatterns: [
+      rx('Socratic'),
+      rx('ambiguity'),
+      rx('omx question'),
+      rx('omx state write/read'),
+      rx('Do NOT implement directly'),
+    ],
   },
   {
     id: 'cancel-safety-boundary',

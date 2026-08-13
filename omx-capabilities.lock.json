@@ -1417,7 +1417,7 @@
       ]
     },
     "skills": {
-      "digest": "7e037f26bea4038c626ddcd078db0988fd1b6dcae6b4305aad5a42a247dca19b",
+      "digest": "b159fd7d5f5313419de1b0bf43b13d9de1d009ae6b906337da3a1e3ce2576186",
       "files": [
         {
           "digest": "227c02cb4304603fae65200878acb9708bc31523d0d851ea148861a8c6f72055",
@@ -1460,7 +1460,7 @@
           "path": "skills/configure-notifications/SKILL.md"
         },
         {
-          "digest": "5350379268a22eaa22b88ff98d0085bbbea059d4970b5be9e22ab886870488d0",
+          "digest": "7094e29dc0d00d1c3fadf5fad111330b23056ed2cdc6aa2116618c2dfe2becbe",
           "path": "skills/deep-interview/SKILL.md"
         },
         {

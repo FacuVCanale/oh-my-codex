@@ -1,8 +1,6 @@
 /**
- * Planning skill regression tests for $plan (post-merge)
- *
- * After epic 3491 C3: deep-interview merged into plan --interview,
- * ralplan/consensus mode removed. Verifies single planning skill.
+ * Planning skill regression tests for the lightweight plan surface and the
+ * independently restored deep-interview requirements workflow.
  */
 
 import { describe, it } from 'node:test';
@@ -83,10 +81,15 @@ describe('ralplan sunset stub', () => {
   });
 });
 
-describe('deep-interview sunset stub', () => {
-  it('is a sunset stub referencing $plan --interview', () => {
-    assert.match(deepInterviewSkill, /was removed/i);
-    assert.match(deepInterviewSkill, /\$plan --interview/i);
+describe('deep-interview independent workflow', () => {
+  it('retains deep iterative questioning and durable handoff contracts', () => {
+    assert.match(deepInterviewSkill, /Socratic deep interview/i);
+    assert.match(deepInterviewSkill, /ambiguity/i);
+    assert.match(deepInterviewSkill, /\.omx\/interviews\//i);
+    assert.match(deepInterviewSkill, /\.omx\/specs\//i);
+    assert.match(deepInterviewSkill, /omx state write\/read/i);
+    assert.match(deepInterviewSkill, /\$ralplan/i);
+    assert.match(deepInterviewSkill, /\$ultragoal/i);
   });
 });
 

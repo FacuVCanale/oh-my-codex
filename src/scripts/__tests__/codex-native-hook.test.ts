@@ -6853,13 +6853,12 @@ deepMaxRounds = 21
 	});
 
 	it("keeps the documented deep-interview Suggested Config reflected in UserPromptSubmit context", async () => {
-		// deep-interview is now a sunset stub (merged into plan --interview); verify stub and that $deep-interview still activates deep-interview state
 		const skillDoc = await readFile(
 			join(process.cwd(), "skills", "deep-interview", "SKILL.md"),
 			"utf-8",
 		);
-		assert.match(skillDoc, /was removed/i);
-		assert.match(skillDoc, /\$plan --interview/i);
+		assert.match(skillDoc, /Socratic deep interview/i);
+		assert.match(skillDoc, /Suggested Config/i);
 		const documentedConfig = `[omx.deepInterview]
 defaultProfile = "standard"
 quickThreshold = 0.30

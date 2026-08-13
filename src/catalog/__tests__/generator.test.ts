@@ -60,8 +60,7 @@ describe('catalog reader/contract', () => {
     assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-metis'));
     assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-momus'));
     assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-oracle'));
-    // Deep-interview/ralplan remain as deprecated sunset stubs per #3502
-    assert.ok(contract.skills.some((s) => s.name === 'deep-interview' && s.status === 'deprecated'));
+    assert.ok(contract.skills.some((s) => s.name === 'deep-interview' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'ralplan' && s.status === 'deprecated'));
   });
 

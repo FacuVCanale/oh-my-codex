@@ -26,13 +26,13 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'investigate', skill: 'analyze', priority: 7, guidance: 'Activate deep analysis workflow' },
 
 
-  { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: $deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
-  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
-  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
-  { keyword: 'interview me', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
-  { keyword: "don't assume", skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
-  { keyword: 'ouroboros', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
-  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Sunset: deep-interview was removed in OMX 0.21; use $plan --interview (stub)' },
+  { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
+  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
+  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic requirements interview before planning or execution' },
+  { keyword: 'interview me', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
+  { keyword: "don't assume", skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview to clear assumptions before planning or execution' },
+  { keyword: 'ouroboros', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-style Socratic deep interview with ambiguity gating' },
+  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
 
   { keyword: '$plan', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: 'plan this', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },

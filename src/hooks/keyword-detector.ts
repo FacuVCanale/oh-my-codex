@@ -34,6 +34,7 @@ import {
   type TrackedWorkflowMode,
 } from '../state/workflow-transition.js';
 import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
+import { writeStateFile } from '../state/operations.js';
 import {
   clearDeepInterviewQuestionObligation,
   type DeepInterviewQuestionEnforcementState,
@@ -586,7 +587,7 @@ export async function persistDeepInterviewModeState(
       },
       { nowIso },
     );
-    await writeFile(statePath, JSON.stringify(nextState, null, 2));
+    await writeStateFile(statePath, JSON.stringify(nextState, null, 2));
     return;
   }
 
@@ -619,7 +620,7 @@ export async function persistDeepInterviewModeState(
         }
       : {}),
   };
-  await writeFile(statePath, JSON.stringify(nextState, null, 2));
+  await writeStateFile(statePath, JSON.stringify(nextState, null, 2));
 }
 
 function resolveSeedStateFilePath(
@@ -815,7 +816,7 @@ async function persistStatefulSkillSeedState(
   }
 
   await mkdir(dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, JSON.stringify(baseState, null, 2));
+  await writeStateFile(absolutePath, JSON.stringify(baseState, null, 2));
 
   return {
     ...nextSkill,
@@ -3551,7 +3552,7 @@ async function persistAutopilotSupervisedChildPhaseState(
   const effectivePhase = await resolveGatedSupervisedChildPhase(existing, childSkill);
 
   await mkdir(dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, JSON.stringify(withModeRuntimeContext(
+  await writeStateFile(absolutePath, JSON.stringify(withModeRuntimeContext(
     existing ?? {},
     {
       ...(existing ?? {}),
