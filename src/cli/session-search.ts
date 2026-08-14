@@ -1,4 +1,4 @@
-import { inspectSessionPointerLock, recoverSessionPointerLock } from '../hooks/session.js';
+import { inspectSessionPointerLock, recoverDeadSessionPointer, recoverSessionPointerLock } from '../hooks/session.js';
 import { buildSessionFrictionReport, type SessionFrictionReport, type SessionFrictionOptions } from '../session-history/friction.js';
 import { searchSessionHistory, type SessionSearchReport, type SessionSearchOptions } from '../session-history/search.js';
 
@@ -8,6 +8,7 @@ Usage:
   omx session search <query> [options]
   omx session friction [options]
   omx session lock <inspect|recover> [--cwd <path>] [--json]
+  omx session pointer recover [--cwd <path>] [--json]
 
 Options for search:
   --limit <n>          Maximum results to return (default: 10)
@@ -33,6 +34,11 @@ Options for lock:
   --json               Emit structured JSON
   -h, --help           Show this help
 
+Options for pointer:
+  --cwd <path>         Recover the verified-dead selected pointer for this directory
+  --json               Emit structured JSON
+  -h, --help           Show this help
+
 Examples:
   omx session search "worker inbox path"
   omx session search all_workers_idle --since 7d --limit 5
@@ -40,6 +46,7 @@ Examples:
   omx session friction --session <id> --json
   omx session lock inspect --json
   omx session lock recover --cwd /path/to/project
+  omx session pointer recover --cwd /path/to/project
 `;
 
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
@@ -326,6 +333,32 @@ async function sessionLockCommand(args: string[]): Promise<void> {
   }
 }
 
+async function sessionPointerCommand(args: string[]): Promise<void> {
+  const operation = args[0];
+  if (!operation || HELP_TOKENS.has(operation)) {
+    console.log('Usage: omx session pointer recover [--cwd <path>] [--json]');
+    return;
+  }
+  if (operation !== 'recover') throw new Error(`Unknown session pointer operation: ${operation}`);
+  if (args.slice(1).some((token) => HELP_TOKENS.has(token))) {
+    console.log('Usage: omx session pointer recover [--cwd <path>] [--json]');
+    return;
+  }
+
+  const parsed = parseSessionLockArgs(args.slice(1));
+  const result = await recoverDeadSessionPointer(parsed.cwd);
+  console.log(parsed.json ? JSON.stringify(result, null, 2) : [
+    `status: ${result.status}`,
+    `pointer: ${result.pointerPath}`,
+    `action: ${result.action}`,
+    `recovered: ${result.recovered ? 'yes' : 'no'}`,
+    `reason: ${result.reason}`,
+    ...(result.sessionId ? [`session: ${result.sessionId}`] : []),
+    ...(result.quarantinePath ? [`quarantine: ${result.quarantinePath}`] : []),
+  ].join('\n'));
+  if (result.status !== 'absent' && result.status !== 'recovered') process.exitCode = 1;
+}
+
 export async function sessionCommand(args: string[]): Promise<void> {
   const subcommand = args[0];
   if (!subcommand || HELP_TOKENS.has(subcommand)) {
@@ -335,6 +368,11 @@ export async function sessionCommand(args: string[]): Promise<void> {
 
   if (subcommand === 'lock') {
     await sessionLockCommand(args.slice(1));
+    return;
+  }
+
+  if (subcommand === 'pointer') {
+    await sessionPointerCommand(args.slice(1));
     return;
   }
 

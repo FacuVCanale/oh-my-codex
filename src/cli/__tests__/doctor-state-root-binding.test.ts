@@ -143,7 +143,11 @@ describe('doctor state-root/session binding diagnostics', () => {
       assert.ok(message.length <= 240, status);
       assert.match(message, /session\.json/, status);
       assert.match(message, /bad_selectors=OMX_SESSION_ID,CODEX_SESSION_ID,SESSION_ID/, status);
-      assert.match(message, /(?:terminate only verified owner if necessary|owner=terminate-verified-only-if-needed)/, status);
+      if (status === 'stale-dead') {
+        assert.match(message, /(?:omx session pointer recover|recover=omx-session-pointer-recover)/, status);
+      } else {
+        assert.match(message, /(?:terminate only verified owner if necessary|owner=terminate-verified-only-if-needed)/, status);
+      }
       assert.doesNotMatch(message, /…$/, status);
     }
   });

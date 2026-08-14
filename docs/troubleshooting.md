@@ -93,6 +93,14 @@ State writes fail closed with `Cannot resolve writable state scope: session.json
 
 ### Exact-session reconciliation (stale-dead pointer)
 
+To remove a verified-dead selected pointer and preserve its exact forensic bytes, use the official recovery command:
+
+```bash
+omx session pointer recover --cwd /path/to/project
+```
+
+The command serializes with the canonical pointer lock and moves only an authoritative, positively dead `session.json` to an adjacent no-clobber quarantine path. It refuses live or usable owners, uncertain or reused identities, malformed or foreign pointers, root/lineage mismatches, concurrent changes, I/O failures, and existing quarantine destinations. A successful recovery leaves the canonical pointer absent so an ordinary relaunch can publish a fresh pointer.
+
 When the pointer's recorded PID is definitively dead, bind the exact current session explicitly and retry the same command — no manual file surgery:
 
 ```bash
