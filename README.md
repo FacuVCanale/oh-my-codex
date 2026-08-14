@@ -4,6 +4,9 @@
   <img src="https://yeachan-heo.github.io/oh-my-codex-website/omx-character-nobg.png" alt="oh-my-codex character" width="280">
   <br>
   <em>Start Codex stronger, then let OMX add better prompts, workflows, and runtime help when the work grows.</em>
+  <br><br>
+  <strong>Liked OmX but find it a bit overkill? <a href="https://github.com/Yeachan-Heo/gajae-code">Try gajae-code</a>.</strong><br>
+  <sub>Keep Codex OAuth with a faster, cheaper, simpler, and more powerful SDK-based path for OpenClaw, Hermes, Grokbot, and other integrations.</sub>
 </p>
 
 [![npm version](https://img.shields.io/npm/v/oh-my-codex)](https://www.npmjs.com/package/oh-my-codex)
