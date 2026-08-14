@@ -26,7 +26,7 @@ import { appendFileSync, closeSync, constants as fsConstants, fstatSync, openSyn
 import type { FileHandle } from 'fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'crypto';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { omxRoot, omxLogsDir, sameFilePath } from '../utils/paths.js';
 import { resolveRuntimeBinaryPath } from '../runtime/bridge.js';
 import {
@@ -1442,11 +1442,13 @@ async function moveRecoveryPathNoReplace(
   to: string,
   identity: RecoveryIdentity,
   kind: 'file' | 'directory',
+  onAtomicMove?: () => void,
 ): Promise<{ moved: boolean; unsupported?: boolean; reason?: string }> {
   try {
     const outcome = await transactionDependencies.atomicRenameNoReplace(from, to);
     if (outcome === 'unsupported') return { moved: false, unsupported: true, reason: 'Atomic no-replace recovery rename is unsupported on this platform.' };
     if (outcome === 'not-moved') return { moved: false, reason: 'Atomic recovery move left its source pathname in place.' };
+    onAtomicMove?.();
   } catch (error) {
     return { moved: false, reason: `Atomic no-replace recovery rename failed (${errorCode(error) ?? 'unknown'}).` };
   }
@@ -1641,7 +1643,7 @@ function selectedRootAuthorityFailure(
     recordedCwd = realpathSync(resolve(state.cwd));
     observedCwd = realpathSync(resolve(context.cwd));
     const cwdRelative = relative(recordedCwd, observedCwd);
-    if (cwdRelative.startsWith('..') || isAbsolute(cwdRelative)) return 'foreign-cwd';
+    if (cwdRelative === '..' || cwdRelative.startsWith(`..${sep}`) || isAbsolute(cwdRelative)) return 'foreign-cwd';
   } catch {
     return 'foreign-cwd';
   }
@@ -1865,6 +1867,7 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       return result;
     }
     const quarantinePath = `${context.sessionPath}.quarantine.${sessionId}.${recoveryToken}`;
+    let quarantineMoveCommitted = false;
     try {
       const collision = await lstatRecoveryPath(quarantinePath);
       if (collision) {
@@ -1897,6 +1900,7 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
         quarantinePath,
         { dev: sourceStat.dev, ino: sourceStat.ino },
         'file',
+        () => { quarantineMoveCommitted = true; },
       );
       if (!moved.moved) {
         const destinationExists = await lstatRecoveryPath(quarantinePath);
@@ -1936,6 +1940,7 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
             'file',
           );
           if (rollback.moved) {
+            quarantineMoveCommitted = false;
             result = pointerRecoveryRefusal(
               context,
               'race',
@@ -1967,6 +1972,18 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       };
       return result;
     } catch (error) {
+      if (quarantineMoveCommitted) {
+        result = {
+          status: 'recovery-required',
+          pointerPath: context.sessionPath,
+          action: 'quarantined',
+          recovered: false,
+          reason: `The selected pointer was quarantined, but post-move verification failed (${errorCode(error) ?? errorMessage(error)}); forensic residue was preserved for explicit recovery.`,
+          sessionId,
+          quarantinePath,
+        };
+        return result;
+      }
       result = pointerRecoveryRefusal(context, 'io-error', `Unable to quarantine the selected session pointer (${errorCode(error) ?? errorMessage(error)}).`, sessionId);
       return result;
     }

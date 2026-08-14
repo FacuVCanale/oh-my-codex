@@ -986,9 +986,9 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     }
   });
 
-  it('accepts canonical descendant cwd authority when the selected root matches the recorded owner root', async () => {
+  it('accepts a ..cache-prefixed descendant when the selected root matches the recorded owner root', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-descendant-'));
-    const nested = join(cwd, 'nested', 'project');
+    const nested = join(cwd, '..cache', 'project');
     const previousRoot = process.env.OMX_ROOT;
     try {
       await mkdir(nested, { recursive: true });
@@ -1084,6 +1084,36 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
         assert.equal(await readFile(result.quarantinePath, 'utf-8'), pointer.body);
         assert.equal(existsSync(pointer.path), false);
         assert.equal(existsSync(context.lockPath), true);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a committed quarantine when its first post-move lstat fails', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-postmove-lstat-'));
+    try {
+      const pointer = await writePointer(cwd);
+      const context = resolveSessionPointerContext(cwd);
+      const quarantinePath = `${context.sessionPath}.quarantine.dead-owner.${SUCCESSOR_TOKEN}`;
+      await withPointerDependencies({
+        probePid: () => 'dead',
+        token: () => SUCCESSOR_TOKEN,
+        fs: {
+          lstat: async (path) => {
+            if (path === quarantinePath && existsSync(path)) throw codedError('EACCES');
+            return await lstat(path);
+          },
+        },
+      }, async () => {
+        const result = await recoverDeadSessionPointer(cwd);
+        assert.equal(result.status, 'recovery-required');
+        assert.equal(result.action, 'quarantined');
+        assert.equal(result.recovered, false);
+        assert.equal(result.quarantinePath, quarantinePath);
+        assert.match(result.reason, /post-move verification failed \(EACCES\)/);
+        assert.equal(existsSync(pointer.path), false);
+        assert.equal(await readFile(quarantinePath, 'utf-8'), pointer.body);
       });
     } finally {
       await rm(cwd, { recursive: true, force: true });

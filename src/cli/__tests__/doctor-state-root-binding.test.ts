@@ -144,12 +144,21 @@ describe('doctor state-root/session binding diagnostics', () => {
       assert.match(message, /session\.json/, status);
       assert.match(message, /bad_selectors=OMX_SESSION_ID,CODEX_SESSION_ID,SESSION_ID/, status);
       if (status === 'stale-dead') {
-        assert.match(message, /(?:omx session pointer recover|recover=omx-session-pointer-recover)/, status);
+        assert.match(message, /(?:positively dead, non-reused owner|recover=dead-nonreused-only)/, status);
+        assert.doesNotMatch(message, /recover=omx-session-pointer-recover/, status);
       } else {
         assert.match(message, /(?:terminate only verified owner if necessary|owner=terminate-verified-only-if-needed)/, status);
       }
       assert.doesNotMatch(message, /…$/, status);
     }
+  });
+  it('does not prescribe verified-dead recovery for reused or uncertain owner identity', () => {
+    const message = formatStateRootSessionBindingDiagnostic(
+      syntheticSnapshot('stale-dead', { selectedSessionJson: '/tmp/project/.omx/state/session.json' }),
+      {},
+    );
+    assert.match(message, /(?:only for a positively dead, non-reused owner|recover=dead-nonreused-only)/);
+    assert.match(message, /(?:reused or uncertain identity requires investigation|reused=investigate)/);
   });
   it('keeps all selector recovery fields atomic for owner diagnostics at the final cap fallback', () => {
     const cases = [
