@@ -1057,6 +1057,49 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     }
   });
 
+  it('preserves a canonical successor when an ambiguous outcome left the captured pointer quarantined', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-ambiguous-successor-'));
+    try {
+      const pointer = await writePointer(cwd);
+      const context = resolveSessionPointerContext(cwd);
+      const quarantinePath = `${context.sessionPath}.quarantine.dead-owner.${SUCCESSOR_TOKEN}`;
+      const successorBytes = JSON.stringify({ session_id: 'successor-owner', cwd, pid: process.pid });
+      let quarantineIdentity: { dev: number; ino: number } | undefined;
+      let successorIdentity: { dev: number; ino: number } | undefined;
+      await withPointerDependencies({
+        probePid: () => 'dead',
+        token: () => SUCCESSOR_TOKEN,
+        atomicRenameNoReplace: async (from, to) => {
+          if (from === context.sessionPath) {
+            await rename(from, to);
+            const quarantined = await lstat(to);
+            quarantineIdentity = { dev: quarantined.dev, ino: quarantined.ino };
+            await writeFile(from, successorBytes);
+            const successor = await lstat(from);
+            successorIdentity = { dev: successor.dev, ino: successor.ino };
+            return 'unsupported';
+          }
+          return await defaultTestAtomicRenameNoReplace(from, to);
+        },
+      }, async () => {
+        const result = await recoverDeadSessionPointer(cwd);
+        assert.equal(result.status, 'recovery-required');
+        assert.equal(result.action, 'quarantined');
+        assert.equal(result.recovered, false);
+        assert.equal(result.quarantinePath, quarantinePath);
+        assert.match(result.reason, /successor occupies the canonical path/);
+        assert.equal(await readFile(quarantinePath, 'utf-8'), pointer.body);
+        assert.equal(await readFile(context.sessionPath, 'utf-8'), successorBytes);
+        const quarantined = await lstat(quarantinePath);
+        const successor = await lstat(context.sessionPath);
+        assert.deepEqual({ dev: quarantined.dev, ino: quarantined.ino }, quarantineIdentity);
+        assert.deepEqual({ dev: successor.dev, ino: successor.ino }, successorIdentity);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a dangling pointer symlink as malformed instead of treating it as absent', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-dangling-'));
     try {

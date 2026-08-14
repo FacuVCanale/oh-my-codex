@@ -1907,13 +1907,15 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
         const sourceExists = await lstatRecoveryPath(context.sessionPath);
         const capturedDestination = destinationExists
           && sameRecoveryIdentity(destinationExists, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file');
-        if (capturedDestination && !sourceExists) {
+        if (capturedDestination) {
           result = {
             status: 'recovery-required',
             pointerPath: context.sessionPath,
             action: 'quarantined',
             recovered: false,
-            reason: 'The atomic move outcome was ambiguous, but the captured selected pointer is present at quarantine; forensic residue was preserved for explicit recovery.',
+            reason: sourceExists
+              ? 'The atomic move outcome was ambiguous; the captured selected pointer is present at quarantine and a successor occupies the canonical path, so both were preserved for explicit recovery.'
+              : 'The atomic move outcome was ambiguous, but the captured selected pointer is present at quarantine; forensic residue was preserved for explicit recovery.',
             sessionId,
             quarantinePath,
           };
