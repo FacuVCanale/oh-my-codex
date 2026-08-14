@@ -1899,18 +1899,13 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
         'file',
       );
       if (!moved.moved) {
-        let destinationExists = await lstatRecoveryPath(quarantinePath);
+        const destinationExists = await lstatRecoveryPath(quarantinePath);
         const sourceExists = await lstatRecoveryPath(context.sessionPath);
-        if (destinationExists && !sourceExists
-          && !sameRecoveryIdentity(destinationExists, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')) {
-          try {
-            await transactionDependencies.atomicRenameNoReplace(quarantinePath, context.sessionPath);
-          } catch { /* preserve recovery residue when the foreign replacement cannot be restored */ }
-          destinationExists = await lstatRecoveryPath(quarantinePath);
-        }
+        const foreignDestination = destinationExists
+          && !sameRecoveryIdentity(destinationExists, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file');
         result = pointerRecoveryRefusal(
           context,
-          moved.unsupported ? 'unsupported' : destinationExists ? 'collision' : 'race',
+          moved.unsupported ? 'unsupported' : foreignDestination && !sourceExists ? 'race' : destinationExists ? 'collision' : 'race',
           moved.reason ?? 'The selected session pointer could not be quarantined atomically.',
           sessionId,
         );

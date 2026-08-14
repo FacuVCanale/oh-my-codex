@@ -1204,38 +1204,65 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     }
   });
 
-  it('restores an equal-bytes foreign symlink swapped in at the final rename seam', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-final-swap-'));
-    const foreign = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-final-foreign-'));
-    try {
-      const pointer = await writePointer(cwd);
-      const context = resolveSessionPointerContext(cwd);
-      const foreignPointer = join(foreign, 'foreign-session.json');
-      await writeFile(foreignPointer, pointer.body);
-      await withPointerDependencies({
-        probePid: () => 'dead',
-        token: () => SUCCESSOR_TOKEN,
-        atomicRenameNoReplace: async (from, to) => {
-          if (from === context.sessionPath) {
+  for (const kind of ['file', 'symlink', 'directory'] as const) {
+    it(`preserves a foreign ${kind} inserted at quarantine after the pointer source disappears`, async () => {
+      const cwd = await mkdtemp(join(tmpdir(), `omx-session-pointer-recover-foreign-${kind}-`));
+      const foreign = await mkdtemp(join(tmpdir(), `omx-session-pointer-recover-foreign-target-${kind}-`));
+      try {
+        const pointer = await writePointer(cwd);
+        const context = resolveSessionPointerContext(cwd);
+        const quarantinePath = `${context.sessionPath}.quarantine.dead-owner.${SUCCESSOR_TOKEN}`;
+        const foreignTarget = join(foreign, 'foreign-target');
+        const foreignObject = join(foreign, 'foreign-object');
+        let insertedIdentity: { dev: number; ino: number } | undefined;
+        if (kind === 'file') await writeFile(foreignObject, 'foreign regular file');
+        else if (kind === 'symlink') {
+          await writeFile(foreignTarget, 'foreign symlink target');
+          await symlink(foreignTarget, foreignObject);
+        } else {
+          await mkdir(foreignObject);
+          await writeFile(join(foreignObject, 'marker'), 'foreign directory marker');
+        }
+        const allocated = await lstat(foreignObject);
+        insertedIdentity = { dev: allocated.dev, ino: allocated.ino };
+        await withPointerDependencies({
+          probePid: () => 'dead',
+          token: () => SUCCESSOR_TOKEN,
+          atomicRenameNoReplace: async (from, to) => {
+            if (from !== context.sessionPath) return await defaultTestAtomicRenameNoReplace(from, to);
             await rm(from);
-            await symlink(foreignPointer, from);
+            await rename(foreignObject, to);
+            return 'not-moved';
+          },
+        }, async () => {
+          const result = await recoverDeadSessionPointer(cwd);
+          assert.equal(result.status, 'race', result.reason);
+          assert.equal(result.recovered, false);
+          assert.equal(result.action, 'none');
+          assert.equal(existsSync(context.sessionPath), false);
+          const preserved = await lstat(quarantinePath);
+          if (kind === 'file') {
+            assert.equal(preserved.isFile(), true);
+            assert.equal(await readFile(quarantinePath, 'utf-8'), 'foreign regular file');
+          } else if (kind === 'symlink') {
+            assert.equal(preserved.isSymbolicLink(), true);
+            assert.equal(await readlink(quarantinePath), foreignTarget);
+            assert.equal(await readFile(foreignTarget, 'utf-8'), 'foreign symlink target');
+          } else {
+            assert.equal(preserved.isDirectory(), true);
+            assert.equal(await readFile(join(quarantinePath, 'marker'), 'utf-8'), 'foreign directory marker');
           }
-          return await defaultTestAtomicRenameNoReplace(from, to);
-        },
-      }, async () => {
-        const result = await recoverDeadSessionPointer(cwd);
-        assert.equal(result.status, 'race');
-        assert.equal(result.recovered, false);
-        assert.equal((await lstat(context.sessionPath)).isSymbolicLink(), true);
-        assert.equal(await readlink(context.sessionPath), foreignPointer);
-        assert.equal((await readdir(dirname(context.sessionPath))).some((entry) => entry.includes('.quarantine.')), false);
-        assert.equal(await readFile(foreignPointer, 'utf-8'), pointer.body);
-      });
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-      await rm(foreign, { recursive: true, force: true });
-    }
-  });
+          assert.ok(insertedIdentity);
+          assert.deepEqual({ dev: preserved.dev, ino: preserved.ino }, insertedIdentity);
+          assert.equal(existsSync(context.sessionPath), false);
+          assert.equal(await readFile(pointer.path, 'utf-8').then(() => true, () => false), false);
+        });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+        await rm(foreign, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 describe('session pointer transaction', () => {
