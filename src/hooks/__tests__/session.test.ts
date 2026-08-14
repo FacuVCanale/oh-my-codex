@@ -1026,6 +1026,37 @@ describe('verified-dead selected session pointer recovery', { concurrency: false
     }
   });
 
+  it('reports quarantined recovery-required when an unsupported outcome actually moved the pointer', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-ambiguous-unsupported-'));
+    try {
+      const pointer = await writePointer(cwd);
+      const context = resolveSessionPointerContext(cwd);
+      const quarantinePath = `${context.sessionPath}.quarantine.dead-owner.${SUCCESSOR_TOKEN}`;
+      await withPointerDependencies({
+        probePid: () => 'dead',
+        token: () => SUCCESSOR_TOKEN,
+        atomicRenameNoReplace: async (from, to) => {
+          if (from === context.sessionPath) {
+            await rename(from, to);
+            return 'unsupported';
+          }
+          return await defaultTestAtomicRenameNoReplace(from, to);
+        },
+      }, async () => {
+        const result = await recoverDeadSessionPointer(cwd);
+        assert.equal(result.status, 'recovery-required');
+        assert.equal(result.action, 'quarantined');
+        assert.equal(result.recovered, false);
+        assert.equal(result.quarantinePath, quarantinePath);
+        assert.match(result.reason, /atomic move outcome was ambiguous/);
+        assert.equal(existsSync(pointer.path), false);
+        assert.equal(await readFile(quarantinePath, 'utf-8'), pointer.body);
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a dangling pointer symlink as malformed instead of treating it as absent', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-session-pointer-recover-dangling-'));
     try {

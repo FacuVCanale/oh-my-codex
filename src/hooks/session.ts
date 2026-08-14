@@ -1905,8 +1905,22 @@ export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPoi
       if (!moved.moved) {
         const destinationExists = await lstatRecoveryPath(quarantinePath);
         const sourceExists = await lstatRecoveryPath(context.sessionPath);
+        const capturedDestination = destinationExists
+          && sameRecoveryIdentity(destinationExists, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file');
+        if (capturedDestination && !sourceExists) {
+          result = {
+            status: 'recovery-required',
+            pointerPath: context.sessionPath,
+            action: 'quarantined',
+            recovered: false,
+            reason: 'The atomic move outcome was ambiguous, but the captured selected pointer is present at quarantine; forensic residue was preserved for explicit recovery.',
+            sessionId,
+            quarantinePath,
+          };
+          return result;
+        }
         const foreignDestination = destinationExists
-          && !sameRecoveryIdentity(destinationExists, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file');
+          && !capturedDestination;
         result = pointerRecoveryRefusal(
           context,
           moved.unsupported ? 'unsupported' : foreignDestination && !sourceExists ? 'race' : destinationExists ? 'collision' : 'race',
