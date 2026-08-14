@@ -387,7 +387,7 @@ function bindingRecoveryAction(
     return `${selectorFix}${rootClear}inspect selected session.json path/access; relaunch`;
   }
   if (snapshot.status === "stale-dead") {
-    return `${selectorFix}${rootClear}inspect selected session.json; confirm owner state; terminate only verified owner if necessary (still-live owner only); relaunch`;
+    return `${selectorFix}${rootClear}inspect selected session.json owner identity; run omx session pointer recover only for a positively dead, non-reused owner; reused or uncertain identity requires investigation; relaunch after resolution`;
   }
   return `${selectorFix}${rootClear}inspect selected session.json; verify owner; terminate only verified owner if necessary; relaunch`;
 }
@@ -405,6 +405,7 @@ function compactCappedBindingRecoveryAction(
     || snapshot.status === "identity-indeterminate"
     ? "terminate only verified owner if necessary;"
     : "";
+  if (snapshot.status === "stale-dead") return `${selectorFix}${rootClear}recover only verified-dead non-reused owner;investigate reused/uncertain identity;relaunch`;
   if (ownerTermination) return `${selectorFix}${rootClear}${ownerTermination}relaunch`;
   if (snapshot.status === "read-error") return `${selectorFix}${rootClear}inspect;relaunch`;
   return `${selectorFix}${rootClear}relaunch`;
@@ -476,6 +477,9 @@ export function formatStateRootSessionBindingDiagnostic(
       ...(compactRecovery.includes("terminate only verified owner if necessary")
         ? ["owner=terminate-verified-only-if-needed"]
         : []),
+      ...(snapshot.status === "stale-dead"
+        ? ["recover=dead-nonreused-only", "reused=investigate"]
+        : []),
       ...(selectedSessionLabel ? ["selected=session.json"] : []),
       ...(badSelectorsField ? [badSelectorsField] : []),
     ];
@@ -529,6 +533,9 @@ export function formatStateRootSessionBindingDiagnostic(
     "no-mutation",
     ...(compactRecovery.includes("terminate only verified owner if necessary")
       ? ["owner=terminate-verified-only-if-needed"]
+      : []),
+    ...(snapshot.status === "stale-dead"
+      ? ["recover=dead-nonreused-only", "reused=investigate"]
       : []),
     ...(selectedSessionLabel ? ["selected=session.json"] : []),
     ...(badSelectorsField ? [badSelectorsField] : []),
