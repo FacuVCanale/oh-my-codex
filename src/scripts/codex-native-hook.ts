@@ -3879,7 +3879,9 @@ function hookCancelOptionalSessionAliasesMatch(
     const raw = value[alias];
     if (typeof raw !== "string") return false;
     const candidate = raw.trim();
-    if (candidate && !nativeIdentityAliases.has(candidate)) return false;
+    if (candidate
+      && !nativeIdentityAliases.has(candidate)
+      && !(alias === "owner_codex_session_id" && candidate === canonicalSessionId)) return false;
   }
   if (Object.prototype.hasOwnProperty.call(value, "owner_omx_session_id")) {
     const raw = value.owner_omx_session_id;
