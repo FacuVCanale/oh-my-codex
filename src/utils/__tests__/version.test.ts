@@ -41,6 +41,25 @@ describe('resolveOmxDisplayVersionSync', () => {
     });
   });
 
+  it('falls back to OMX_GIT_REVISION when OMX_VERSION_REVISION is invalid', async () => {
+    await withVersionFixture(async ({ packageRoot, stampPath }) => {
+      await writeFile(stampPath, JSON.stringify({
+        installed_version: '0.18.8',
+        setup_completed_version: '0.18.8',
+        install_channel: 'dev',
+      }, null, 2));
+
+      assert.equal(resolveOmxDisplayVersionSync({
+        packageRoot,
+        stampPath,
+        env: {
+          OMX_VERSION_REVISION: 'not-a-revision',
+          OMX_GIT_REVISION: 'abcdef1234567890',
+        },
+      }), 'v0.18.8-dev-abcdef123456');
+    });
+  });
+
 
 
   it('uses a dev base version from the install stamp when package.json lags the release baseline', async () => {
