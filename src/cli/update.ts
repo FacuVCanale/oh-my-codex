@@ -21,6 +21,7 @@ import {
 } from './setup-preferences.js';
 import {
   isCompletePackageManagerOwnership,
+  isWorkingTreeInstall,
   packageManagerOwnershipError,
   resolvePackageManagerOwnership,
   runNpmCommand,
@@ -55,7 +56,7 @@ interface PackageManifest {
 }
 
 export interface UpdateExecutionResult {
-  status: 'updated' | 'scheduled' | 'up-to-date' | 'declined' | 'failed' | 'unavailable';
+  status: 'updated' | 'scheduled' | 'up-to-date' | 'declined' | 'failed' | 'skipped' | 'unavailable';
   currentVersion: string | null;
   latestVersion: string | null;
 }
@@ -562,6 +563,7 @@ interface UpdateDependencies {
   getCurrentVersion: typeof getCurrentVersion;
   getInstalledVersionAfterUpdate: typeof getInstalledVersionAfterUpdate;
   getInstalledRevisionAfterUpdate: typeof getInstalledRevisionAfterUpdate;
+  isWorkingTreeInstall: () => boolean;
   readUserInstallStamp: typeof readUserInstallStamp;
   resolvePackageManagerOwnership: () => Promise<PackageManagerOwnership | null>;
   runGlobalUpdate: (installSource: string, ownership?: PackageManagerOwnership) => RunGlobalUpdateResult;
@@ -583,6 +585,7 @@ const defaultUpdateDependencies: UpdateDependencies = {
   getCurrentVersion,
   getInstalledVersionAfterUpdate,
   getInstalledRevisionAfterUpdate,
+  isWorkingTreeInstall: () => isWorkingTreeInstall(getPackageRoot()),
   readUserInstallStamp,
   resolvePackageManagerOwnership: resolveCurrentPackageManagerOwnership,
   runGlobalUpdate: (installSource, ownership) => runGlobalUpdate(installSource, spawnSync, process.platform, ownership),
@@ -751,6 +754,19 @@ async function runSetupRefresh(cwd: string, ownership?: PackageManagerOwnership)
   );
 }
 
+function workingTreeInstallNotice(): string {
+  return `[omx] This build runs from a working tree (${getPackageRoot()}), which no package manager owns. Self-update is refused; pull and rebuild the checkout instead.`;
+}
+
+/** Stamp the cadence even when the check is skipped so an unowned build is not re-probed every launch. */
+async function recordUpdateCheck(dependencies: UpdateDependencies, cwd: string, nowMs: number): Promise<void> {
+  try {
+    await dependencies.writeUpdateState(cwd, { last_checked_at: new Date(nowMs).toISOString() });
+  } catch {
+    // Cadence bookkeeping must never block or fail a launch.
+  }
+}
+
 async function executeUpdate(
   options: {
     cwd: string;
@@ -780,6 +796,11 @@ async function executeUpdate(
     ? await dependencies.resolvePackageManagerOwnership()
     : null;
   if (usesNativeTransaction && !ownership) {
+    if (dependencies.isWorkingTreeInstall()) {
+      if (immediate) console.log(workingTreeInstallNotice());
+      else await recordUpdateCheck(dependencies, cwd, nowMs);
+      return { status: 'skipped', currentVersion: null, latestVersion: null };
+    }
     console.log(packageManagerOwnershipError());
     return { status: 'failed', currentVersion: null, latestVersion: null };
   }
