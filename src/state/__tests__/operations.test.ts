@@ -2212,6 +2212,48 @@ describe('state operations directory initialization', () => {
     }
   });
 
+  it('rejects a malformed handoff carrier through state_write even when one is already stored', async () => {
+    // Generation-4 review: state_write has its own carrier merge, so the modes/base.ts guard did not
+    // cover it. With an existing non-empty carrier the malformed value was simply overwritten by the
+    // stored map, the gate saw an ordinary object, and the phase advanced with an advisory. The shared
+    // validator in src/state/handoff-carrier.ts now rejects it at every writer.
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-carrier-'));
+    try {
+      await withOmxRootEnv(wd, async () => {
+        const sessionId = 'sess-carrier-state-write';
+        const sessionDir = join(wd, '.omx', 'state', 'sessions', sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        const stored = {
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          session_id: sessionId,
+          workingDirectory: wd,
+          handoff_artifacts: { deep_interview: { spec_path: '.omx/specs/spec.md' } },
+        };
+        const statePath = join(sessionDir, 'autopilot-state.json');
+        await writeFile(statePath, JSON.stringify(stored));
+        const before = await readFile(statePath, 'utf-8');
+
+        for (const malformed of [[], 'forged', 42, true]) {
+          const result = await executeStateOperation('state_write', {
+            mode: 'autopilot',
+            session_id: sessionId,
+            workingDirectory: wd,
+            active: true,
+            current_phase: 'ultragoal',
+            handoff_artifacts: malformed,
+          } as never);
+          assert.equal(result.isError, true, `${JSON.stringify(malformed)} must be refused`);
+          assert.match(JSON.stringify(result), /malformed/i);
+          assert.equal(await readFile(statePath, 'utf-8'), before, 'state bytes must be unchanged');
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects forged string-typed Ralplan ordering and non-ISO authorization evidence', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-forged-types-'));
     try {

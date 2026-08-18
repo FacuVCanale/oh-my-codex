@@ -2301,8 +2301,9 @@ const INSTALLED_SKILL_BADGE_PREFIX = "[OMX] ";
  *
  * The badge replaced a hand-maintained name list as the SIGNAL that a directory came from OMX, and it
  * is the only such signal that survives a skill being deleted from the catalog. It is NOT sufficient
- * for deletion on its own: a user who edits the body keeps the badge, so every removal path also
- * requires `isUnmodifiedRecordedInstall` proof from the install receipt.
+ * for deletion on its own: a user who edits the body keeps the badge, so ordinary removal paths also
+ * require `isUnmodifiedRecordedInstall` proof from the install receipt. The single exception is
+ * `--force` on a catalog-known name, which is an explicit destructive opt-in.
  */
 /**
  * Per-file digests of what OMX actually installed, so retirement can prove a directory is an
@@ -2342,7 +2343,7 @@ async function readInstalledSkillReceipt(skillsDir: string): Promise<InstalledSk
   } catch {
     // A missing or unreadable receipt means "no proof of ownership", which retains conservatively.
   }
-  return { version: 1, skills: {} };
+  return { version: 1, skills: Object.create(null) as InstalledSkillReceipt["skills"] };
 }
 
 /**

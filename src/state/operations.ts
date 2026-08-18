@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { assertValidHandoffCarrier, readPersistedHandoffCarrier } from './handoff-carrier.js';
 
 import { withModeRuntimeContext } from './mode-state-context.js';
 import {
@@ -822,12 +823,13 @@ export async function executeStateOperation(
             if (typeof mergedRaw.workingDirectory !== 'string' || mergedRaw.workingDirectory.trim() === '') {
               mergedRaw.workingDirectory = cwd;
             }
-            const existingHandoffs = existing.handoff_artifacts && typeof existing.handoff_artifacts === 'object' && !Array.isArray(existing.handoff_artifacts)
-              ? existing.handoff_artifacts as Record<string, unknown>
-              : {};
-            const nextHandoffs = mergedRaw.handoff_artifacts && typeof mergedRaw.handoff_artifacts === 'object' && !Array.isArray(mergedRaw.handoff_artifacts)
-              ? mergedRaw.handoff_artifacts as Record<string, unknown>
-              : {};
+            // state_write is an independent public writer with its own merge, so it needs the same
+            // invariant as modes/base.ts: reject a supplied malformed carrier BEFORE normalizing it.
+            // Otherwise an existing non-empty carrier simply overwrote the malformed value and the gate
+            // saw an ordinary object, which is how a forged array advanced a phase with an advisory.
+            assertValidHandoffCarrier(mergedRaw.handoff_artifacts, 'state_write handoff_artifacts');
+            const existingHandoffs = readPersistedHandoffCarrier(existing.handoff_artifacts) ?? {};
+            const nextHandoffs = readPersistedHandoffCarrier(mergedRaw.handoff_artifacts) ?? {};
             if (Object.keys(existingHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
               mergedRaw.handoff_artifacts = { ...existingHandoffs, ...nextHandoffs };
             }
