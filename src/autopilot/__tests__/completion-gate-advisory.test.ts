@@ -332,10 +332,63 @@ describe('Autopilot completion advisory contract', () => {
             current_phase: 'ralplan',
             handoff_artifacts: malformed as never,
           }, cwd, sessionId),
-          /malformed handoff_artifacts carrier/,
+          /malformed[\s\S]*handoff_artifacts/,
           `a supplied ${JSON.stringify(malformed)} carrier must fail closed`,
         );
       }
+      // The gate reads `state.handoff_artifacts` when the top level is absent, so the NESTED
+      // representation is a second door and must be refused the same way.
+      for (const malformed of [[], 'forged', 42]) {
+        await assert.rejects(
+          () => updateModeState('autopilot', {
+            workingDirectory: cwd,
+            session_id: sessionId,
+            active: true,
+            current_phase: 'ralplan',
+            state: { handoff_artifacts: malformed },
+          } as never, cwd, sessionId),
+          /malformed[\s\S]*state\.handoff_artifacts/,
+          `a nested ${JSON.stringify(malformed)} carrier must fail closed`,
+        );
+      }
+
+      // A corrupt STORED carrier must not be coalesced into "valid but empty" on the next merge.
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'autopilot-state.json'),
+        JSON.stringify({
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'ralplan',
+          session_id: sessionId,
+          workingDirectory: cwd,
+          handoff_artifacts: [],
+        }),
+      );
+      await assert.rejects(
+        () => updateModeState('autopilot', {
+          workingDirectory: cwd,
+          session_id: sessionId,
+          active: true,
+          current_phase: 'ultragoal',
+          handoff_artifacts: { ralplan: { plan_path: '.omx/plans/p.md' } },
+        } as never, cwd, sessionId),
+        /malformed/,
+        'a corrupt stored carrier must fail closed rather than being coalesced to {}',
+      );
+
+      // Restore a clean projection for the null case below.
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'autopilot-state.json'),
+        JSON.stringify({
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'deep-interview',
+          session_id: sessionId,
+          workingDirectory: cwd,
+          started_at: '2026-07-14T00:00:00.000Z',
+        }),
+      );
+
       // Explicit null is ordinary JSON for "no value" and must behave like a missing key.
       const nulled = await updateModeState('autopilot', {
         workingDirectory: cwd,

@@ -5,7 +5,7 @@ import {
   updateAutopilotPipelineState,
   updateModeState,
 } from '../modes/base.js';
-import { readPersistedHandoffCarrier } from '../state/handoff-carrier.js';
+import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
@@ -572,13 +572,16 @@ export async function runRalplanConsensus(
             // Never spread a corrupt persisted carrier into a fresh object: that laundered a stored
             // array into a valid-looking record and defeated the writer-side guard. A corrupt parent
             // carrier fails closed here instead.
-            const existingHandoffs = readPersistedHandoffCarrier(autopilotParent.handoff_artifacts);
-            if (existingHandoffs === null) {
-              throw new Error(
-                'Cannot record the ralplan handoff: the parent Autopilot state has a malformed '
-                + 'handoff_artifacts carrier. Run `omx doctor --repair-state` to retire the corrupt projection.',
-              );
-            }
+            // Both representations, because the gate reads either one.
+            const parentNested = autopilotParent.state;
+            const nestedCarrier = parentNested && typeof parentNested === 'object' && !Array.isArray(parentNested)
+              ? (parentNested as Record<string, unknown>).handoff_artifacts
+              : undefined;
+            requirePersistedHandoffCarrier(nestedCarrier, 'parent state.handoff_artifacts carrier');
+            const existingHandoffs = requirePersistedHandoffCarrier(
+              autopilotParent.handoff_artifacts,
+              'parent handoff_artifacts carrier',
+            );
             await updateAutopilotPipelineState({
               active: true,
               current_phase: 'ultragoal',

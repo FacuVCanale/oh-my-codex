@@ -4,7 +4,7 @@
  */
 
 import { readFile, mkdir, readdir } from 'fs/promises';
-import { assertValidHandoffCarrier, readPersistedHandoffCarrier } from '../state/handoff-carrier.js';
+import { assertValidHandoffCarriersIn, requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
@@ -355,9 +355,9 @@ async function updateModeStateInternal(
     // Shared invariant, not a local copy: see src/state/handoff-carrier.ts for why a supplied
     // malformed carrier must be rejected before any merge normalizes it away.
     const suppliedHandoffs = updates.handoff_artifacts;
-    assertValidHandoffCarrier(suppliedHandoffs, 'handoff_artifacts carrier');
-    const currentHandoffs = readPersistedHandoffCarrier(current.handoff_artifacts) ?? {};
-    const nextHandoffs = readPersistedHandoffCarrier(suppliedHandoffs) ?? {};
+    assertValidHandoffCarriersIn(updates as Record<string, unknown>, 'supplied');
+    const currentHandoffs = requirePersistedHandoffCarrier(current.handoff_artifacts, 'handoff_artifacts carrier');
+    const nextHandoffs = requirePersistedHandoffCarrier(suppliedHandoffs, 'supplied handoff_artifacts carrier');
     if (Object.keys(currentHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
       updatedBase.handoff_artifacts = { ...currentHandoffs, ...nextHandoffs };
     }

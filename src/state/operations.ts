@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { assertValidHandoffCarrier, readPersistedHandoffCarrier } from './handoff-carrier.js';
+import { assertValidHandoffCarriersIn, requirePersistedHandoffCarrier } from './handoff-carrier.js';
 
 import { withModeRuntimeContext } from './mode-state-context.js';
 import {
@@ -260,7 +260,12 @@ function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown
   const reviewVerdict = state.review_verdict;
   const qaVerdict = state.qa_verdict;
   const nestedState = { ...objectRecord(state.state) };
-  const handoffArtifacts = { ...objectRecord(nestedState.handoff_artifacts ?? state.handoff_artifacts) };
+  // Same invariant as the writers: objectRecord() would turn a corrupt carrier into {}, and this
+  // function then stamps clean review/QA verdicts onto it. Writing completion evidence over corruption
+  // would launder it into a valid-looking clean terminal state, so a corrupt carrier fails closed.
+  // Both locations, in the same precedence order the completion gate's stateField() uses.
+  const rawCarrier = nestedState.handoff_artifacts ?? state.handoff_artifacts;
+  const handoffArtifacts = { ...requirePersistedHandoffCarrier(rawCarrier, 'handoff_artifacts carrier') };
 
   handoffArtifacts.code_review = reviewVerdict;
   handoffArtifacts.ultraqa = qaVerdict;
@@ -827,9 +832,9 @@ export async function executeStateOperation(
             // invariant as modes/base.ts: reject a supplied malformed carrier BEFORE normalizing it.
             // Otherwise an existing non-empty carrier simply overwrote the malformed value and the gate
             // saw an ordinary object, which is how a forged array advanced a phase with an advisory.
-            assertValidHandoffCarrier(mergedRaw.handoff_artifacts, 'state_write handoff_artifacts');
-            const existingHandoffs = readPersistedHandoffCarrier(existing.handoff_artifacts) ?? {};
-            const nextHandoffs = readPersistedHandoffCarrier(mergedRaw.handoff_artifacts) ?? {};
+            assertValidHandoffCarriersIn(mergedRaw, 'state_write');
+            const existingHandoffs = requirePersistedHandoffCarrier(existing.handoff_artifacts, 'stored handoff_artifacts carrier');
+            const nextHandoffs = requirePersistedHandoffCarrier(mergedRaw.handoff_artifacts, 'state_write handoff_artifacts carrier');
             if (Object.keys(existingHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
               mergedRaw.handoff_artifacts = { ...existingHandoffs, ...nextHandoffs };
             }

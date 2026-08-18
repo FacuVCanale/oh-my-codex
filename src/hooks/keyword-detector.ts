@@ -746,7 +746,14 @@ async function persistStatefulSkillSeedState(
       context_snapshot_recovery: _legacyContextSnapshotRecovery,
       ...existingState
     } = existingStateRaw;
-    const existingHandoffs = (existingState.handoff_artifacts && typeof existingState.handoff_artifacts === 'object')
+    // An ARRAY passes `typeof === 'object'`, so a corrupt stored carrier used to be spread here as if
+    // it were a record. This path builds fresh continuation state rather than authorizing a
+    // transition, so corrupt inherited evidence is deliberately NOT carried forward: the carrier
+    // starts empty and the completion gate then sees genuinely absent evidence, which is the truthful
+    // outcome rather than corruption dressed as a valid record.
+    const existingHandoffs = (existingState.handoff_artifacts
+      && typeof existingState.handoff_artifacts === 'object'
+      && !Array.isArray(existingState.handoff_artifacts))
       ? existingState.handoff_artifacts as Record<string, unknown>
       : {};
     let recoveryReason: AutopilotContextRecoveryReason = 'missing-or-unsafe-legacy-context-snapshot';
