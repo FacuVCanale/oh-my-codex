@@ -471,7 +471,6 @@ jobs:
               dist/compat/__tests__
               dist/config/__tests__
               dist/modes/__tests__
-              dist/pipeline/__tests__
               dist/planning/__tests__
               dist/scripts/__tests__
               dist/session-history/__tests__

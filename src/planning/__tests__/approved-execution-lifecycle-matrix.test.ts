@@ -15,8 +15,6 @@ import {
   buildUltragoalCheckpointGuidance,
 } from '../../team/approved-execution.js';
 import { buildRalphAppendInstructions } from '../../cli/ralph.js';
-import { createTeamExecStage } from '../../pipeline/stages/team-exec.js';
-import type { StageContext } from '../../pipeline/types.js';
 
 let tempDir: string;
 
@@ -28,15 +26,6 @@ async function cleanup(): Promise<void> {
   if (tempDir && existsSync(tempDir)) {
     await rm(tempDir, { recursive: true, force: true });
   }
-}
-
-function makeCtx(overrides: Partial<StageContext> = {}): StageContext {
-  return {
-    task: 'original request task',
-    artifacts: {},
-    cwd: tempDir,
-    ...overrides,
-  };
 }
 
 async function writePrd(slug: string, withTestSpec: boolean): Promise<{ prdPath: string; testSpecPath: string; teamTask: string; ralphTask: string }> {
@@ -76,10 +65,6 @@ describe('approved execution lifecycle baseline matrix', () => {
     assert.equal(readApprovedExecutionLaunchHintOutcome(tempDir, 'ralph').status, 'absent');
     assert.equal(readApprovedExecutionLaunchHint(tempDir, 'team'), null);
     assert.equal(readApprovedExecutionLaunchHint(tempDir, 'ralph'), null);
-
-    const result = await createTeamExecStage().run(makeCtx({ artifacts: { ralplan: { latestPlanPath: fixture.prdPath } } }));
-    assert.equal(result.status, 'failed');
-    assert.match(result.error ?? '', /team_exec_approved_handoff_missing/);
   });
 
   it('reuses approved execution only with an explicit PRD and matching test-spec baseline', async () => {
@@ -109,16 +94,6 @@ describe('approved execution lifecycle baseline matrix', () => {
     });
     assert.match(instructions, /Approved execution baseline is ready/);
     assert.doesNotMatch(instructions, /context pack/i);
-
-    const result = await createTeamExecStage().run(makeCtx({ artifacts: { ralplan: { latestPlanPath: fixture.prdPath } } }));
-    assert.equal(result.status, 'completed');
-    const artifacts = result.artifacts as Record<string, unknown>;
-    const descriptor = artifacts.teamDescriptor as Record<string, unknown>;
-    assert.deepEqual(descriptor.approvedExecution, {
-      prd_path: fixture.prdPath,
-      task: fixture.teamTask,
-      command: `omx team 2:executor "${fixture.teamTask}"`,
-    });
   });
 
   it('adds leader-owned Ultragoal checkpoint context to approved Team handoffs without breaking launch hint selection', async () => {
