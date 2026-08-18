@@ -46,7 +46,11 @@ import {
 } from '../config/deep-interview.js';
 import { inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import { resolveAutopilotPlannerRouting } from '../autopilot/planner-routing.js';
-import { validateAutopilotCompletionTransition } from '../autopilot/completion-gate.js';
+import {
+  isAutopilotSuccessfulTerminalState,
+  validateAutopilotCompletionTransition,
+  type AutopilotCompletionAdvisory,
+} from '../autopilot/completion-gate.js';
 import {
   preflightSelectedTargetOwner,
   extractSelectedTargetOwnerEvidence,
@@ -3486,30 +3490,34 @@ const AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS: TrackedWorkflowMode[] = [
   'ultraqa',
 ];
 
-// Mirror the `state_write` backend completion contract: an Autopilot phase advance
-// that would violate the completion transition rules keeps the current phase (does
-// not advance), regardless of transport.
-async function resolveGatedSupervisedChildPhase(
-  existing: Record<string, unknown> | null,
-  requestedChildSkill: string,
-): Promise<string> {
-  if (!existing) return requestedChildSkill;
-  const heldPhase = safeString(existing.current_phase).trim() || requestedChildSkill;
-  const nextState = { ...existing, current_phase: requestedChildSkill };
-
-  // Reuse the same semantic completion-gate the state_write backend enforces, so
-  // the keyword path can't skip it either — e.g. an implementation phase
-  // (ultragoal/rework/team/ralph) may not jump straight to ultraqa; code-review
-  // must run first.
-  if (validateAutopilotCompletionTransition(existing, nextState)) {
-    return heldPhase;
-  }
-
-  return requestedChildSkill;
+function appendAutopilotCompletionAdvisory(
+  state: Record<string, unknown>,
+  completionAdvisory: AutopilotCompletionAdvisory | null,
+): Record<string, unknown> {
+  const existing = Array.isArray(state.skipped_gates)
+    ? state.skipped_gates.filter((entry): entry is AutopilotCompletionAdvisory => (
+      Boolean(entry)
+      && typeof entry === 'object'
+      && !Array.isArray(entry)
+      && typeof (entry as Record<string, unknown>).skippedGate === 'string'
+      && typeof (entry as Record<string, unknown>).missingEvidence === 'string'
+      && typeof (entry as Record<string, unknown>).message === 'string'
+    ))
+    : [];
+  const skippedGates = completionAdvisory && !existing.some((entry) => entry.skippedGate === completionAdvisory.skippedGate)
+    ? [...existing, completionAdvisory]
+    : existing;
+  if (skippedGates.length === 0) return state;
+  return {
+    ...state,
+    skipped_gates: skippedGates,
+    ...(isAutopilotSuccessfulTerminalState(state) ? { completion_status: 'complete-with-skipped-gates' } : {}),
+  };
 }
-// Returns the phase actually written to autopilot-state.json (the held phase when
-// an advance was held by the completion transition rules), so callers can keep
-// skill-active-state in sync with it.
+
+// Mirror the `state_write` backend completion contract: a keyword-driven
+// Autopilot phase advance is permitted, while any missing gate evidence is
+// recorded as a visible advisory on the detail state.
 async function resolveAutopilotSupervisedChildPhaseState(
   stateDir: string,
   sessionId: string | undefined,
@@ -3527,7 +3535,7 @@ async function resolveAutopilotSupervisedChildPhaseState(
     throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
   }
 
-  return resolveGatedSupervisedChildPhase(existing, childSkill);
+  return childSkill;
 }
 
 async function persistAutopilotSupervisedChildPhaseState(
@@ -3536,7 +3544,7 @@ async function persistAutopilotSupervisedChildPhaseState(
   childSkill: string,
   nowIso: string,
   options: { threadId?: string; turnId?: string } = {},
-): Promise<string> {
+): Promise<{ effectivePhase: string; advisory: AutopilotCompletionAdvisory | null }> {
   const { absolutePath } = resolveSeedStateFilePath(stateDir, 'autopilot', sessionId);
   const existingResult = await readJsonStateWithStatus(absolutePath);
   const existing = existingResult.state;
@@ -3549,26 +3557,28 @@ async function persistAutopilotSupervisedChildPhaseState(
     throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
   }
 
-  const effectivePhase = await resolveGatedSupervisedChildPhase(existing, childSkill);
+  const nextState = {
+    ...(existing ?? {}),
+    active: true,
+    mode: 'autopilot',
+    current_phase: childSkill,
+    started_at: safeString(existing?.started_at).trim() || nowIso,
+    updated_at: nowIso,
+    session_id: (sessionId ?? safeString(existing?.session_id).trim()) || undefined,
+    thread_id: (options.threadId ?? safeString(existing?.thread_id).trim()) || undefined,
+    turn_id: (options.turnId ?? safeString(existing?.turn_id).trim()) || undefined,
+  };
+  const completionAdvisory = validateAutopilotCompletionTransition(existing ?? {}, nextState);
+  const advisedState = appendAutopilotCompletionAdvisory(nextState, completionAdvisory);
 
   await mkdir(dirname(absolutePath), { recursive: true });
   await writeStateFile(absolutePath, JSON.stringify(withModeRuntimeContext(
     existing ?? {},
-    {
-      ...(existing ?? {}),
-      active: true,
-      mode: 'autopilot',
-      current_phase: effectivePhase,
-      started_at: safeString(existing?.started_at).trim() || nowIso,
-      updated_at: nowIso,
-      session_id: (sessionId ?? safeString(existing?.session_id).trim()) || undefined,
-      thread_id: (options.threadId ?? safeString(existing?.thread_id).trim()) || undefined,
-      turn_id: (options.turnId ?? safeString(existing?.turn_id).trim()) || undefined,
-    },
+    advisedState,
     { nowIso },
   ), null, 2));
 
-  return effectivePhase;
+  return { effectivePhase: childSkill, advisory: completionAdvisory };
 }
 
 async function reconcileAutopilotSupervisedChildModeStates(
@@ -3578,17 +3588,17 @@ async function reconcileAutopilotSupervisedChildModeStates(
   childSkill: string,
   nowIso: string,
   options: { threadId?: string; turnId?: string } = {},
-): Promise<{ completedPaths: string[]; effectivePhase: string }> {
+): Promise<{ completedPaths: string[]; effectivePhase: string; advisory: AutopilotCompletionAdvisory | null }> {
   if (!isTrackedWorkflowMode(childSkill)) {
-    const effectivePhase = await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
-    return { completedPaths: [], effectivePhase };
+    const persisted = await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
+    return { completedPaths: [], ...persisted };
   }
 
-  const effectivePhase = await resolveAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill);
-  if (effectivePhase !== childSkill) {
-    return { completedPaths: [], effectivePhase };
-  }
-
+  // Validation only: this throws on malformed or foreign autopilot detail state, which is a
+  // fail-closed corruption guard and NOT part of the advisory conversion. The resolved phase is
+  // deliberately unused now that a supervised advance is permitted and recorded as an advisory
+  // instead of being held at the previous phase.
+  await resolveAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill);
   const activeChildModes: TrackedWorkflowMode[] = [];
   for (const mode of AUTOPILOT_SUPERVISED_TRACKED_CHILD_SKILLS) {
     const candidatePaths = [
@@ -3610,8 +3620,8 @@ async function reconcileAutopilotSupervisedChildModeStates(
     sessionId,
     source: 'autopilot-supervised-child',
   });
-  await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
-  return { completedPaths: transition.completedPaths, effectivePhase };
+  const persisted = await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
+  return { completedPaths: transition.completedPaths, ...persisted };
 }
 
 function isDeepInterviewRuntimeConfig(value: unknown): value is DeepInterviewRuntimeConfig {
@@ -3910,10 +3920,9 @@ export async function recordSkillActivation(
 
   if (input.allowSecondaryAutopilot !== false && previous?.active === true && previous.skill === 'autopilot' && isAutopilotSupervisedChildSkill(match.skill)) {
     try {
-      // Reconcile first so skill-active phase reflects the gate-held phase the
-      // autopilot detail state actually advanced to (a blocked advance keeps the
-      // current phase).
-      const { effectivePhase } = await reconcileAutopilotSupervisedChildModeStates(
+      // Reconcile first so skill-active phase reflects the Autopilot detail state
+      // and any missing gate evidence is returned as a visible advisory.
+      const { effectivePhase, advisory } = await reconcileAutopilotSupervisedChildModeStates(
         sourceCwd,
         input.stateDir,
         input.sessionId ?? previous.session_id,
@@ -3946,6 +3955,12 @@ export async function recordSkillActivation(
         )),
         supervised_child_keyword: match.keyword,
         supervised_child_skill: match.skill,
+        ...(advisory
+          ? {
+              advisory,
+              skipped_gates: appendAutopilotCompletionAdvisory(previous, advisory).skipped_gates,
+            }
+          : {}),
       };
       await writeSkillActiveStateCopiesForStateDir(
         input.stateDir,

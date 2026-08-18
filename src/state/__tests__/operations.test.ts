@@ -1451,7 +1451,7 @@ describe('state operations directory initialization', () => {
   });
 
 
-  it('denies Autopilot deep-interview completion before the ralplan gate', async () => {
+  it('permits Autopilot deep-interview completion with a ralplan advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-di-complete-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -1479,13 +1479,17 @@ describe('state operations directory initialization', () => {
           current_phase: 'complete',
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /Cannot complete Autopilot before ralplan gate/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ralplan');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
-        assert.equal(state.current_phase, 'deep-interview');
-        assert.equal(state.active, true);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal(state.active, false);
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -2004,7 +2008,7 @@ describe('state operations directory initialization', () => {
 
 
 
-  it('denies Autopilot ralplan completion before the ultragoal gate', async () => {
+  it('permits Autopilot ralplan completion with an ultragoal advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-complete-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2036,20 +2040,24 @@ describe('state operations directory initialization', () => {
           current_phase: 'complete',
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /Cannot complete Autopilot before ultragoal gate/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ultragoal');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(
           await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8'),
         ) as Record<string, unknown>;
-        assert.equal(state.current_phase, 'ralplan');
-        assert.equal(state.active, true);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal(state.active, false);
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('denies Autopilot deep-interview to ralplan without a durable handoff artifact', async () => {
+  it('permits Autopilot deep-interview to ralplan with a handoff advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-di-missing-artifact-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2072,8 +2080,14 @@ describe('state operations directory initialization', () => {
           current_phase: 'ralplan',
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /durable completed interview gate and handoff artifact/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'deep-interview-handoff');
+        assert.ok(advisory?.missingEvidence);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ralplan');
+        assert.equal(state.active, true);
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -2162,7 +2176,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot ralplan to ultragoal when reviews or execution handoff are missing', async () => {
+  it('permits Autopilot ralplan to ultragoal with a handoff advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ralplan-missing-gates-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2184,8 +2198,14 @@ describe('state operations directory initialization', () => {
           current_phase: 'ultragoal',
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /sequential Architect and Critic approvals.*bound execution handoff/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ralplan-handoff');
+        assert.ok(advisory?.missingEvidence);
+        const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+        assert.equal(state.current_phase, 'ultragoal');
+        assert.equal(state.active, true);
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -2297,7 +2317,7 @@ describe('state operations directory initialization', () => {
 
 
 
-  it('denies Autopilot implementation-phase completion before the code-review gate', async () => {
+  it('permits Autopilot implementation-phase completion with a code-review advisory', async () => {
     for (const phase of ['ultragoal', 'rework', 'team', 'ralph']) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-complete-deny-`));
       try {
@@ -2327,11 +2347,15 @@ describe('state operations directory initialization', () => {
             },
           });
 
-          assert.equal(response.isError, true);
-          assert.match(String((response.payload as { error?: string }).error || ''), /Cannot complete Autopilot before code-review gate/i);
+          assert.equal(response.isError, undefined);
+          const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+          assert.equal(advisory?.skippedGate, 'code-review');
+          assert.ok(advisory?.missingEvidence);
           const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-          assert.equal(state.active, true);
-          assert.equal(state.current_phase, phase);
+          assert.equal(state.active, false);
+          assert.equal(state.current_phase, 'complete');
+          assert.equal((state.skipped_gates as unknown[]).length, 1);
+          assert.equal(state.completion_status, 'complete-with-skipped-gates');
         });
       } finally {
         await rm(wd, { recursive: true, force: true });
@@ -2339,7 +2363,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot implementation-phase skip directly to ultraqa', async () => {
+  it('permits Autopilot implementation-phase skip directly to ultraqa with a code-review advisory', async () => {
     for (const phase of ['ultragoal', 'rework', 'team', 'ralph']) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-ultraqa-skip-deny-`));
       try {
@@ -2365,11 +2389,14 @@ describe('state operations directory initialization', () => {
             current_phase: 'ultraqa',
           });
 
-          assert.equal(response.isError, true);
-          assert.match(String((response.payload as { error?: string }).error || ''), /Cannot skip Autopilot code-review gate/i);
+          assert.equal(response.isError, undefined);
+          const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+          assert.equal(advisory?.skippedGate, 'code-review');
+          assert.ok(advisory?.missingEvidence);
           const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
           assert.equal(state.active, true);
-          assert.equal(state.current_phase, phase);
+          assert.equal(state.current_phase, 'ultraqa');
+          assert.equal((state.skipped_gates as unknown[]).length, 1);
         });
       } finally {
         await rm(wd, { recursive: true, force: true });
@@ -2377,7 +2404,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot code-review completion before the ultraqa gate', async () => {
+  it('permits Autopilot code-review completion with an ultraqa advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-code-review-complete-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2409,11 +2436,15 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /Cannot complete Autopilot before ultraqa gate/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ultraqa');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'code-review');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -2534,7 +2565,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot ultraqa completion without clean review and QA evidence', async () => {
+  it('permits Autopilot ultraqa completion with a clean-evidence advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ultraqa-complete-evidence-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2565,18 +2596,22 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /without clean code-review and ultraqa verdict evidence/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ultraqa-evidence');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'ultraqa');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('denies Autopilot implementation and code-review terminalization via inactive ultraqa phase', async () => {
+  it('permits Autopilot implementation and code-review terminalization via ultraqa with advisories', async () => {
     for (const phase of ['ultragoal', 'rework', 'team', 'ralph', 'code-review']) {
       const wd = await mkdtemp(join(tmpdir(), `omx-state-ops-autopilot-${phase}-inactive-ultraqa-deny-`));
       try {
@@ -2601,11 +2636,15 @@ describe('state operations directory initialization', () => {
             },
           });
 
-          assert.equal(response.isError, true);
-          assert.match(String((response.payload as { error?: string }).error || ''), /Cannot (complete|skip) Autopilot/i);
+          assert.equal(response.isError, undefined);
+          const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+          assert.equal(advisory?.skippedGate, phase === 'code-review' ? 'ultraqa' : 'code-review');
+          assert.ok(advisory?.missingEvidence);
           const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-          assert.equal(state.active, true);
-          assert.equal(state.current_phase, phase);
+          assert.equal(state.active, false);
+          assert.equal(state.current_phase, 'ultraqa');
+          assert.equal((state.skipped_gates as unknown[]).length, 1);
+          assert.equal(state.completion_status, 'complete-with-skipped-gates');
         });
       } finally {
         await rm(wd, { recursive: true, force: true });
@@ -2613,7 +2652,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot ultraqa completion when review and QA provenance are swapped', async () => {
+  it('permits Autopilot ultraqa completion with provenance advisories', async () => {
     const cases = [
       {
         name: 'swapped-stage',
@@ -2666,11 +2705,15 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /without clean code-review and ultraqa verdict evidence/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ultraqa-evidence');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'ultraqa');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
       } finally {
         await rm(wd, { recursive: true, force: true });
@@ -2678,7 +2721,7 @@ describe('state operations directory initialization', () => {
     }
   });
 
-  it('denies Autopilot ultraqa completion with self-attested clean verdicts but no durable provenance', async () => {
+  it('permits Autopilot ultraqa completion with self-attested evidence advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ultraqa-self-attested-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2710,18 +2753,22 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /without clean code-review and ultraqa verdict evidence/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ultraqa-evidence');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'ultraqa');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('denies Autopilot ultraqa skipped completion without durable QA provenance', async () => {
+  it('permits Autopilot ultraqa skipped completion with a QA provenance advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-ultraqa-skipped-no-provenance-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2745,18 +2792,22 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /without clean code-review and ultraqa verdict evidence/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'ultraqa-evidence');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'ultraqa');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('denies Autopilot completion from an unknown active phase', async () => {
+  it('permits Autopilot completion from an unknown active phase with an advisory', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-unknown-phase-complete-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2785,18 +2836,22 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /unknown active phase/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'autopilot-phase');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'bogus');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it('denies Autopilot completion from an unknown active phase when persisted state omits mode', async () => {
+  it('permits Autopilot completion from an unknown active phase when persisted state omits mode', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-unknown-phase-no-mode-complete-deny-'));
     try {
       await withOmxRootEnv(wd, async () => {
@@ -2824,11 +2879,15 @@ describe('state operations directory initialization', () => {
           },
         });
 
-        assert.equal(response.isError, true);
-        assert.match(String((response.payload as { error?: string }).error || ''), /unknown active phase/i);
+        assert.equal(response.isError, undefined);
+        const advisory = (response.payload as { advisory?: { skippedGate?: string; missingEvidence?: string } }).advisory;
+        assert.equal(advisory?.skippedGate, 'autopilot-phase');
+        assert.ok(advisory?.missingEvidence);
         const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
-        assert.equal(state.active, true);
-        assert.equal(state.current_phase, 'bogus');
+        assert.equal(state.active, false);
+        assert.equal(state.current_phase, 'complete');
+        assert.equal((state.skipped_gates as unknown[]).length, 1);
+        assert.equal(state.completion_status, 'complete-with-skipped-gates');
         assert.equal(Object.prototype.hasOwnProperty.call(state, 'mode'), false);
       });
     } finally {

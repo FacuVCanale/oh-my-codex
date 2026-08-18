@@ -41,6 +41,40 @@ function existingRepoArtifact(
     && existsSync(absolute);
 }
 
+function isCanonicalArtifactPath(
+  state: JsonObject,
+  rawPath: unknown,
+  allowedPrefixes: readonly string[],
+): boolean {
+  const nested = objectRecord(state.state);
+  const cwd = nonEmptyString(state.workingDirectory ?? state.cwd ?? nested.workingDirectory ?? nested.cwd);
+  const path = nonEmptyString(rawPath);
+  if (!cwd || !path) return false;
+  const absolute = resolve(cwd, path);
+  const rel = relative(resolve(cwd), absolute);
+  const allowedRoot = resolve(cwd, '.omx');
+  const allowedRel = relative(allowedRoot, absolute).replace(/\\/g, '/');
+  return !isAbsolute(rel)
+    && rel !== '..'
+    && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+    && !isAbsolute(allowedRel)
+    && allowedRel !== '..'
+    && !allowedRel.startsWith('..' + '/')
+    && allowedPrefixes.some((prefix) => allowedRel.startsWith(prefix));
+}
+
+function assertCanonicalArtifactPath(
+  state: JsonObject,
+  rawPath: unknown,
+  allowedPrefixes: readonly string[],
+  evidenceDescription: string,
+): void {
+  const path = nonEmptyString(rawPath);
+  if (path && !isCanonicalArtifactPath(state, path, allowedPrefixes)) {
+    throw new Error(`Cannot use out-of-scope artifact path; ${evidenceDescription} must be canonical.`);
+  }
+}
+
 function hasAnyStringField(value: JsonObject, keys: string[]): boolean {
   return keys.some((key) => nonEmptyString(value[key]).length > 0);
 }
@@ -107,6 +141,39 @@ function validIsoTimestamp(value: unknown): boolean {
   const text = nonEmptyString(value);
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(text)
     && !Number.isNaN(Date.parse(text));
+}
+
+/**
+ * Missing handoff evidence is a skipped gate and therefore advisory. Evidence that is PRESENT but
+ * structurally forged is corruption and stays fail-closed: accepting a string where an ordering
+ * index is required, or a free-text timestamp where an ISO-8601 instant is required, would let
+ * fabricated evidence satisfy the handoff contract. Only fields that exist are validated, so an
+ * absent field still routes to the advisory path.
+ */
+function assertNoForgedRalplanHandoffEvidence(state: JsonObject): void {
+  const gate = objectRecord(stateField(state, 'ralplan_consensus_gate'));
+  const execution = objectRecord(stateField(state, 'ralplan_execution_handoff'));
+  const architect = objectRecord(gate.ralplan_architect_review);
+  const critic = objectRecord(gate.ralplan_critic_review);
+  const present = (value: unknown): boolean => value !== undefined && value !== null;
+  const forged: string[] = [];
+  const requireInteger = (value: unknown, label: string): void => {
+    if (present(value) && exactInteger(value) === null) forged.push(`${label} must be an integer`);
+  };
+  requireInteger(architect.sequence_index, 'architect sequence_index');
+  requireInteger(critic.sequence_index, 'critic sequence_index');
+  requireInteger(architect.review_cycle ?? architect.iteration, 'architect review_cycle');
+  requireInteger(critic.review_cycle ?? critic.iteration, 'critic review_cycle');
+  requireInteger(execution.review_cycle, 'execution review_cycle');
+  if (present(execution.authorized_at) && !validIsoTimestamp(execution.authorized_at)) {
+    forged.push('execution authorized_at must be an ISO-8601 timestamp');
+  }
+  if (forged.length === 0) return;
+  throw new Error(
+    'Cannot advance Autopilot from ralplan to ultragoal with forged handoff evidence '
+    + `(${forged.join('; ')}); durable planning artifacts, sequential Architect and Critic `
+    + 'approvals, and a bound execution handoff are required.',
+  );
 }
 
 function hasRalplanHandoff(state: JsonObject): boolean {
@@ -239,11 +306,25 @@ export function hasCleanAutopilotReviewAndQaEvidence(state: JsonObject): boolean
   return true;
 }
 
+export interface AutopilotCompletionAdvisory {
+  skippedGate: string;
+  missingEvidence: string;
+  message: string;
+}
+
+function advisory(
+  skippedGate: string,
+  missingEvidence: string,
+  message: string,
+): AutopilotCompletionAdvisory {
+  return { skippedGate, missingEvidence, message };
+}
+
 export function validateAutopilotCompletionTransition(
   currentState: JsonObject,
   nextState: JsonObject,
   options: { allowUnknownActivePhaseCompletion?: boolean } = {},
-): string | null {
+): AutopilotCompletionAdvisory | null {
   const current = { ...currentState, mode: 'autopilot' };
   const next = { ...nextState, mode: 'autopilot' };
   const currentPhase = deriveAutopilotChildPhase(current);
@@ -256,38 +337,105 @@ export function validateAutopilotCompletionTransition(
     && currentPhase === null
     && options.allowUnknownActivePhaseCompletion !== true
   ) {
-    return 'Cannot complete Autopilot from an unknown active phase; restore a valid Autopilot phase before terminalization.';
+    return advisory(
+      'autopilot-phase',
+      'a valid active Autopilot phase before terminalization',
+      'Autopilot terminalized from an unknown active phase; restore a valid phase before relying on the completed run.',
+    );
   }
   if (currentPhase === 'deep-interview' && successfulTerminal) {
-    return 'Cannot complete Autopilot before ralplan gate: deep-interview may only advance to ralplan.';
+    return advisory(
+      'ralplan',
+      'the required deep-interview to ralplan transition',
+      'Autopilot completed before the ralplan gate; deep-interview should advance to ralplan first.',
+    );
+  }
+  if (currentPhase === 'deep-interview' && nextPhase === 'ralplan') {
+    const handoffs = objectRecord(stateField(nextState, 'handoff_artifacts'));
+    const artifact = handoffs.deep_interview;
+    const artifactPath = typeof artifact === 'string'
+      ? artifact
+      : objectRecord(artifact).spec_path ?? objectRecord(artifact).path ?? objectRecord(artifact).artifact_path;
+    assertCanonicalArtifactPath(
+      nextState,
+      artifactPath,
+      ['specs/', 'context/', 'interviews/'],
+      'the durable completed interview gate and handoff artifact',
+    );
   }
   if (currentPhase === 'deep-interview' && nextPhase === 'ralplan' && !hasDeepInterviewHandoff(nextState)) {
-    return 'Cannot advance Autopilot from deep-interview to ralplan without a durable completed interview gate and handoff artifact.';
+    return advisory(
+      'deep-interview-handoff',
+      'a durable completed interview gate and handoff artifact',
+      'Autopilot advanced from deep-interview to ralplan without durable interview completion evidence and a handoff artifact.',
+    );
   }
   if (currentPhase === 'ralplan' && successfulTerminal) {
-    return 'Cannot complete Autopilot before ultragoal gate: ralplan may only advance to ultragoal.';
+    return advisory(
+      'ultragoal',
+      'the required ralplan to ultragoal transition',
+      'Autopilot completed before the ultragoal gate; ralplan should advance to ultragoal first.',
+    );
+  }
+  if (currentPhase === 'ralplan' && nextPhase === 'ultragoal') {
+    const handoffs = objectRecord(stateField(nextState, 'handoff_artifacts'));
+    const artifact = handoffs.ralplan;
+    const artifactPath = typeof artifact === 'string'
+      ? artifact
+      : objectRecord(artifact).plan_path ?? objectRecord(artifact).prd_path ?? objectRecord(artifact).path;
+    assertCanonicalArtifactPath(
+      nextState,
+      artifactPath,
+      ['plans/'],
+      'the durable ralplan handoff artifact',
+    );
+    assertNoForgedRalplanHandoffEvidence(nextState);
   }
   if (currentPhase === 'ralplan' && nextPhase === 'ultragoal' && !hasRalplanHandoff(nextState)) {
-    return 'Cannot advance Autopilot from ralplan to ultragoal without durable planning artifacts, sequential Architect and Critic approvals, and a bound execution handoff.';
+    return advisory(
+      'ralplan-handoff',
+      'durable planning artifacts, sequential Architect and Critic approvals, and a bound execution handoff',
+      'Autopilot advanced from ralplan to ultragoal without durable planning artifacts, sequential approvals, and a bound execution handoff.',
+    );
   }
   if (isImplementationPhase(currentPhase) && successfulTerminal) {
-    return `Cannot complete Autopilot before code-review gate: ${currentPhase} may only advance to code-review.`;
+    return advisory(
+      'code-review',
+      'the required implementation to code-review transition',
+      `Autopilot completed before the code-review gate; ${currentPhase} should advance to code-review first.`,
+    );
   }
   if (isImplementationPhase(currentPhase) && nextPhase === 'ultraqa') {
-    return `Cannot skip Autopilot code-review gate: ${currentPhase} may only advance to code-review.`;
+    return advisory(
+      'code-review',
+      'a code-review transition before ultraqa',
+      `Autopilot skipped the code-review gate from ${currentPhase}; advance to code-review before ultraqa.`,
+    );
   }
   if (
     currentPhase
     && nextPhase
     && !ALLOWED_ACTIVE_TRANSITIONS[currentPhase].includes(nextPhase)
   ) {
-    return `Cannot advance Autopilot from ${currentPhase} to ${nextPhase}; allowed next phases: ${ALLOWED_ACTIVE_TRANSITIONS[currentPhase].join(', ')}.`;
+    return advisory(
+      'phase-order',
+      `an allowed adjacent transition from ${currentPhase} to ${nextPhase}`,
+      `Autopilot advanced from ${currentPhase} to ${nextPhase} outside the allowed phase order (${ALLOWED_ACTIVE_TRANSITIONS[currentPhase].join(', ')}).`,
+    );
   }
   if (currentPhase === 'code-review' && successfulTerminal) {
-    return 'Cannot complete Autopilot before ultraqa gate: code-review may only advance to ultraqa.';
+    return advisory(
+      'ultraqa',
+      'the required code-review to ultraqa transition',
+      'Autopilot completed before the ultraqa gate; code-review should advance to ultraqa first.',
+    );
   }
   if (currentPhase === 'ultraqa' && successfulTerminal && !hasCleanAutopilotReviewAndQaEvidence(nextState)) {
-    return 'Cannot complete Autopilot from ultraqa without clean code-review and ultraqa verdict evidence.';
+    return advisory(
+      'ultraqa-evidence',
+      'clean code-review and ultraqa verdict evidence',
+      'Autopilot completed from ultraqa without clean code-review and ultraqa verdict evidence.',
+    );
   }
   return null;
 }

@@ -2237,7 +2237,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
 
 
-  it('does not let an implementation-phase keyword skip the code-review gate to ultraqa', async () => {
+  it('permits an implementation-phase keyword skip to ultraqa with a code-review advisory', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-ultraqa-skip-'));
     const stateDir = join(cwd, '.omx', 'state');
     const sessionId = 'sess-ultraqa-skip';
@@ -2264,7 +2264,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         JSON.stringify({ active: true, mode: 'autopilot', current_phase: 'ultragoal', session_id: sessionId }, null, 2),
       );
 
-      const denied = await recordSkillActivation({
+      const advanced = await recordSkillActivation({
         stateDir,
         text: 'run $ultraqa now',
         sessionId,
@@ -2273,15 +2273,24 @@ describe('keyword detector skill-active-state lifecycle', () => {
         nowIso: '2026-02-25T00:01:00.000Z',
       });
 
-      const afterAdvance = JSON.parse(await readFile(autopilotStatePath, 'utf-8')) as { current_phase: string };
-      assert.equal(afterAdvance.current_phase, 'ultragoal', 'keyword handoff must not skip the code-review gate');
-      assert.equal(denied?.phase, 'ultragoal');
-      assert.deepEqual(denied?.active_skills?.map((entry) => [entry.skill, entry.phase]), [['autopilot', 'ultragoal']]);
+      const afterAdvance = JSON.parse(await readFile(autopilotStatePath, 'utf-8')) as {
+        current_phase: string;
+        skipped_gates?: Array<{ skippedGate?: string; missingEvidence?: string }>;
+      };
+      assert.equal(afterAdvance.current_phase, 'ultraqa');
+      assert.equal(advanced?.phase, 'ultraqa');
+      const advisory = advanced?.advisory as { skippedGate?: string; missingEvidence?: string } | undefined;
+      assert.equal(advisory?.skippedGate, 'code-review');
+      assert.ok(advisory?.missingEvidence);
+      assert.equal(afterAdvance.skipped_gates?.length, 1);
+      assert.equal(afterAdvance.skipped_gates?.[0]?.skippedGate, 'code-review');
+      assert.ok(afterAdvance.skipped_gates?.[0]?.missingEvidence);
+      assert.deepEqual(advanced?.active_skills?.map((entry) => [entry.skill, entry.phase]), [['autopilot', 'ultraqa']]);
       const canonical = JSON.parse(
         await readFile(join(stateDir, 'sessions', sessionId, SKILL_ACTIVE_STATE_FILE), 'utf-8'),
       ) as { phase?: string; active_skills?: Array<{ skill?: string; phase?: string }> };
-      assert.equal(canonical.phase, 'ultragoal');
-      assert.deepEqual(canonical.active_skills?.map((entry) => [entry.skill, entry.phase]), [['autopilot', 'ultragoal']]);
+      assert.equal(canonical.phase, 'ultraqa');
+      assert.deepEqual(canonical.active_skills?.map((entry) => [entry.skill, entry.phase]), [['autopilot', 'ultraqa']]);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

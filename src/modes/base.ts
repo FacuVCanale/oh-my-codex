@@ -14,7 +14,11 @@ import { reconcileWorkflowTransition } from '../state/workflow-transition-reconc
 import { syncCanonicalSkillStateForMode } from '../state/skill-active.js';
 import { validateAndNormalizeRalphState } from '../ralph/contract.js';
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
-import { validateAutopilotCompletionTransition } from '../autopilot/completion-gate.js';
+import {
+  isAutopilotSuccessfulTerminalState,
+  validateAutopilotCompletionTransition,
+  type AutopilotCompletionAdvisory,
+} from '../autopilot/completion-gate.js';
 import { syncRunStateFromModeState } from '../runtime/run-state.js';
 import {
   createWritableCommitRevalidator,
@@ -95,6 +99,31 @@ function normalizeModeStateOrThrow(mode: string, state: ModeState): ModeState {
     ? normalizeRalphModeStateOrThrow(state)
     : state;
   return applySharedRunOutcomeContractOrThrow(normalized);
+}
+
+function appendAutopilotCompletionAdvisory(
+  state: ModeState,
+  completionAdvisory: AutopilotCompletionAdvisory | null,
+): ModeState {
+  const existing = Array.isArray(state.skipped_gates)
+    ? state.skipped_gates.filter((entry): entry is AutopilotCompletionAdvisory => (
+      Boolean(entry)
+      && typeof entry === 'object'
+      && !Array.isArray(entry)
+      && typeof (entry as Record<string, unknown>).skippedGate === 'string'
+      && typeof (entry as Record<string, unknown>).missingEvidence === 'string'
+      && typeof (entry as Record<string, unknown>).message === 'string'
+    ))
+    : [];
+  const skippedGates = completionAdvisory && !existing.some((entry) => entry.skippedGate === completionAdvisory.skippedGate)
+    ? [...existing, completionAdvisory]
+    : existing;
+  if (skippedGates.length === 0) return state;
+  return {
+    ...state,
+    skipped_gates: skippedGates,
+    ...(isAutopilotSuccessfulTerminalState(state) ? { completion_status: 'complete-with-skipped-gates' } : {}),
+  };
 }
 
 function stateDir(projectRoot?: string): string {
@@ -341,12 +370,12 @@ async function updateModeStateInternal(
   }
   const normalizedBase = normalizeModeStateOrThrow(mode, updatedBase as ModeState);
   if (mode === 'autopilot') {
-    const completionTransitionError = validateAutopilotCompletionTransition(
+    const completionAdvisory = validateAutopilotCompletionTransition(
       current as Record<string, unknown>,
       normalizedBase as Record<string, unknown>,
       { allowUnknownActivePhaseCompletion: pipelineProgressWrite },
     );
-    if (completionTransitionError) throw new Error(completionTransitionError);
+    Object.assign(normalizedBase, appendAutopilotCompletionAdvisory(normalizedBase, completionAdvisory));
   }
   const updated = withModeRuntimeContext(current, normalizedBase) as ModeState;
   const payload = JSON.stringify(updated, null, 2);

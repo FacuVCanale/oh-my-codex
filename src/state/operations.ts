@@ -32,6 +32,7 @@ import {
   hasCleanAutopilotReviewAndQaEvidence,
   isAutopilotSuccessfulTerminalState,
   validateAutopilotCompletionTransition,
+  type AutopilotCompletionAdvisory,
 } from '../autopilot/completion-gate.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
@@ -269,6 +270,28 @@ function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown
   nestedState.qa_verdict = qaVerdict;
   nestedState.return_to_ralplan_reason = null;
   state.state = nestedState;
+}
+
+function appendAutopilotCompletionAdvisory(
+  state: Record<string, unknown>,
+  completionAdvisory: AutopilotCompletionAdvisory | null,
+): void {
+  const existing = Array.isArray(state.skipped_gates)
+    ? state.skipped_gates.filter((entry): entry is AutopilotCompletionAdvisory => (
+      Boolean(entry)
+      && typeof entry === 'object'
+      && !Array.isArray(entry)
+      && typeof (entry as Record<string, unknown>).skippedGate === 'string'
+      && typeof (entry as Record<string, unknown>).missingEvidence === 'string'
+      && typeof (entry as Record<string, unknown>).message === 'string'
+    ))
+    : [];
+  const skippedGates = completionAdvisory && !existing.some((entry) => entry.skippedGate === completionAdvisory.skippedGate)
+    ? [...existing, completionAdvisory]
+    : existing;
+  if (skippedGates.length === 0) return;
+  state.skipped_gates = skippedGates;
+  if (isAutopilotSuccessfulTerminalState(state)) state.completion_status = 'complete-with-skipped-gates';
 }
 
 function isCompleteRalplanTerminalState(state: Record<string, unknown>): boolean {
@@ -685,6 +708,7 @@ export async function executeStateOperation(
           : {};
         let validationError: string | null = null;
         let transitionMessage: string | undefined;
+        let completionAdvisory: AutopilotCompletionAdvisory | null = null;
         let ensureRalphArtifacts = false;
         let skillActivePrimaryCommitted = false;
 
@@ -813,14 +837,11 @@ export async function executeStateOperation(
 
 
           if (mode === 'autopilot') {
-            const completionTransitionError = validateAutopilotCompletionTransition(
+            completionAdvisory = validateAutopilotCompletionTransition(
               existing as Record<string, unknown>,
               mergedRaw,
             );
-            if (completionTransitionError) {
-              validationError = completionTransitionError;
-              return;
-            }
+            appendAutopilotCompletionAdvisory(mergedRaw, completionAdvisory);
           }
 
 
@@ -921,6 +942,7 @@ export async function executeStateOperation(
             mode,
             path,
             ...(transitionMessage ? { transition: transitionMessage } : {}),
+            ...(completionAdvisory ? { advisory: completionAdvisory } : {}),
           },
         };
       }
