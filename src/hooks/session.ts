@@ -803,6 +803,17 @@ function parseProcessIdentityOutput(stdout: string): ProcessObservation {
 /**
  * Legacy boolean stale check retained for read compatibility. The pointer
  * classifier below keeps indeterminate liveness distinct from definitely dead.
+ *
+ * KNOWN GAP (darwin): `identity-indeterminate` is treated as stale here, which is fail-closed and
+ * correct on platforms that DO record process-birth evidence but cannot read it. On darwin no
+ * identity source exists at all, so a live session also classifies indeterminate and reads as
+ * stale. Two suite cases pin that gap (`treats symlinked cwd aliases as authoritative`,
+ * `writes session start/end lifecycle artifacts`), while `returns true on Linux when identity
+ * metadata is missing` / `... cannot be read` pin the fail-closed behavior, so the two cannot be
+ * reconciled by changing this mapping. Fixing it requires distinguishing "no identity source on
+ * this platform" from "identity expected but unavailable" in `classifySessionProcess` itself.
+ * Callers needing a safe live-session answer today use `classifySessionStateLiveness(...) !==
+ * 'stale-dead'` (see src/cli/setup.ts overwrite guard).
  */
 export function isSessionStale(
   state: SessionState,
@@ -929,6 +940,16 @@ function recordedIdentityForState(
   return null;
 }
 
+/**
+ * A state with no recorded identity is indeterminate unless the pid is positively dead.
+ *
+ * Do NOT relax this to "alive + non-linux => usable": `classifies identity-less live non-Linux
+ * pointers as identity-indeterminate` pins it deliberately, because without birth evidence an
+ * alive pid cannot be distinguished from a REUSED pid, and granting `usable` there would let a
+ * foreign process inherit session authority. Read paths that only need "is anyone alive here"
+ * must ask `classifySessionStateLiveness(...) !== 'stale-dead'` instead (see the overwrite guard
+ * in src/cli/setup.ts); authority-granting paths keep requiring `usable`.
+ */
 function probeIdentitylessProcess(
   pid: number,
   dependencies: SessionPointerTransactionDependencies,

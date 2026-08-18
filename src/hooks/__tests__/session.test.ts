@@ -119,8 +119,17 @@ async function writeLockOwner(cwd: string, owner: Record<string, unknown>): Prom
 }
 
 function validLockOwner(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const platform = (overrides.platform ?? 'linux') as NodeJS.Platform;
-  const version = overrides.version === 2 || overrides.process_identity !== undefined ? 2 : 1;
+  // Host-aligned like matchingObservation(): the synthetic observation defaults to
+  // process.platform, so an owner hardcoded to 'linux' made every fixture cross-platform off
+  // Linux. recordedIdentityForLockOwner only derives identity from the v1 pid_start_ticks shape
+  // when platform === 'linux', so on other hosts describe the same owner with the
+  // platform-agnostic v2 identity instead of degrading it to identity-indeterminate. Linux keeps
+  // the v1 default byte-for-byte; explicit version/pid_start_ticks overrides still win.
+  const platform = (overrides.platform ?? process.platform) as NodeJS.Platform;
+  const requiresV1Shape = overrides.version === 1
+    || overrides.pid_start_ticks !== undefined
+    || platform === 'linux';
+  const version = !requiresV1Shape || overrides.version === 2 || overrides.process_identity !== undefined ? 2 : 1;
   const identity = overrides.process_identity ?? (version === 2 ? { platform, birth: '1' } : undefined);
   return {
     version,
