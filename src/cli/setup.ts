@@ -2297,9 +2297,12 @@ export async function validateSkillFile(skillMdPath: string): Promise<void> {
 const INSTALLED_SKILL_BADGE_PREFIX = "[OMX] ";
 
 /**
- * An installed skill directory is OMX-owned only when its SKILL.md still carries the badge OMX
- * writes on install. That badge is the sole ownership evidence that survives a skill being deleted
- * from the catalog, so it — not a hand-maintained name list — decides what setup may delete.
+ * Does this installed skill directory carry the badge OMX writes on install?
+ *
+ * The badge replaced a hand-maintained name list as the SIGNAL that a directory came from OMX, and it
+ * is the only such signal that survives a skill being deleted from the catalog. It is NOT sufficient
+ * for deletion on its own: a user who edits the body keeps the badge, so every removal path also
+ * requires `isUnmodifiedRecordedInstall` proof from the install receipt.
  */
 /**
  * Per-file digests of what OMX actually installed, so retirement can prove a directory is an
