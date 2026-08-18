@@ -71,6 +71,12 @@ export function requirePersistedHandoffCarrier(value: unknown, label: string): R
  * to `state.handoff_artifacts`, so validating only the top level left the nested representation as an
  * open door: a malformed nested carrier passed a top-level-only guard and was still what the gate
  * would read. Any writer accepting caller input must call this, not the single-value assertion.
+ *
+ * The recursion deliberately stops at ONE level of `state`, because that is exactly how far
+ * `stateField` looks. A value buried deeper - `state.state.handoff_artifacts` - is unreadable by the
+ * gate, so it can never be credited as evidence nor mistaken for absence; it is inert stored junk
+ * rather than an authorization bypass. If `stateField` ever gains a level, the paired test
+ * `does not let the gate read a carrier this validator ignores` fails and forces this to match.
  */
 export function assertValidHandoffCarriersIn(payload: Record<string, unknown>, label: string): void {
   assertValidHandoffCarrier(payload.handoff_artifacts, `${label} handoff_artifacts`);

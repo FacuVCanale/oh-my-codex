@@ -48,6 +48,29 @@ describe('handoff carrier invariant', () => {
     assert.doesNotThrow(() => assertValidHandoffCarriersIn({ state: [] }, 'p'));
   });
 
+  it('does not let the gate read a carrier this validator ignores', async () => {
+    // The validator stops at one level of `state` because that is how far the gate's stateField()
+    // looks. This test ties the two together: if the gate ever reads deeper, this fails and the
+    // validator must be extended, so a deeper location can never become a silent laundering door.
+    const { validateAutopilotCompletionTransition } = await import('../../autopilot/completion-gate.js');
+    const doubleNested = {
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'deep-interview',
+      session_id: 's',
+      state: { state: { handoff_artifacts: ['forged'] } },
+    };
+    // Accepted by the validator precisely because the gate cannot see it...
+    assert.doesNotThrow(() => assertValidHandoffCarriersIn(doubleNested, 'p'));
+    // ...and the gate therefore reports genuinely absent evidence rather than crediting the array.
+    const advisory = validateAutopilotCompletionTransition(
+      doubleNested,
+      { ...doubleNested, current_phase: 'ralplan' },
+    );
+    assert.equal(advisory?.skippedGate, 'deep-interview-handoff');
+    assert.match(advisory?.missingEvidence ?? '', /.+/, 'the advisory must state what evidence is missing');
+  });
+
   it('distinguishes an absent stored carrier from a corrupt one', () => {
     assert.deepEqual(readPersistedHandoffCarrier(undefined), {});
     assert.deepEqual(readPersistedHandoffCarrier(null), {});
