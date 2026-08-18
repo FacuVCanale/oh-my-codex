@@ -19,11 +19,22 @@ const srcDir = join(repoRoot, 'src');
  * directory scans, `rename`, `appendFile`, and file-handle `open`/`write`/`truncate` — which is why
  * roughly a dozen direct writers went undetected while the docs claimed a single writer.
  *
- * This audit parses each source file with the TypeScript compiler and reports any mutation call
+ * This audit scans each source file and reports any mutation call
  * whose path argument references a mode-state projection, then requires the containing module to be
  * a declared owner in `src/state/namespace-owners.ts`. Declaring reality is the point: the workflow
  * namespace has one sanctioned writer, and every other writer is named with a reason. A NEW
  * undeclared writer fails this test.
+ *
+ * KNOWN RESIDUAL GAP, stated because an audit that overstates its reach is worse than one that does
+ * not: detection is lexical, not semantic. It sees a projection path written directly, through the
+ * suffix constant, through `getStateFilename`/`resolveSeedStateFilePath`, or through a file handle
+ * opened directly on such a path. It does NOT follow a path bound to an intermediate variable first.
+ * A real TypeScript AST pass is the correct fix, but this repo's TypeScript 7 exports no classic
+ * compiler API at its main entry (only `typescript/unstable/*`), and pinning a load-bearing invariant
+ * test to an explicitly unstable API surface trades one weakness for a worse one. A lexical taint pass
+ * was implemented and measured instead: it false-positives on identifiers as common as `path`, and the
+ * only way to quiet those would be declaring innocent modules as owners, which would void the very map
+ * this audit consumes. The gap is asserted as a test case so it cannot be mistaken for coverage.
  */
 
 const MUTATING_CALLS = new Set([
@@ -39,6 +50,11 @@ const MUTATING_CALLS = new Set([
   'copyFileSync',
   'write',
   'writev',
+  // `open` matters because the write happens later through the returned handle; without it a
+  // projection opened for writing and written via `handle.write(payload)` was invisible.
+  'open',
+  'openSync',
+  'createWriteStream',
 ]);
 
 // `handle.write(...)` is a property call, so the audit also allows a bare `.write(` form for the
@@ -78,6 +94,27 @@ async function collectTsFiles(dir: string): Promise<string[]> {
  * unrelated string would be reported as a write. Masking first keeps the scan honest without pulling
  * in a parser.
  */
+/**
+ * File-handle identifiers obtained by opening a projection path.
+ *
+ * `const h = await open(join(dir, 'ralph-state.json'), 'w'); await h.write(payload);` writes through a
+ * handle whose own call site mentions no path, so the handle is tracked from its `open`.
+ *
+ * KNOWN LIMIT, stated rather than papered over: this only follows a handle whose `open` call names the
+ * projection DIRECTLY. A path bound to an intermediate variable first is not followed, because doing
+ * that soundly needs real dataflow - a lexical taint pass over identifiers like `path` produces false
+ * positives on unrelated writers, and silencing those by declaring innocent modules as owners would
+ * destroy the meaning of the owner map. See the audit's docstring for the residual gap.
+ */
+function taintedHandleIdentifiers(rawContent: string): Set<string> {
+  const handles = new Set<string>();
+  const opened = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?(?:fs\.)?openS?y?n?c?\s*\(([^)]*)\)/g;
+  for (const match of rawContent.matchAll(opened)) {
+    if (STATE_FILE_HINTS.some((hint) => (match[2] ?? '').includes(hint))) handles.add(match[1]);
+  }
+  return handles;
+}
+
 function maskCommentsAndLiterals(content: string): string {
   const out = content.split('');
   let index = 0;
@@ -175,12 +212,27 @@ function auditSource(relPath: string, rawContent: string): Violation[] {
   // Detect against masked source so comments and literals cannot fake or hide a call; the mask
   // preserves offsets, so hint matching and line numbers still line up with the real file.
   const content = maskCommentsAndLiterals(rawContent);
+  const handles = taintedHandleIdentifiers(rawContent);
+  const mentionsProjection = (args: string): boolean => STATE_FILE_HINTS.some((hint) => args.includes(hint));
+
+  // Writes through a handle opened on a projection path: the call site names no path at all.
+  for (const handle of handles) {
+    const handleWrite = new RegExp(`(?<![\\w$])${handle}\\s*\\.\\s*(write|writev|truncate|writeFile)\\s*\\(`, 'g');
+    for (const match of content.matchAll(handleWrite)) {
+      violations.push({
+        module: relPath,
+        line: content.slice(0, match.index).split('\n').length,
+        call: `${handle}.${match[1]}`,
+        snippet: `${handle}.${match[1]}(...) on a handle opened for a mode-state projection`,
+      });
+    }
+  }
   for (const handleMatch of content.matchAll(HANDLE_WRITE_PATTERN)) {
     const openParen = handleMatch.index + handleMatch[0].length - 1;
     const args = balancedArguments(content, openParen);
     if (args === null) continue;
     const rawArgs = rawContent.slice(openParen + 1, openParen + 1 + args.length);
-    if (!STATE_FILE_HINTS.some((hint) => rawArgs.includes(hint))) continue;
+    if (!mentionsProjection(rawArgs)) continue;
     violations.push({
       module: relPath,
       line: content.slice(0, handleMatch.index).split('\n').length,
@@ -198,7 +250,7 @@ function auditSource(relPath: string, rawContent: string): Violation[] {
       // string literal, which the mask blanks out. The mask is only used to find real call sites and
       // real parentheses.
       const rawArgs = rawContent.slice(openParen + 1, openParen + 1 + args.length);
-      if (!STATE_FILE_HINTS.some((hint) => rawArgs.includes(hint))) continue;
+      if (!mentionsProjection(rawArgs)) continue;
       violations.push({
         module: relPath,
         line: content.slice(0, match.index).split('\n').length,
@@ -273,6 +325,24 @@ describe('State writer audit (#3498)', () => {
       auditSource('fake/string.ts', "const doc = \"writeFile(join(dir, 'ralph-state.json'))\";"),
       [],
       'a call name inside a string literal must not be reported',
+    );
+    // The terminal critic's evasion, in the form this audit DOES close: a handle opened directly on a
+    // projection path, then written through the handle.
+    assert.ok(
+      auditSource(
+        'fake/handle-flow.ts',
+        "const h = await open(join(dir, 'ralph-state.json'), 'w');\nawait h.write(payload);",
+      ).length >= 1,
+      'a handle opened on a projection path must be detected',
+    );
+    // Residual gap, asserted so it is a KNOWN limit rather than an assumed capability: a path bound to
+    // an intermediate variable first is not followed. Closing it needs real dataflow; a lexical taint
+    // pass was implemented, measured, and reverted because it false-positives on identifiers as common
+    // as `path`, and silencing that by declaring innocent modules as owners would void the owner map.
+    assert.deepEqual(
+      auditSource('fake/var-path.ts', "const p = join(dir, 'ralph-state.json');\nawait writeFile(p, body);"),
+      [],
+      'documents the known dataflow gap; if this ever starts failing, the audit got stronger and this case should assert detection',
     );
     // A real writer inside a template interpolation is executable code and MUST still be detected.
     assert.equal(
