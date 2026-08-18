@@ -376,6 +376,36 @@ describe('Autopilot completion advisory contract', () => {
         'a corrupt stored carrier must fail closed rather than being coalesced to {}',
       );
 
+      // Generation-6 sequence: a corrupt carrier stored ONLY in the nested location. It survives the
+      // shallow merge and the gate would read it via stateField()'s fallback, so validating just the
+      // incoming payload left this fail-open and advanced the phase with a missing-evidence advisory.
+      for (const malformed of [[], 'forged', 42]) {
+        const corruptPath = join(stateDir, 'sessions', sessionId, 'autopilot-state.json');
+        await writeFile(
+          corruptPath,
+          JSON.stringify({
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'deep-interview',
+            session_id: sessionId,
+            workingDirectory: cwd,
+            state: { handoff_artifacts: malformed },
+          }),
+        );
+        const bytesBefore = await readFile(corruptPath, 'utf-8');
+        await assert.rejects(
+          () => updateModeState('autopilot', {
+            workingDirectory: cwd,
+            session_id: sessionId,
+            active: true,
+            current_phase: 'ralplan',
+          } as never, cwd, sessionId),
+          /malformed/,
+          `a stored nested ${JSON.stringify(malformed)} carrier must stop the transition`,
+        );
+        assert.equal(await readFile(corruptPath, 'utf-8'), bytesBefore, 'state bytes must be unchanged');
+      }
+
       // Restore a clean projection for the null case below.
       await writeFile(
         join(stateDir, 'sessions', sessionId, 'autopilot-state.json'),

@@ -1,4 +1,5 @@
 import { deriveAutopilotChildPhase, normalizeAutopilotPhase, type AutopilotChildPhase } from './fsm.js';
+import { assertValidHandoffCarriersIn } from '../state/handoff-carrier.js';
 import { inferRunOutcome, inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import { existsSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
@@ -351,6 +352,17 @@ export function validateAutopilotCompletionTransition(
   nextState: JsonObject,
   options: { allowUnknownActivePhaseCompletion?: boolean } = {},
 ): AutopilotCompletionAdvisory | null {
+  // CHOKE POINT for the carrier invariant.
+  //
+  // Six review generations each found a different writer that laundered a malformed
+  // `handoff_artifacts` carrier before this gate ran, because enforcement was distributed across
+  // every merge site. Rather than wait for writer number seven, the rule is asserted here: every
+  // state transition must pass through this function, so a corrupt carrier in either representation
+  // fails closed no matter which writer produced it. Individual writers still validate their own
+  // input so the error names the offending payload, but this is the boundary that cannot be bypassed.
+  assertValidHandoffCarriersIn(currentState as Record<string, unknown>, 'stored');
+  assertValidHandoffCarriersIn(nextState as Record<string, unknown>, 'transition');
+
   const current = { ...currentState, mode: 'autopilot' };
   const next = { ...nextState, mode: 'autopilot' };
   const currentPhase = deriveAutopilotChildPhase(current);

@@ -11,6 +11,7 @@
  */
 
 import { constants as fsConstants } from 'node:fs';
+import { assertValidHandoffCarriersIn } from '../state/handoff-carrier.js';
 import { access, lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { withModeRuntimeContext } from '../state/mode-state-context.js';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -3564,6 +3565,10 @@ async function persistAutopilotSupervisedChildPhaseState(
     throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
   }
 
+  // This is an AUTHORIZING path (it advances the parent phase), unlike the continuation seed writer
+  // above which only rebuilds fresh state. A corrupt persisted carrier must therefore stop the
+  // transition rather than be discarded; the caller turns this throw into a transition_error.
+  assertValidHandoffCarriersIn((existing ?? {}) as Record<string, unknown>, 'stored autopilot');
   const nextState = {
     ...(existing ?? {}),
     active: true,

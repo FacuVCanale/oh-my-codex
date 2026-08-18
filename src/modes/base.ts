@@ -356,6 +356,9 @@ async function updateModeStateInternal(
     // malformed carrier must be rejected before any merge normalizes it away.
     const suppliedHandoffs = updates.handoff_artifacts;
     assertValidHandoffCarriersIn(updates as Record<string, unknown>, 'supplied');
+    // Also the PERSISTED state: a stored `state.handoff_artifacts` array survives this shallow merge
+    // and the gate would read it, so validating only the incoming payload left it fail-open.
+    assertValidHandoffCarriersIn(current as Record<string, unknown>, 'stored');
     const currentHandoffs = requirePersistedHandoffCarrier(current.handoff_artifacts, 'handoff_artifacts carrier');
     const nextHandoffs = requirePersistedHandoffCarrier(suppliedHandoffs, 'supplied handoff_artifacts carrier');
     if (Object.keys(currentHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
