@@ -2,7 +2,7 @@
  * 0.20.x → 0.21 upgrade fixture helpers (epic #3491 / C10).
  *
  * End-to-end upgrade contract on top of sibling authorities:
- * - state neutralization via C7 `neutralizeStaleWorkflowStateProjections`
+ * - stale-state retirement via the explicit `omx doctor --repair-state` archive path
  * - `.omx` plans/specs/context preserved byte-for-byte through setup
  * - hooks re-register under CLI (legacy) and plugin modes
  * - plugin cache roots are versioned (C8 shape)
@@ -23,7 +23,7 @@ import {
 	packagedOmxPluginVersion,
 	resolvePackagedOmxMarketplace,
 } from "../cli/plugin-marketplace.js";
-import { neutralizeStaleWorkflowStateProjections } from "../state/operations.js";
+import { repairStateProjections } from "../cli/doctor.js";
 import { getPackageRoot } from "../utils/package.js";
 
 export const UPGRADE_FIXTURE_PLAN_MARKER = "omx-upgrade-fixture-plan-v0.20";
@@ -56,7 +56,8 @@ export interface UpgradeFixtureResult {
 	plansPreserved: boolean;
 	hooksReregistered: boolean;
 	pluginRootsVersioned: boolean;
-	stateNeutralized: boolean;
+	/** True when the upgrade did not rewrite or terminalize any authoritative projection. */
+	stateProjectionsPreservedVerbatim: boolean;
 	neutralize: UpgradeNeutralizeResult;
 	pluginCacheDir?: string;
 }
@@ -130,16 +131,21 @@ export async function seed020xUpgradeFixture(root: string): Promise<UpgradeFixtu
 }
 
 /**
- * Delegate to C7 sole-writer neutralization; adapt result for fixture assertions.
+ * Retire stale 0.20.x projections through the explicit `omx doctor --repair-state` archive path.
+ *
+ * The automatic launch-time neutralizer was removed: it rewrote projections in place with no
+ * version or provenance check, so it could terminalize a valid CURRENT active run on first launch.
+ * Upgrading is now an explicit operator action that archives under `.omx/archive/` instead of
+ * mutating state, and the current session scope is preserved rather than neutralized.
  */
 export async function neutralizeStale020xState(
 	root: string,
 ): Promise<UpgradeNeutralizeResult> {
-	const result = await neutralizeStaleWorkflowStateProjections(root);
+	const result = await repairStateProjections(root);
 	return {
-		ran: result.ran,
-		touched: result.neutralizedFiles,
-		skipped: result.skipped,
+		ran: result.archived.length > 0 || result.preserved.length > 0,
+		touched: result.archived,
+		skipped: result.skipped.length,
 	};
 }
 
@@ -328,23 +334,25 @@ export async function run020To021UpgradeFixture(options: {
 		}
 	});
 
-	// C7 scans root/scoped state dirs for `{mode}-state.json` (not nested
-	// session subtrees). Assert those C7-owned root projections are terminal.
+	// Upgrading must not silently mutate workflow state. The automatic in-place neutralizer was
+	// removed because it could terminalize a valid CURRENT run, so the contract is now the opposite
+	// of the old one: an authoritative projection survives the upgrade untouched, and retiring stale
+	// scopes is an explicit `omx doctor --repair-state` action that archives instead of rewriting.
 	const rootStatePaths = seed.statePaths.filter(
 		(path) => !path.includes(`${join("state", "sessions")}`),
 	);
-	let activeAfter = 0;
+	let rewrittenInPlace = 0;
 	for (const path of rootStatePaths) {
 		if (!existsSync(path)) continue;
 		const state = JSON.parse(await readFile(path, "utf-8")) as {
 			active?: boolean;
+			neutralized_by?: string;
 		};
-		if (state.active === true) activeAfter += 1;
+		if (state.active !== true || typeof state.neutralized_by === "string") {
+			rewrittenInPlace += 1;
+		}
 	}
-	const stateNeutralized =
-		neutralize.ran &&
-		neutralize.touched.length > 0 &&
-		activeAfter === 0;
+	const stateProjectionsPreservedVerbatim = rewrittenInPlace === 0;
 
 	return {
 		mode: options.mode,
@@ -353,7 +361,7 @@ export async function run020To021UpgradeFixture(options: {
 		plansPreserved,
 		hooksReregistered,
 		pluginRootsVersioned,
-		stateNeutralized,
+		stateProjectionsPreservedVerbatim,
 		neutralize,
 		pluginCacheDir,
 	};

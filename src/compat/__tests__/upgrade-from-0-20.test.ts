@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,28 +53,27 @@ after(async () => {
 });
 
 describe("0.20.x → 0.21 upgrade fixture", () => {
-	it("neutralizes active 0.20.x state projections via C7 without deleting plans", async () => {
+	it("retires stale 0.20.x projections by archiving, never rewriting, and keeps plans", async () => {
 		const root = await mkdtemp(join(tmpdir(), "omx-upgrade-neutralize-"));
 		try {
 			const seed = await seed020xUpgradeFixture(root);
 			const result = await neutralizeStale020xState(root);
 
-			assert.equal(result.ran, true);
-			assert.ok(result.touched.length >= 3, `expected neutralized files, got ${result.touched.length}`);
-
+			// With no current session pointer the root scope IS authoritative, so repair preserves it
+			// rather than retiring it. The property that matters is that nothing was rewritten in
+			// place: the old neutralizer set active:false/current_phase:'cancelled' on any active
+			// projection it found, which could terminalize a valid current run.
 			for (const path of seed.statePaths) {
-				// C7 scans root + scoped state dirs; session subdirs may only be
-				// covered when state-paths includes them. Root projections must neutralize.
-				if (!path.includes(`${join("state", "sessions")}`)) {
-					const state = JSON.parse(await readFile(path, "utf-8")) as {
-						active?: boolean;
-						current_phase?: string;
-						neutralized_by?: string;
-					};
-					assert.equal(state.active, false, path);
-					assert.equal(state.current_phase, "cancelled", path);
-					assert.equal(state.neutralized_by, "upgrade-0.21", path);
-				}
+				if (path.includes(`${join("state", "sessions")}`)) continue;
+				if (!existsSync(path)) continue;
+				const state = JSON.parse(await readFile(path, "utf-8")) as {
+					active?: boolean;
+					current_phase?: string;
+					neutralized_by?: string;
+				};
+				assert.equal(state.active, true, `${path} must not be terminalized by an upgrade`);
+				assert.notEqual(state.current_phase, "cancelled", path);
+				assert.equal(state.neutralized_by, undefined, `${path} must not carry in-place neutralization metadata`);
 			}
 
 			assert.equal(await readFile(seed.planPath, "utf-8"), seed.planContent);
@@ -83,10 +83,9 @@ describe("0.20.x → 0.21 upgrade fixture", () => {
 			assert.match(seed.specContent, new RegExp(UPGRADE_FIXTURE_SPEC_MARKER));
 			assert.match(seed.contextContent, new RegExp(UPGRADE_FIXTURE_CONTEXT_MARKER));
 
-			// Idempotent: second run is a no-op (marker).
+			// Repeatable: a second explicit repair archives nothing new.
 			const second = await neutralizeStale020xState(root);
-			assert.equal(second.ran, false);
-			assert.equal(second.touched.length, 0);
+			assert.equal(second.touched.length, 0, "a repeated repair must not archive anything new");
 		} finally {
 			await cleanupUpgradeFixtureRoot(root);
 		}
@@ -95,7 +94,7 @@ describe("0.20.x → 0.21 upgrade fixture", () => {
 	it("passes CLI (legacy) upgrade: state neutralized, plans preserved, hooks re-registered", async () => {
 		const result = await run020To021UpgradeFixture({ mode: "legacy" });
 		try {
-			assert.equal(result.stateNeutralized, true, "state should neutralize");
+			assert.equal(result.stateProjectionsPreservedVerbatim, true, "upgrading must not rewrite or terminalize an authoritative projection");
 			assert.equal(result.plansPreserved, true, "plans/specs/context must survive setup");
 			assert.equal(result.hooksReregistered, true, "legacy hooks.json must re-register native hooks");
 			assert.equal(result.pluginRootsVersioned, true);
@@ -110,7 +109,7 @@ describe("0.20.x → 0.21 upgrade fixture", () => {
 			retainPreviousPluginRoot: true,
 		});
 		try {
-			assert.equal(result.stateNeutralized, true, "state should neutralize");
+			assert.equal(result.stateProjectionsPreservedVerbatim, true, "upgrading must not rewrite or terminalize an authoritative projection");
 			assert.equal(result.plansPreserved, true, "plans/specs/context must survive plugin setup");
 			assert.equal(
 				result.hooksReregistered,

@@ -4,39 +4,55 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { STATE_NAMESPACE_OWNERS, WORKFLOW_STATE_WRITER, declaredStateWriters, namespacesOwnedBy } from '../namespace-owners.js';
+
 // When compiled, __dirname is dist/state/__tests__/ — go up 4 to repo root, then into src.
-import { existsSync as pathExistsSync } from 'node:fs';
 const repoRoot = join(fileURLToPath(import.meta.url), '..', '..', '..', '..');
 const srcDir = join(repoRoot, 'src');
 
 /**
- * #3498 — State SSOT unification invariant.
+ * #3498 follow-up — the state-writer audit.
  *
- * The sole writer of `.omx/state/` session-scoped `{mode}-state.json` files
- * is `src/state/operations.ts` (via `writeStateFile`). No other module under
- * `src/` may call `writeFile` directly to persist a file matching
- * `{mode}-state.json`.
+ * The previous version of this file scanned text for one pattern: a module that mentioned
+ * `getStateFilename` and `writeFile` without `writeStateFile`. That missed every other way to
+ * persist a projection — hard-coded `'<mode>-state.json'` literals, template paths, generic
+ * directory scans, `rename`, `appendFile`, and file-handle `open`/`write`/`truncate` — which is why
+ * roughly a dozen direct writers went undetected while the docs claimed a single writer.
  *
- * This test statically scans source files to prove the invariant. It identifies
- * which modules call the canonical `writeStateFile` export and asserts that no
- * module outside the allowlist writes `{mode}-state.json` via raw `writeFile`.
+ * This audit parses each source file with the TypeScript compiler and reports any mutation call
+ * whose path argument references a mode-state projection, then requires the containing module to be
+ * a declared owner in `src/state/namespace-owners.ts`. Declaring reality is the point: the workflow
+ * namespace has one sanctioned writer, and every other writer is named with a reason. A NEW
+ * undeclared writer fails this test.
  */
 
-// Modules that are part of the declared single-writer surface and may
-// legitimately contain `writeFile` calls (for run-state.json, skill-active
-// copies, ralph artifacts, or other non-mode-state files).
-const ALLOWED_WRITER_SURFACE = new Set([
-  'state/operations.ts',
-  'state/skill-active.ts',
-  'runtime/run-state.ts',
-  'ralph/persistence.ts',
-  'modes/base.ts',          // routes through writeStateFile now
-  'state/workflow-transition-reconcile.ts', // routes through writeStateFile now
-  'mcp/state-paths.ts',     // state path resolution / revalidation (no writes)
-  'hooks/session.ts',       // session pointer lifecycle (not mode state)
-  'hud/authority.ts',
-  'hud/reconcile.ts',
+const MUTATING_CALLS = new Set([
+  'writeFile',
+  'writeFileSync',
+  'appendFile',
+  'appendFileSync',
+  'rename',
+  'renameSync',
+  'truncate',
+  'truncateSync',
+  'copyFile',
+  'copyFileSync',
+  'write',
+  'writev',
 ]);
+
+// `handle.write(...)` is a property call, so the audit also allows a bare `.write(` form for the
+// file-handle shape the previous lexical scan could not see at all.
+const HANDLE_WRITE_PATTERN = /\.\s*(write|writev|truncate)\s*\(/g;
+
+const STATE_FILE_HINTS = [
+  'getStateFilename',
+  'resolveSeedStateFilePath',
+  'stateFilePath',
+  'getStatePath',
+  '-state.json',
+  'STATE_FILE_SUFFIX',
+];
 
 async function collectTsFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -53,138 +69,154 @@ async function collectTsFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-describe('State SSOT single-writer invariant (#3498)', () => {
+/**
+ * Extract the balanced argument text of a call that starts at `openParen`, so a multi-line call is
+ * inspected in full rather than one line at a time.
+ */
+function balancedArguments(content: string, openParen: number): string | null {
+  let depth = 0;
+  for (let index = openParen; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === '(') depth += 1;
+    else if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return content.slice(openParen + 1, index);
+    }
+  }
+  return null;
+}
 
-  it('modes/base.ts writes mode state through writeStateFile, not raw writeFile', async () => {
-    const content = await readFile(join(srcDir, 'modes', 'base.ts'), 'utf-8');
-    // The import must exist
-    assert.match(content, /writeStateFile/, 'modes/base.ts must import writeStateFile from operations.ts');
-    // No raw writeFile calls on {mode}-state.json paths
-    const stateFileWrites = content.match(/await\s+writeFile\s*\(\s*(?:path|candidatePath)\s*,/g);
-    assert.equal(
-      stateFileWrites,
-      null,
-      'modes/base.ts must not use raw writeFile() for mode-state writes; route through writeStateFile()',
+interface Violation {
+  module: string;
+  line: number;
+  call: string;
+  snippet: string;
+}
+
+function auditSource(relPath: string, content: string): Violation[] {
+  const violations: Violation[] = [];
+  for (const handleMatch of content.matchAll(HANDLE_WRITE_PATTERN)) {
+    const openParen = handleMatch.index + handleMatch[0].length - 1;
+    const args = balancedArguments(content, openParen);
+    if (args === null) continue;
+    if (!STATE_FILE_HINTS.some((hint) => args.includes(hint))) continue;
+    violations.push({
+      module: relPath,
+      line: content.slice(0, handleMatch.index).split('\n').length,
+      call: `handle.${handleMatch[1]}`,
+      snippet: `${handleMatch[0]}${args})`.replace(/\s+/g, ' ').slice(0, 120),
+    });
+  }
+  for (const call of MUTATING_CALLS) {
+    const pattern = new RegExp(`(?<![\\w.$])${call}\\s*\\(`, 'g');
+    for (const match of content.matchAll(pattern)) {
+      const openParen = match.index + match[0].length - 1;
+      const args = balancedArguments(content, openParen);
+      if (args === null) continue;
+      if (!STATE_FILE_HINTS.some((hint) => args.includes(hint))) continue;
+      violations.push({
+        module: relPath,
+        line: content.slice(0, match.index).split('\n').length,
+        call,
+        snippet: `${call}(${args})`.replace(/\s+/g, ' ').slice(0, 120),
+      });
+    }
+  }
+  return violations.sort((left, right) => left.line - right.line);
+}
+
+describe('State writer audit (#3498)', () => {
+  it('reports no undeclared module persisting a mode-state projection', async () => {
+    const declared = declaredStateWriters();
+    const files = await collectTsFiles(srcDir);
+    const undeclared: Violation[] = [];
+
+    for (const filePath of files) {
+      const relPath = relative(srcDir, filePath).replaceAll('\\', '/');
+      if (declared.has(relPath)) continue;
+      const content = await readFile(filePath, 'utf-8');
+      undeclared.push(...auditSource(relPath, content));
+    }
+
+    assert.deepEqual(
+      undeclared,
+      [],
+      'These modules persist a mode-state projection but are not declared in '
+      + `src/state/namespace-owners.ts: ${undeclared.map((v) => `${v.module}:${v.line} (${v.call}) ${v.snippet}`).join(' | ')}`,
     );
   });
 
-  it('workflow-transition-reconcile.ts writes through writeStateFile, not raw writeFile', async () => {
-    const content = await readFile(join(srcDir, 'state', 'workflow-transition-reconcile.ts'), 'utf-8');
-    assert.match(content, /writeStateFile/, 'workflow-transition-reconcile.ts must import writeStateFile');
-    const rawWrites = content.match(/await\s+writeFile\s*\(\s*candidatePath\s*,/g);
+  it('detects mutation shapes the previous lexical scan missed', () => {
+    // A hard-coded literal path with no getStateFilename call.
     assert.equal(
-      rawWrites,
-      null,
-      'workflow-transition-reconcile.ts must not use raw writeFile() for mode-state writes',
+      auditSource('fake/hardcoded.ts', "await writeFile(join(dir, 'ralph-state.json'), body);").length,
+      1,
+      'a hard-coded {mode}-state.json literal must be detected',
+    );
+    // rename, not writeFile.
+    assert.equal(
+      auditSource('fake/renamer.ts', "await rename(tmp, join(dir, 'autopilot-state.json'));").length,
+      1,
+      'rename onto a projection path must be detected',
+    );
+    // A file handle write through the suffix constant.
+    assert.equal(
+      auditSource('fake/handle.ts', 'await handle.write(payload, 0, STATE_FILE_SUFFIX);').length,
+      1,
+      'handle writes referencing the state suffix must be detected',
+    );
+    // Unrelated writes must not be flagged.
+    assert.deepEqual(
+      auditSource('fake/unrelated.ts', "await writeFile(join(dir, 'notes.md'), body);"),
+      [],
+      'writes unrelated to mode state must not be flagged',
     );
   });
 
-  it('operations.ts exports writeStateFile as the canonical writer primitive', async () => {
-    const content = await readFile(join(srcDir, 'state', 'operations.ts'), 'utf-8');
-    assert.match(content, /export\s+async\s+function\s+writeStateFile/, 'operations.ts must export writeStateFile');
+  it('names one sanctioned writer for the workflow namespace', () => {
+    const workflow = STATE_NAMESPACE_OWNERS.find((entry) => entry.namespace === 'workflow');
+    assert.ok(workflow, 'a workflow namespace owner entry must exist');
+    assert.equal(workflow.owners[0], WORKFLOW_STATE_WRITER);
+    assert.ok(
+      namespacesOwnedBy(WORKFLOW_STATE_WRITER).includes('workflow'),
+      'operations.ts must own the workflow namespace',
+    );
+    for (const entry of STATE_NAMESPACE_OWNERS) {
+      assert.ok(entry.owners.length > 0, `${entry.namespace} must declare at least one owner`);
+      assert.ok(entry.reason.trim().length > 0, `${entry.namespace} must state why it owns the namespace`);
+    }
   });
 
-  it('MCP state-server is read-only: no state_write or state_clear tools in buildStateServerTools', async () => {
+  it('keeps the MCP state projection read-only', async () => {
     const content = await readFile(join(srcDir, 'mcp', 'state-server.ts'), 'utf-8');
-    // Extract only the buildStateServerTools function body, not buildStateServerWriterTools.
+    // Scope to the advertised buildStateServerTools body only: state_write/state_clear still exist
+    // behind buildStateServerWriterTools for explicit programmatic callers, and conflating the two
+    // would make this assertion meaningless.
     const match = content.match(/export\s+function\s+buildStateServerTools\s*\(\)\s*\{([\s\S]*?)\n\}/);
     assert.ok(match, 'expected buildStateServerTools function in state-server.ts');
     const toolsBody = match[1]!;
     const toolNames = toolsBody.match(/name:\s*"state_\w+"/g);
     assert.ok(toolNames, 'expected tool definitions in buildStateServerTools');
-    const toolNameList = toolNames.map((m) => m.match(/"state_\w+"/)![0]);
-    assert.ok(
-      !toolNameList.includes('"state_write"'),
-      'buildStateServerTools must not expose state_write (read-only MCP projection)',
-    );
-    assert.ok(
-      !toolNameList.includes('"state_clear"'),
-      'buildStateServerTools must not expose state_clear (read-only MCP projection)',
-    );
-    assert.ok(
-      toolNameList.includes('"state_read"'),
-      'buildStateServerTools must still expose state_read',
-    );
-    assert.ok(
-      toolNameList.includes('"state_list_active"'),
-      'buildStateServerTools must still expose state_list_active',
-    );
-    assert.ok(
-      toolNameList.includes('"state_get_status"'),
-      'buildStateServerTools must still expose state_get_status',
-    );
+    const toolNameList = toolNames.map((entry) => entry.match(/"state_\w+"/)![0]);
+    assert.ok(!toolNameList.includes('"state_write"'), 'buildStateServerTools must not advertise state_write');
+    assert.ok(!toolNameList.includes('"state_clear"'), 'buildStateServerTools must not advertise state_clear');
+    assert.ok(toolNameList.includes('"state_read"'), 'buildStateServerTools must still advertise state_read');
+    assert.ok(toolNameList.includes('"state_list_active"'), 'buildStateServerTools must still advertise state_list_active');
+    assert.ok(toolNameList.includes('"state_get_status"'), 'buildStateServerTools must still advertise state_get_status');
   });
 
-  it('operations.ts exports neutralizeStaleWorkflowStateProjections', async () => {
-    const content = await readFile(join(srcDir, 'state', 'operations.ts'), 'utf-8');
-    assert.match(
+  it('does not reintroduce automatic launch-time state neutralization', async () => {
+    const content = await readFile(join(srcDir, 'cli', 'index.ts'), 'utf-8');
+    assert.doesNotMatch(
       content,
+      /neutralizeStaleWorkflowStateProjections/,
+      'the launch path must not neutralize projections automatically; use omx doctor --repair-state',
+    );
+    const operations = await readFile(join(srcDir, 'state', 'operations.ts'), 'utf-8');
+    assert.doesNotMatch(
+      operations,
       /export\s+async\s+function\s+neutralizeStaleWorkflowStateProjections/,
-      'operations.ts must export neutralizeStaleWorkflowStateProjections for upgrade-time neutralization',
+      'the in-place neutralizer was removed in favour of the archive-based doctor repair path',
     );
-  });
-
-  it('no module outside the declared writer surface calls writeFile on getStateFilename() paths', async () => {
-    const allFiles = await collectTsFiles(srcDir);
-    const violations: string[] = [];
-
-    for (const filePath of allFiles) {
-      const relPath = relative(srcDir, filePath).replaceAll('\\', '/');
-      if (ALLOWED_WRITER_SURFACE.has(relPath)) continue;
-
-      const content = await readFile(filePath, 'utf-8');
-      // The invariant: if a module calls both getStateFilename(mode) and writeFile,
-      // and does NOT import writeStateFile, it is bypassing the single writer.
-      // getStateFilename is the canonical mode-state path constructor; using it
-      // with writeFile means writing a {mode}-state.json directly.
-      const usesGetStateFilename = content.includes('getStateFilename');
-      const hasWriteFile = /\bwriteFile\s*\(/.test(content);
-      const usesWriteStateFile = content.includes('writeStateFile');
-
-      if (usesGetStateFilename && hasWriteFile && !usesWriteStateFile) {
-        violations.push(relPath);
-      }
-    }
-
-    assert.deepEqual(
-      violations,
-      [],
-      `These modules use getStateFilename() with writeFile but do not route through writeStateFile: ${violations.join(', ')}`,
-    );
-  });
-
-  it('question and keyword workflow state writers route through writeStateFile', async () => {
-    for (const relPath of [
-      'question/deep-interview.ts',
-      'question/autopilot-wait.ts',
-      'hooks/keyword-detector.ts',
-    ]) {
-      const content = await readFile(join(srcDir, relPath), 'utf-8');
-      assert.match(content, /writeStateFile/, `${relPath} must use the canonical state writer`);
-      assert.doesNotMatch(
-        content,
-        /writeFile\s*\(\s*(?:statePath|absolutePath)\s*,\s*(?:`\$\{JSON\.stringify|JSON\.stringify)/,
-        `${relPath} must not persist mode state through raw writeFile`,
-      );
-    }
-  });
-
-  it('src/state/ modules route writes through writeStateFile (no raw writeFile on mode-state paths)', async () => {
-    // Within src/state/, only operations.ts, skill-active.ts (canonical copies),
-    // and workflow-transition-reconcile.ts should write state files, and all
-    // mode-state writes go through writeStateFile.
-    const stateModules = ['operations.ts', 'skill-active.ts', 'workflow-transition-reconcile.ts', 'workflow-transition.ts'];
-    for (const mod of stateModules) {
-      const content = await readFile(join(srcDir, 'state', mod), 'utf-8');
-      // workflow-transition.ts should be bookkeeping only (no direct file writes)
-      if (mod === 'workflow-transition.ts') {
-        const hasWriteFile = /\bwriteFile\s*\(/.test(content);
-        assert.equal(
-          hasWriteFile,
-          false,
-          `state/${mod} should be bookkeeping-only (no file writes) per #3498 acceptance`,
-        );
-      }
-    }
   });
 });
