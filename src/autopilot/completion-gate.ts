@@ -165,8 +165,16 @@ function assertNoForgedRalplanHandoffEvidence(state: JsonObject): void {
   };
   const rawGate = stateField(state, 'ralplan_consensus_gate');
   const rawExecution = stateField(state, 'ralplan_execution_handoff');
+  const rawHandoffs = stateField(state, 'handoff_artifacts');
   requireObjectShape(rawGate, 'ralplan_consensus_gate');
   requireObjectShape(rawExecution, 'ralplan_execution_handoff');
+  // The artifact carrier matters as much as the gate: a supplied array/scalar here also normalizes to
+  // {}, which produced no canonical-path error and fell through to the advisory path.
+  requireObjectShape(rawHandoffs, 'handoff_artifacts');
+  const handoffMember = objectRecord(rawHandoffs).ralplan;
+  if (present(handoffMember) && typeof handoffMember !== 'string') {
+    requireObjectShape(handoffMember, 'handoff_artifacts.ralplan');
+  }
   const gate = objectRecord(rawGate);
   const execution = objectRecord(rawExecution);
   requireObjectShape(gate.ralplan_architect_review, 'ralplan_architect_review');

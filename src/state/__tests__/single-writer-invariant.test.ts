@@ -102,7 +102,35 @@ function maskCommentsAndLiterals(content: string): string {
       index = stop;
       continue;
     }
-    if (char === '"' || char === "'" || char === '`') {
+    if (char === '`') {
+      // Template literals are masked EXCEPT their ${...} expressions, which are executable code. The
+      // earlier revision blanked the whole literal, which newly hid a real writer placed inside an
+      // interpolation - a regression this case exists to prevent.
+      let i = index + 1;
+      let segmentStart = index;
+      while (i < content.length) {
+        if (content[i] === '\\') { i += 2; continue; }
+        if (content[i] === '$' && content[i + 1] === '{') {
+          blank(segmentStart, i);
+          let depth = 1;
+          let j = i + 2;
+          while (j < content.length && depth > 0) {
+            if (content[j] === '{') depth += 1;
+            else if (content[j] === '}') depth -= 1;
+            j += 1;
+          }
+          i = j;
+          segmentStart = i;
+          continue;
+        }
+        if (content[i] === '`') break;
+        i += 1;
+      }
+      blank(segmentStart, Math.min(i + 1, content.length));
+      index = i + 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
       let i = index + 1;
       while (i < content.length) {
         if (content[i] === '\\') { i += 2; continue; }
@@ -245,6 +273,18 @@ describe('State writer audit (#3498)', () => {
       auditSource('fake/string.ts', "const doc = \"writeFile(join(dir, 'ralph-state.json'))\";"),
       [],
       'a call name inside a string literal must not be reported',
+    );
+    // A real writer inside a template interpolation is executable code and MUST still be detected.
+    assert.equal(
+      auditSource('fake/interp.ts', 'const x = `prefix ${await writeFile(join(dir, "ralph-state.json"), body)} suffix`;').length,
+      1,
+      'a writer inside a ${...} interpolation must not be masked away',
+    );
+    // Template text that merely mentions a projection is not a write.
+    assert.deepEqual(
+      auditSource('fake/tmpl.ts', 'const doc = `writeFile(join(dir, "ralph-state.json"))`;'),
+      [],
+      'template text mentioning a projection must not be reported',
     );
   });
 

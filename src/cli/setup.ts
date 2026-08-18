@@ -2332,6 +2332,13 @@ async function readInstalledSkillReceipt(skillsDir: string): Promise<InstalledSk
   return { version: 1, skills: {} };
 }
 
+/**
+ * Digest the CURRENT contents of a skill directory, used to compare against a receipt.
+ *
+ * Non-regular entries (symlinks, sockets) are recorded as a sentinel rather than skipped, so a
+ * directory containing one can never compare equal to a receipt of regular files and is therefore
+ * retained instead of deleted.
+ */
 async function digestSkillDirectory(skillDir: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const walk = async (dir: string, prefix: string): Promise<void> => {
@@ -2342,7 +2349,10 @@ async function digestSkillDirectory(skillDir: string): Promise<Record<string, st
         await walk(full, relPath);
         continue;
       }
-      if (!entry.isFile()) continue;
+      if (!entry.isFile()) {
+        files[relPath] = "non-regular-entry";
+        continue;
+      }
       files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
     }
   };
@@ -2371,21 +2381,35 @@ async function isUnmodifiedRecordedInstall(
   return recordedNames.every((name, index) => currentNames[index] === name && current[name] === recorded[name]);
 }
 
+/**
+ * Record digests for EXACTLY the files OMX wrote, keyed by skill.
+ *
+ * Digesting the destination tree instead would poison the receipt: a note a user drops into an active
+ * skill directory would be recorded as OMX-owned and then deleted when that skill is later retired.
+ * The receipt therefore describes the installer's own output, and any extra entry present at
+ * retirement time makes the comparison fail, which retains the directory.
+ */
 async function writeInstalledSkillReceipt(
   skillsDir: string,
-  installedSkillNames: readonly string[],
+  writtenFilesBySkill: ReadonlyMap<string, readonly string[]>,
   options: Pick<SetupOptions, "dryRun">,
 ): Promise<void> {
   if (options.dryRun) return;
   const receipt = await readInstalledSkillReceipt(skillsDir);
-  for (const name of installedSkillNames) {
-    const skillDir = join(skillsDir, name);
-    if (!existsSync(skillDir)) continue;
-    try {
-      receipt.skills[name] = { files: await digestSkillDirectory(skillDir) };
-    } catch {
-      delete receipt.skills[name];
+  for (const [name, relativePaths] of writtenFilesBySkill) {
+    const files: Record<string, string> = {};
+    let complete = true;
+    for (const relPath of relativePaths) {
+      const full = join(skillsDir, name, relPath);
+      try {
+        files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
+      } catch {
+        complete = false;
+        break;
+      }
     }
+    if (complete && Object.keys(files).length > 0) receipt.skills[name] = { files };
+    else delete receipt.skills[name];
   }
   try {
     await writeFile(installedSkillReceiptPath(skillsDir), `${JSON.stringify(receipt, null, 2)}\n`);
@@ -5874,6 +5898,7 @@ export async function installSkills(
 		await validateSkillFile(join(skill.sourceDir, "SKILL.md"));
 	}
 
+	const writtenFilesBySkill = new Map<string, readonly string[]>();
 	for (const skill of installableSkills) {
 		const skillName = skill.name;
 		const skillSrc = skill.sourceDir;
@@ -5884,11 +5909,13 @@ export async function installSkills(
 		}
 
 		const skillFiles = await readdir(skillSrc);
+		const writtenForSkill: string[] = [];
 		for (const sf of skillFiles) {
 			const sfPath = join(skillSrc, sf);
 			const sfStat = await stat(sfPath);
 			if (!sfStat.isFile()) continue;
 			const dstPath = join(skillDst, sf);
+			writtenForSkill.push(sf);
 			if (sf === "SKILL.md") {
 				await syncManagedContent(
 					rewriteInstalledSkillDescriptionBadge(
@@ -5912,10 +5939,11 @@ export async function installSkills(
 				`skill ${skillName}/${sf}`,
 			);
 		}
+		writtenFilesBySkill.set(skillName, writtenForSkill);
 	}
 
 	// Record what we just wrote so a later refresh can prove an unmodified install before retiring it.
-	await writeInstalledSkillReceipt(dstDir, installableSkills.map((skill) => skill.name), options);
+	await writeInstalledSkillReceipt(dstDir, writtenFilesBySkill, options);
 
 	if (manifest && existsSync(dstDir)) {
 		for (const staleSkill of staleCandidateSkillNames) {
@@ -5930,10 +5958,13 @@ export async function installSkills(
 			// makes `omx update` drop deprecated skills without an extra flag - but only when we can
 			// prove it is an UNMODIFIED install we wrote. The badge alone is not proof: a user who
 			// edits the body keeps it, and archiving their edit is not preserving it.
-			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir)
-				&& await isUnmodifiedRecordedInstall(dstDir, staleSkill, staleSkillDir);
+			const unmodifiedInstall = await isUnmodifiedRecordedInstall(dstDir, staleSkill, staleSkillDir);
+			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir) && unmodifiedInstall;
 			const forcedCatalogSkill = options.force && catalogKnownSkillNames.has(staleSkill);
-			if (!omxManaged && !forcedCatalogSkill && !disabledTeamSkill) {
+			// Disabling Team mode is a configuration change, not a destructive opt-in, so it must not
+			// delete a directory we cannot prove we wrote. --force remains the explicit destructive path.
+			const removableDisabledTeamSkill = disabledTeamSkill && unmodifiedInstall;
+			if (!omxManaged && !forcedCatalogSkill && !removableDisabledTeamSkill) {
 				summary.skipped += 1;
 				if (options.verbose) {
 					const why = await isOmxManagedInstalledSkillDir(staleSkillDir)
@@ -5953,7 +5984,7 @@ export async function installSkills(
 					? "would remove stale skill"
 					: "removed stale skill";
 				const label = status ?? "unlisted";
-				const reason = disabledTeamSkill
+				const reason = removableDisabledTeamSkill
 					? ", Team mode disabled"
 					: omxManaged ? ", retired from the catalog" : "";
 				console.log(`  ${prefix} ${staleSkill}/ (status: ${label}${reason})`);
@@ -6041,6 +6072,15 @@ async function cleanupLegacyManagedSkills(
 			result.warnings.push(warning);
 			continue;
 		}
+		// A matching SKILL.md does not prove the whole directory is ours: a user file sitting beside it
+		// would be deleted with the directory. Require the same unmodified-install proof the ordinary
+		// retirement sweep uses.
+		if (!(await isUnmodifiedRecordedInstall(dstDir, skillName, installedSkillDir))) {
+			const warning = `Skipping legacy skill cleanup for ${skillName}: directory contents are not a receipted unmodified OMX install.`;
+			result.skippedSkillNames.push(skillName);
+			result.warnings.push(warning);
+			continue;
+		}
 
 		const removed = await removeDirectoryCopyAware(
 			installedSkillDir,
@@ -6060,6 +6100,14 @@ async function cleanupLegacyManagedSkills(
 		if (installableSkillNames.has(entry.name)) continue;
 		const installedSkillDir = join(dstDir, entry.name);
 		if (!(await isOmxManagedInstalledSkillDir(installedSkillDir))) continue;
+		// The badge alone is not proof of ownership for deletion; a user-edited body keeps it.
+		if (!(await isUnmodifiedRecordedInstall(dstDir, entry.name, installedSkillDir))) {
+			result.skippedSkillNames.push(entry.name);
+			result.warnings.push(
+				`Skipping retired skill ${entry.name}: modified since install, or installed before receipts existed.`,
+			);
+			continue;
+		}
 		if (await removeDirectoryCopyAware(installedSkillDir, backupContext, options)) {
 			result.backedUp += 1;
 			result.removedSkillNames.push(entry.name);
