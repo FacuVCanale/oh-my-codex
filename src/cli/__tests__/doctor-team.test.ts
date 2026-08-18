@@ -314,4 +314,88 @@ describe('omx doctor --team', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('passes a verified team worker on an external state root without a singleton session.json (#3536)', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-3536-'));
+    try {
+      const leaderCwd = join(wd, 'leader');
+      const stateRoot = join(wd, 'external', '.omx', 'state');
+      const teamName = 'ext-team';
+      const workerCwd = join(leaderCwd, '.omx', 'team', teamName, 'worktrees', 'worker-1');
+      await mkdir(workerCwd, { recursive: true });
+      // External root has state but no singleton session.json.
+      await mkdir(join(stateRoot, 'sessions'), { recursive: true });
+      const teamRoot = join(stateRoot, 'team', teamName);
+      await mkdir(join(teamRoot, 'workers', 'worker-1'), { recursive: true });
+      await writeFile(join(teamRoot, 'workers', 'worker-1', 'identity.json'), JSON.stringify({
+        name: 'worker-1',
+        pane_id: '%77',
+        worktree_path: workerCwd,
+        team_state_root: stateRoot,
+      }));
+      const metadata = {
+        name: teamName,
+        leader_cwd: leaderCwd,
+        team_state_root: stateRoot,
+        leader_pane_id: '%42',
+        workers: [{ name: 'worker-1', pane_id: '%77', worktree_path: workerCwd, team_state_root: stateRoot }],
+      };
+      await writeFile(join(teamRoot, 'manifest.v2.json'), JSON.stringify({
+        ...metadata,
+        policy: { worker_launch_mode: 'prompt' },
+      }));
+      await writeFile(join(teamRoot, 'config.json'), JSON.stringify(metadata));
+
+      const res = runOmx(leaderCwd, ['doctor', '--team'], { OMX_ROOT: join(wd, 'external'), PATH: '' });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 0, res.stderr || res.stdout);
+      assert.doesNotMatch(res.stdout, /worker_policy_root_unusable/);
+      assert.match(res.stdout, /All team checks passed/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with worker_policy_root_unusable when worker metadata cannot establish runtime authorization (#3536)', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-doctor-team-3536-bad-'));
+    try {
+      const leaderCwd = join(wd, 'leader');
+      const stateRoot = join(wd, 'external', '.omx', 'state');
+      const teamName = 'bad-team';
+      const workerCwd = join(leaderCwd, '.omx', 'team', teamName, 'worktrees', 'worker-1');
+      await mkdir(workerCwd, { recursive: true });
+      await mkdir(join(stateRoot, 'sessions'), { recursive: true });
+      const teamRoot = join(stateRoot, 'team', teamName);
+      await mkdir(join(teamRoot, 'workers', 'worker-1'), { recursive: true });
+      await writeFile(join(teamRoot, 'workers', 'worker-1', 'identity.json'), JSON.stringify({
+        name: 'worker-1',
+        pane_id: '%77',
+        worktree_path: workerCwd,
+        team_state_root: stateRoot,
+      }));
+      await writeFile(join(teamRoot, 'manifest.v2.json'), JSON.stringify({
+        name: teamName,
+        policy: { worker_launch_mode: 'prompt' },
+        leader_cwd: leaderCwd,
+        team_state_root: stateRoot,
+        leader_pane_id: '%42',
+        workers: [{ name: 'worker-1', pane_id: '%77', worktree_path: workerCwd, team_state_root: stateRoot }],
+      }));
+      // Conflicting config: leader_cwd disagrees with the manifest.
+      await writeFile(join(teamRoot, 'config.json'), JSON.stringify({
+        name: teamName,
+        leader_cwd: join(wd, 'elsewhere'),
+        team_state_root: stateRoot,
+        leader_pane_id: '%42',
+        workers: [{ name: 'worker-1', pane_id: '%77', worktree_path: workerCwd, team_state_root: stateRoot }],
+      }));
+
+      const res = runOmx(leaderCwd, ['doctor', '--team'], { OMX_ROOT: join(wd, 'external'), PATH: '' });
+      if (shouldSkipForSpawnPermissions(res.error)) return;
+      assert.equal(res.status, 1, res.stderr || res.stdout);
+      assert.match(res.stdout, /worker_policy_root_unusable/);
+      assert.match(res.stdout, /bad-team\/worker-1/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

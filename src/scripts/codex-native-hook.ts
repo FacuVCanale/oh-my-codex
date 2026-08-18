@@ -36,6 +36,12 @@ import {
   resolveCanonicalTeamStateRoot,
   resolveWorkerTeamStateRootPath,
 } from "../team/state-root.js";
+import {
+  readCanonicalInternalTeamWorkerEnvironment,
+  readTeamWorkerEnvironment,
+  resolveAuthoritativeTeamWorkerContext,
+  resolveConductorPolicyRoot,
+} from "../team/worker-provenance.js";
 import { inferTerminalLifecycleOutcome } from "../runtime/run-outcome.js";
 import { syncRegularFile } from "../utils/file-durability.js";
 import {
@@ -2837,36 +2843,6 @@ function buildAdditionalContextMessage(
   return [detectedKeywordMessage, promptPriorityMessage, ultragoalPromptActivationNote, autopilotPromptActivationNote, "Follow AGENTS.md routing and preserve workflow transition and planning-safety rules."].filter(Boolean).join(" ");
 }
 
-function parseTeamWorkerEnv(rawValue: string): { teamName: string; workerName: string } | null {
-  const match = /^([a-z0-9][a-z0-9-]{0,29})\/(worker-\d+)$/.exec(rawValue.trim());
-  if (!match) return null;
-  return {
-    teamName: match[1] || "",
-    workerName: match[2] || "",
-  };
-}
-
-function readTeamWorkerEnvironment(): { teamName: string; workerName: string } | null {
-  const internalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_INTERNAL_WORKER));
-  const externalWorker = parseTeamWorkerEnv(safeString(process.env.OMX_TEAM_WORKER));
-  if (!internalWorker) return null;
-  if (externalWorker && internalWorker.workerName !== externalWorker.workerName) return null;
-  // The public Team name is a display alias; only the session-scoped internal
-  // identity is authoritative for state-root/config/manifest validation.
-  return internalWorker;
-}
-
-function readCanonicalInternalTeamWorkerEnvironment(): { teamName: string; workerName: string } | null {
-  const rawInternalWorker = safeString(process.env.OMX_TEAM_INTERNAL_WORKER).trim();
-  if (!rawInternalWorker) return null;
-  const internalWorker = parseTeamWorkerEnv(rawInternalWorker);
-  if (!internalWorker) return null;
-  const rawExternalWorker = safeString(process.env.OMX_TEAM_WORKER).trim();
-  if (!rawExternalWorker) return internalWorker;
-  const externalWorker = parseTeamWorkerEnv(rawExternalWorker);
-  if (!externalWorker || externalWorker.workerName !== internalWorker.workerName) return null;
-  return internalWorker;
-}
 
 function hasCanonicalInternalTeamWorkerDeclaration(): boolean {
   return readCanonicalInternalTeamWorkerEnvironment() !== null;
@@ -2881,63 +2857,7 @@ async function hasAuthoritativeTeamWorkerContext(
   cwd: string,
   options: { requireWorkerPane?: boolean } = {},
 ): Promise<boolean> {
-  const workerContext = readCanonicalInternalTeamWorkerEnvironment();
-  if (!workerContext) return false;
-
-  const requireWorkerPane = options.requireWorkerPane === true;
-  const currentPaneId = safeString(process.env.TMUX_PANE).trim();
-  if (requireWorkerPane && !currentPaneId) return false;
-  const stateRoot = await resolveWorkerTeamStateRootPath(cwd, workerContext, process.env).catch(() => null);
-  if (!stateRoot) return false;
-
-  const teamRoot = join(stateRoot, "team", workerContext.teamName);
-  const identity = await readJsonIfExists(join(teamRoot, "workers", workerContext.workerName, "identity.json"));
-  const manifest = await readJsonIfExists(join(teamRoot, "manifest.v2.json"));
-  const config = await readJsonIfExists(join(teamRoot, "config.json"));
-  if (!identity || !manifest || !config) return false;
-
-  const canonicalStateRoot = canonicalizeComparablePath(stateRoot);
-  const canonicalCwd = canonicalizeComparablePath(cwd);
-  const canonicalLeaderCwd = canonicalizeComparablePath(safeString(process.env.OMX_TEAM_LEADER_CWD).trim() || cwd);
-  const pathMatches = (value: unknown, expected: string): boolean => {
-    const candidate = safeString(value).trim();
-    if (!candidate) return false;
-    try {
-      return sameFilePath(candidate, expected);
-    } catch {
-      return false;
-    }
-  };
-  const matchingWorker = (state: Record<string, unknown>): Record<string, unknown> | null => {
-    const workers = Array.isArray(state.workers) ? state.workers : [];
-    return workers
-      .map((candidate) => safeObject(candidate))
-      .find((candidate) => safeString(candidate.name).trim() === workerContext.workerName) ?? null;
-  };
-  const manifestWorker = matchingWorker(manifest);
-  const configWorker = matchingWorker(config);
-  if (!manifestWorker || !configWorker) return false;
-  if (safeString(identity.name).trim() !== workerContext.workerName) return false;
-  if (requireWorkerPane && safeString(identity.pane_id).trim() !== currentPaneId) return false;
-  if (!pathMatches(identity.team_state_root, canonicalStateRoot)) return false;
-  if (!pathMatches(identity.worktree_path ?? identity.working_dir, canonicalCwd)) return false;
-  for (const state of [manifest, config]) {
-    if (safeString(state.name).trim() !== workerContext.teamName) return false;
-    if (requireWorkerPane && safeString(state.leader_pane_id).trim() === currentPaneId) return false;
-    if (!pathMatches(state.team_state_root, canonicalStateRoot)) return false;
-    if (!pathMatches(state.leader_cwd, canonicalLeaderCwd)) return false;
-  }
-  if (safeString(manifest.leader_pane_id).trim() !== safeString(config.leader_pane_id).trim()) return false;
-  for (const worker of [manifestWorker, configWorker]) {
-    if (requireWorkerPane && safeString(worker.pane_id).trim() !== currentPaneId) return false;
-    if (!pathMatches(worker.team_state_root, canonicalStateRoot)) return false;
-    const workingDir = safeString(worker.working_dir).trim();
-    const worktreePath = safeString(worker.worktree_path).trim();
-    if (!workingDir && !worktreePath) return false;
-    if (workingDir && !pathMatches(workingDir, canonicalCwd)) return false;
-    if (worktreePath && !pathMatches(worktreePath, canonicalCwd)) return false;
-  }
-  return true;
+  return (await resolveAuthoritativeTeamWorkerContext(cwd, options)) !== null;
 }
 
 async function resolveTeamStateDirForWorkerContext(
@@ -4176,43 +4096,6 @@ export async function terminalizeExactUltragoalSessionForHookCancel(input: HookC
 }
 
 
-interface ConductorPolicyRootResolution {
-  cwd: string;
-  valid: boolean;
-  statePresent: boolean;
-  externalStateRoot: boolean;
-}
-
-function resolveConductorPolicyRoot(stateDir: string, fallbackCwd: string): ConductorPolicyRootResolution {
-  const statePresent = existsSync(join(stateDir, "session.json"))
-    || existsSync(join(stateDir, "sessions"));
-  let canonicalFallback: string;
-  try {
-    canonicalFallback = realpathSync(resolve(fallbackCwd));
-  } catch {
-    canonicalFallback = resolve(fallbackCwd);
-  }
-  try {
-    const canonicalStateDir = realpathSync(stateDir);
-    const rootSession = readJsonSyncIfExists(join(canonicalStateDir, "session.json"));
-    const recordedCwd = safeString(rootSession?.cwd ?? rootSession?.workingDirectory).trim();
-    if (recordedCwd) {
-      const canonicalRecordedCwd = realpathSync(resolve(recordedCwd));
-      return {
-        cwd: canonicalRecordedCwd,
-        valid: true,
-        statePresent,
-        externalStateRoot: canonicalStateDir !== join(canonicalRecordedCwd, ".omx", "state"),
-      };
-    }
-    if (canonicalStateDir === join(canonicalFallback, ".omx", "state")) {
-      return { cwd: canonicalFallback, valid: true, statePresent, externalStateRoot: false };
-    }
-  } catch {
-    // An external state surface with an unusable pointer must not borrow execution-cwd authority.
-  }
-  return { cwd: canonicalFallback, valid: !statePresent, statePresent, externalStateRoot: statePresent };
-}
 
 
 function readPayloadAgentRole(payload: CodexHookPayload): string {
@@ -21920,7 +21803,16 @@ export async function dispatchCodexNativeHook(
   // Native hooks must use the exact pointer root selected for this dispatch.
   const pointerContext = resolveSessionPointerContext(cwd);
   const stateDir = pointerContext.baseStateDir;
-  const policyRoot = resolveConductorPolicyRoot(stateDir, cwd);
+  const declaredTeamWorker = hasRawTeamWorkerDeclaration();
+  // #3536: verify the authoritative Team-worker context BEFORE the Conductor
+  // policy-root guard runs, and hand the guard the structured evidence so a
+  // verified external Team state root can bind policy context to the verified
+  // canonical leader CWD. Unverified or mismatched workers contribute nothing.
+  const authoritativeTeamWorkerEvidence = declaredTeamWorker
+    && (hookEventName !== "Stop" || canonicalInternalTeamWorkerDeclared)
+    ? await resolveAuthoritativeTeamWorkerContext(cwd)
+    : null;
+  const policyRoot = resolveConductorPolicyRoot(stateDir, cwd, authoritativeTeamWorkerEvidence);
   const policyCwd = policyRoot.cwd;
 
   let skillState: SkillActiveState | null = null;
@@ -21931,7 +21823,6 @@ export async function dispatchCodexNativeHook(
   let teamNoticeTargetKey: string | null = null;
   let promptClassification: KeywordInputClassification | null = null;
 
-  const declaredTeamWorker = hasRawTeamWorkerDeclaration();
   const candidateWorkerPayloadSessionId = declaredTeamWorker
     ? readUnambiguousNormalizedPayloadSessionId(payload)
     : "";
@@ -21987,9 +21878,7 @@ export async function dispatchCodexNativeHook(
   let resolvedNativeSessionId = nativeSessionId;
   let skipCanonicalSessionStartContext = false;
   let isSubagentSessionStart = false;
-  const authoritativeTeamWorker = declaredTeamWorker
-    && (hookEventName !== "Stop" || canonicalInternalTeamWorkerDeclared)
-    && await hasAuthoritativeTeamWorkerContext(cwd);
+  const authoritativeTeamWorker = authoritativeTeamWorkerEvidence !== null;
   const authoritativeWorkerPayloadSessionId = authoritativeTeamWorker
     && candidateWorkerPayloadSessionId
     && (!pointer.state || !payloadMatchesSessionPointer(candidateWorkerPayloadSessionId, pointer.state))
