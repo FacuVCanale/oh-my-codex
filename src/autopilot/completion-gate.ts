@@ -151,6 +151,8 @@ function validIsoTimestamp(value: unknown): boolean {
  * absent field still routes to the advisory path.
  */
 function assertNoForgedRalplanHandoffEvidence(state: JsonObject): void {
+  // Explicit null counts as ABSENCE, not corruption: it is ordinary JSON for "no value" and takes the
+  // advisory path like a missing key. Only a supplied non-null value of the wrong shape is corruption.
   const present = (value: unknown): boolean => value !== undefined && value !== null;
   const forged: string[] = [];
 

@@ -2325,7 +2325,17 @@ async function readInstalledSkillReceipt(skillsDir: string): Promise<InstalledSk
     const parsed = JSON.parse(
       await readFile(installedSkillReceiptPath(skillsDir), "utf-8"),
     ) as InstalledSkillReceipt;
-    if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") return parsed;
+    if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") {
+      // Re-key through a prototype-less record so a `__proto__` entry in a persisted receipt is a
+      // real own property on both sides of the comparison.
+      const skills: InstalledSkillReceipt["skills"] = Object.create(null);
+      for (const [name, entry] of Object.entries(parsed.skills)) {
+        const files: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [file, digest] of Object.entries(entry?.files ?? {})) files[file] = String(digest);
+        skills[name] = { files };
+      }
+      return { version: 1, skills };
+    }
   } catch {
     // A missing or unreadable receipt means "no proof of ownership", which retains conservatively.
   }
@@ -2340,7 +2350,10 @@ async function readInstalledSkillReceipt(skillsDir: string): Promise<InstalledSk
  * retained instead of deleted.
  */
 async function digestSkillDirectory(skillDir: string): Promise<Record<string, string>> {
-  const files: Record<string, string> = {};
+  // Prototype-less: a file literally named `__proto__` assigned into a normal object literal is not an
+  // own enumerable property, so it would vanish from Object.keys() and let a user entry be deleted
+  // while the comparison still reported equality.
+  const files: Record<string, string> = Object.create(null) as Record<string, string>;
   const walk = async (dir: string, prefix: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -2397,7 +2410,7 @@ async function writeInstalledSkillReceipt(
   if (options.dryRun) return;
   const receipt = await readInstalledSkillReceipt(skillsDir);
   for (const [name, relativePaths] of writtenFilesBySkill) {
-    const files: Record<string, string> = {};
+    const files: Record<string, string> = Object.create(null) as Record<string, string>;
     let complete = true;
     for (const relPath of relativePaths) {
       const full = join(skillsDir, name, relPath);

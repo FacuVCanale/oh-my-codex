@@ -211,6 +211,32 @@ describe('omx setup skills overwrite behavior', () => {
     }
   });
 
+  it('keeps a user file named __proto__ inside a receipted retired skill', async () => {
+    // Generation-3 cleaner found that assigning digests into an object literal drops a `__proto__`
+    // key from Object.keys(), so a directory containing such a user file compared equal to its receipt
+    // and was deleted. The digest maps are prototype-less now; this pins it.
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+      await setup({ scope: 'project' });
+
+      const skillsDir = join(wd, '.codex', 'skills');
+      const dir = await seedRetiredOmxSkill(skillsDir, 'prometheus-strict', 'retired');
+      // The user drops a file whose name collides with Object.prototype AFTER the receipt was taken.
+      await writeFile(join(dir, '__proto__'), 'user notes\n');
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(dir), true, 'a directory holding an unreceipted user file must survive');
+      assert.equal(await readFile(join(dir, '__proto__'), 'utf-8'), 'user notes\n');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('backs up a retired skill directory before deleting it', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
     const previousCwd = process.cwd();

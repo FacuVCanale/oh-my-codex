@@ -296,4 +296,57 @@ describe('Autopilot completion advisory contract', () => {
       /out-of-scope artifact path/,
     );
   });
+
+  it('fails closed on a malformed handoff carrier and treats explicit null as absence', async () => {
+    // Generation-3 QA found the carrier laundered one layer up: modes/base.ts coerced a supplied
+    // array/scalar to {} and then dropped the key, so the gate saw "absent" and permitted the advance
+    // with an advisory. The corruption is now rejected at the merge layer, and this pins both halves.
+    const { updateModeState } = await import('../../modes/base.js');
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-carrier-'));
+    const sessionId = 'sess-carrier';
+    try {
+      const stateDir = join(cwd, '.omx', 'state');
+      await mkdir(join(stateDir, 'sessions', sessionId), { recursive: true });
+      await writeFile(
+        join(stateDir, 'session.json'),
+        JSON.stringify({ session_id: sessionId, cwd, state_root: stateDir }),
+      );
+      // updateModeState updates an EXISTING projection, so seed one the way `autopilot start` does.
+      await writeFile(
+        join(stateDir, 'sessions', sessionId, 'autopilot-state.json'),
+        JSON.stringify({
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'deep-interview',
+          session_id: sessionId,
+          workingDirectory: cwd,
+          started_at: '2026-07-14T00:00:00.000Z',
+        }),
+      );
+      for (const malformed of [[], 'forged', 42]) {
+        await assert.rejects(
+          () => updateModeState('autopilot', {
+            workingDirectory: cwd,
+            session_id: sessionId,
+            active: true,
+            current_phase: 'ralplan',
+            handoff_artifacts: malformed as never,
+          }, cwd, sessionId),
+          /malformed handoff_artifacts carrier/,
+          `a supplied ${JSON.stringify(malformed)} carrier must fail closed`,
+        );
+      }
+      // Explicit null is ordinary JSON for "no value" and must behave like a missing key.
+      const nulled = await updateModeState('autopilot', {
+        workingDirectory: cwd,
+        session_id: sessionId,
+        active: true,
+        current_phase: 'ralplan',
+        handoff_artifacts: null as never,
+      }, cwd, sessionId);
+      assert.equal(nulled.current_phase, 'ralplan', 'explicit null must not fail closed');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

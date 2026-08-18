@@ -351,11 +351,25 @@ async function updateModeStateInternal(
     }
     if (scope.sessionId) updatedBase.session_id = scope.sessionId;
     updatedBase.workingDirectory = canonicalWorkspace;
+    // A SUPPLIED but malformed carrier is corruption and must fail closed here, not be coerced.
+    // Coercing it to {} dropped the key entirely (both sides empty), so the completion gate saw
+    // "absent" and took the advisory path - forged evidence laundered into a permitted advance.
+    // Explicit null is treated as absence, which is ordinary JSON for "no value".
+    const suppliedHandoffs = updates.handoff_artifacts;
+    if (
+      suppliedHandoffs !== undefined
+      && suppliedHandoffs !== null
+      && (typeof suppliedHandoffs !== 'object' || Array.isArray(suppliedHandoffs))
+    ) {
+      throw new Error('Cannot write Autopilot state with a malformed handoff_artifacts carrier; it must be an object.');
+    }
     const currentHandoffs = current.handoff_artifacts && typeof current.handoff_artifacts === 'object'
+      && !Array.isArray(current.handoff_artifacts)
       ? current.handoff_artifacts as Record<string, unknown>
       : {};
-    const nextHandoffs = updates.handoff_artifacts && typeof updates.handoff_artifacts === 'object'
-      ? updates.handoff_artifacts as Record<string, unknown>
+    const nextHandoffs = suppliedHandoffs && typeof suppliedHandoffs === 'object'
+      && !Array.isArray(suppliedHandoffs)
+      ? suppliedHandoffs as Record<string, unknown>
       : {};
     if (Object.keys(currentHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
       updatedBase.handoff_artifacts = { ...currentHandoffs, ...nextHandoffs };
