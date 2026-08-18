@@ -1,13 +1,10 @@
 /**
  * One validator for the `handoff_artifacts` carrier, shared by every writer that merges it.
  *
- * Two review generations found the same defect in two different places, and the root cause was that
- * each writer implemented its own normalization: a supplied array or scalar was coerced to `{}` before
- * anything validated it, which erased the difference between "supplied but malformed" and "absent".
- * The completion gate then saw absence, took the permitted advisory path, and forged evidence was
- * laundered into a phase advance.
- *
- * So the rule lives here once and every merge point calls it BEFORE normalizing:
+ * The rule must be defined once, because a writer that normalizes a carrier on its own erases the
+ * difference between "supplied but malformed" and "absent": the completion gate then reads absence,
+ * takes the permitted advisory path, and forged evidence becomes a phase advance. Every merge point
+ * calls this BEFORE normalizing:
  *  - `undefined` and `null` are ABSENCE. Explicit null is ordinary JSON for "no value" and keeps the
  *    advisory path, matching how the gate's own `present()` predicate treats it.
  *  - a non-array object is the only valid supplied shape.
@@ -36,13 +33,13 @@ export function assertValidHandoffCarrier(value: unknown, label: string): void {
 }
 
 /**
- * Read an already-persisted carrier without laundering a corrupt one into a valid-looking record.
+ * Read an already-persisted carrier, returning `null` when the stored value is corrupt.
  *
- * Returns the record when the stored value is a plain record, and `null` when it is corrupt. Callers
- * must not spread a corrupt value into a fresh object: that is precisely how a persisted array became
- * indistinguishable from a normal empty carrier.
+ * Deliberately NOT exported. Callers get `requirePersistedHandoffCarrier` instead, because the only
+ * thing a caller can do wrong with this function is `?? {}` it - which converts corruption straight
+ * back into "valid but empty", since legitimate absence already returns `{}`.
  */
-export function readPersistedHandoffCarrier(value: unknown): Record<string, unknown> | null {
+function readPersistedHandoffCarrier(value: unknown): Record<string, unknown> | null {
   if (value === undefined || value === null) return {};
   if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
   return null;
@@ -51,9 +48,9 @@ export function readPersistedHandoffCarrier(value: unknown): Record<string, unkn
 /**
  * Read a persisted carrier, or THROW when the stored value is corrupt.
  *
- * Prefer this over `readPersistedHandoffCarrier(...) ?? {}`. That coalescing looks harmless but is the
- * laundering bug in miniature: legitimate absence already returns `{}` from the reader, so the `??`
- * branch fires only for corruption and converts it straight back into "valid but empty".
+ * Absence yields `{}`; corruption throws. The distinction is the whole point: coalescing a corrupt
+ * read to `{}` would convert corruption back into "valid but empty", since legitimate absence already
+ * returns `{}`.
  */
 export function requirePersistedHandoffCarrier(value: unknown, label: string): Record<string, unknown> {
   const carrier = readPersistedHandoffCarrier(value);

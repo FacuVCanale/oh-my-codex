@@ -5,7 +5,6 @@ import {
   assertValidHandoffCarrier,
   assertValidHandoffCarriersIn,
   isValidHandoffCarrier,
-  readPersistedHandoffCarrier,
   requirePersistedHandoffCarrier,
 } from '../handoff-carrier.js';
 
@@ -50,8 +49,9 @@ describe('handoff carrier invariant', () => {
 
   it('does not let the gate read a carrier this validator ignores', async () => {
     // The validator stops at one level of `state` because that is how far the gate's stateField()
-    // looks. This test ties the two together: if the gate ever reads deeper, this fails and the
-    // validator must be extended, so a deeper location can never become a silent laundering door.
+    // looks. This is not circular: if stateField gains a level, the gate WILL read this array, the
+    // gate's own carrier assertion throws, and the advisory expectation below fails - forcing the
+    // validator to be extended rather than letting a deeper location become a silent door.
     const { validateAutopilotCompletionTransition } = await import('../../autopilot/completion-gate.js');
     const doubleNested = {
       mode: 'autopilot',
@@ -72,11 +72,13 @@ describe('handoff carrier invariant', () => {
   });
 
   it('distinguishes an absent stored carrier from a corrupt one', () => {
-    assert.deepEqual(readPersistedHandoffCarrier(undefined), {});
-    assert.deepEqual(readPersistedHandoffCarrier(null), {});
-    assert.deepEqual(readPersistedHandoffCarrier({ a: 1 }), { a: 1 });
-    assert.equal(readPersistedHandoffCarrier([]), null, 'a stored array is corrupt, not empty');
-    assert.equal(readPersistedHandoffCarrier('x'), null);
+    // Exercised through the public, safe API: the raw reader is module-private precisely so a caller
+    // cannot coalesce its corrupt sentinel back into an empty carrier.
+    assert.deepEqual(requirePersistedHandoffCarrier(undefined, 'stored'), {});
+    assert.deepEqual(requirePersistedHandoffCarrier(null, 'stored'), {});
+    assert.deepEqual(requirePersistedHandoffCarrier({ a: 1 }, 'stored'), { a: 1 });
+    assert.throws(() => requirePersistedHandoffCarrier([], 'stored'), /malformed/, 'a stored array is corrupt, not empty');
+    assert.throws(() => requirePersistedHandoffCarrier('x', 'stored'), /malformed/);
   });
 
   it('refuses to coalesce a corrupt stored carrier into an empty one', () => {
