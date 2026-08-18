@@ -3542,6 +3542,12 @@ async function resolveAutopilotSupervisedChildPhaseState(
   if (existing && existingMode !== 'autopilot') {
     throw new Error(`Cannot advance supervised Autopilot child phase: expected autopilot detail state, found ${existingMode || 'unknown'}`);
   }
+  // PREFLIGHT, before the caller reconciles child projections. The commit-time assertion in
+  // persistAutopilotSupervisedChildPhaseState already blocks the parent advance, but it runs after
+  // reconcileWorkflowTransition may have written a stale active child, leaving the refused operation
+  // half-applied. Rejecting here keeps it all-or-nothing; the later assertion stays because that
+  // function rereads the parent, so it is the TOCTOU revalidation rather than a duplicate.
+  assertValidHandoffCarriersIn((existing ?? {}) as Record<string, unknown>, 'stored autopilot');
 
   return childSkill;
 }

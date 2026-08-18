@@ -71,9 +71,10 @@ export function requirePersistedHandoffCarrier(value: unknown, label: string): R
  *
  * The recursion deliberately stops at ONE level of `state`, because that is exactly how far
  * `stateField` looks. A value buried deeper - `state.state.handoff_artifacts` - is unreadable by the
- * gate, so it can never be credited as evidence nor mistaken for absence; it is inert stored junk
- * rather than an authorization bypass. If `stateField` ever gains a level, the paired test
- * `does not let the gate read a carrier this validator ignores` fails and forces this to match.
+ * gate, so it is TREATED AS ABSENT and can never be credited as evidence. That makes it inert stored
+ * data rather than an authorization bypass, but it is absence, not a separate third state. If
+ * `stateField` ever gains a level, the paired test `does not let the gate read a carrier this
+ * validator ignores` fails and forces this depth to match.
  */
 export function assertValidHandoffCarriersIn(payload: Record<string, unknown>, label: string): void {
   assertValidHandoffCarrier(payload.handoff_artifacts, `${label} handoff_artifacts`);

@@ -49,26 +49,54 @@ describe('handoff carrier invariant', () => {
 
   it('does not let the gate read a carrier this validator ignores', async () => {
     // The validator stops at one level of `state` because that is how far the gate's stateField()
-    // looks. This is not circular: if stateField gains a level, the gate WILL read this array, the
-    // gate's own carrier assertion throws, and the advisory expectation below fails - forcing the
-    // validator to be extended rather than letting a deeper location become a silent door.
+    // looks. Pinning that with a MALFORMED deeper value would be circular: objectRecord() normalizes a
+    // deeper array to {} too, so the same advisory appears whether or not the gate descends, and the
+    // test would stay green while a deeper reader laundered corruption.
+    //
+    // So the fixture uses deeper VALID evidence that WOULD satisfy the gate if it were read. Today the
+    // gate cannot see it and therefore reports the handoff as missing. If stateField ever descends,
+    // this evidence becomes visible, the advisory disappears, and this assertion fails - forcing the
+    // validator's depth to be extended with it.
     const { validateAutopilotCompletionTransition } = await import('../../autopilot/completion-gate.js');
-    const doubleNested = {
+    const specPath = '.omx/specs/deep-nested-evidence.md';
+    const deeperValidEvidence = {
+      mode: 'autopilot',
+      active: true,
+      current_phase: 'deep-interview',
+      session_id: 's',
+      state: {
+        state: {
+          deep_interview_gate: { status: 'complete', rationale: 'Requirements resolved.' },
+          handoff_artifacts: { deep_interview: { spec_path: specPath } },
+        },
+      },
+    };
+    assert.doesNotThrow(() => assertValidHandoffCarriersIn(deeperValidEvidence, 'p'));
+    const advisory = validateAutopilotCompletionTransition(
+      deeperValidEvidence,
+      { ...deeperValidEvidence, current_phase: 'ralplan' },
+    );
+    assert.equal(
+      advisory?.skippedGate,
+      'deep-interview-handoff',
+      'the gate must not read evidence nested deeper than this validator checks; if it now can, extend assertValidHandoffCarriersIn',
+    );
+
+    // The corruption direction still matters, so keep a malformed deeper value covered: it is treated
+    // as absent rather than credited, which is inert stored data, not a bypass.
+    const deeperMalformed = {
       mode: 'autopilot',
       active: true,
       current_phase: 'deep-interview',
       session_id: 's',
       state: { state: { handoff_artifacts: ['forged'] } },
     };
-    // Accepted by the validator precisely because the gate cannot see it...
-    assert.doesNotThrow(() => assertValidHandoffCarriersIn(doubleNested, 'p'));
-    // ...and the gate therefore reports genuinely absent evidence rather than crediting the array.
-    const advisory = validateAutopilotCompletionTransition(
-      doubleNested,
-      { ...doubleNested, current_phase: 'ralplan' },
+    assert.doesNotThrow(() => assertValidHandoffCarriersIn(deeperMalformed, 'p'));
+    assert.equal(
+      validateAutopilotCompletionTransition(deeperMalformed, { ...deeperMalformed, current_phase: 'ralplan' })?.skippedGate,
+      'deep-interview-handoff',
+      'a deeper malformed carrier must never be credited as evidence',
     );
-    assert.equal(advisory?.skippedGate, 'deep-interview-handoff');
-    assert.match(advisory?.missingEvidence ?? '', /.+/, 'the advisory must state what evidence is missing');
   });
 
   it('distinguishes an absent stored carrier from a corrupt one', () => {
