@@ -847,7 +847,27 @@ export function isSessionStale(
     probePid,
     observeProcess,
   };
-  return classifySessionProcess(state, dependencies) !== 'usable';
+  const classification = classifySessionProcess(state, dependencies);
+  if (classification === 'usable') return false;
+  if (classification === 'stale-dead') return true;
+
+  // `identity-indeterminate` means two different things and only one of them is stale.
+  //
+  // Where the platform CAN record process-birth evidence (linux) but it is missing or unreadable,
+  // fail closed: that is the case `returns true on Linux when identity metadata is missing` and
+  // `... when live identity cannot be read` pin deliberately.
+  //
+  // Where no identity source exists at all, every live session classifies indeterminate, so failing
+  // closed reported a running session as dead. There a positively alive pid is the strongest
+  // evidence available, and this is a READ predicate, not an authority grant: the classifier still
+  // returns identity-indeterminate (pinned by `classifies identity-less live non-Linux pointers as
+  // identity-indeterminate`), and authority-granting paths keep requiring `usable`.
+  if (!isUnobservableLivePointerState(state, runtimePlatform)) return true;
+  try {
+    return probePid(state.pid) !== 'alive';
+  } catch {
+    return true;
+  }
 }
 
 type ProcessClassificationStatus = 'usable' | 'stale-dead' | 'identity-indeterminate';
@@ -961,6 +981,34 @@ function probeIdentitylessProcess(
     return 'identity-indeterminate';
   }
   return probe === 'dead' ? 'stale-dead' : 'identity-indeterminate';
+}
+
+/**
+ * Is an `identity-indeterminate` pointer merely UNOBSERVABLE on this platform, rather than
+ * untrustworthy?
+ *
+ * Three distinct situations collapse into `identity-indeterminate`, and only the first one describes
+ * a pointer that may legitimately be live:
+ *  - the platform records no process-birth evidence at all (every live pointer lands here);
+ *  - linux, which does record it, is missing or cannot read it (fail closed: the metadata should
+ *    exist);
+ *  - the evidence claims a DIFFERENT platform, which is forged or foreign (fail closed).
+ *
+ * Read predicates and preservation/refusal decisions may treat the first case as occupied. Authority
+ * to own writes still requires `usable`, and the classifier itself is unchanged.
+ */
+function isUnobservableLivePointerState(
+  state: { pid?: unknown; platform?: unknown; process_identity?: { platform?: unknown } } | undefined,
+  // Explicit rather than read from transactionDependencies: isSessionStale accepts an injected
+  // platform override, and silently using the host platform there made the linux fail-closed cases
+  // evaluate against the wrong runtime.
+  runtimePlatform: NodeJS.Platform = transactionDependencies.runtimePlatform,
+): boolean {
+  if (!state) return false;
+  const recordedPlatform = state.process_identity?.platform ?? state.platform ?? runtimePlatform;
+  if (recordedPlatform !== runtimePlatform) return false;
+  if (recordedPlatform === 'linux') return false;
+  return typeof state.pid === 'number' && Number.isInteger(state.pid) && state.pid > 0;
 }
 
 export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: string): boolean {
@@ -1333,9 +1381,13 @@ async function inspectLockOwnerFile(ownerPath: string, missingStatus: LockOwnerS
     } catch {
       return { status: 'identity-indeterminate', owner };
     }
-    return probe === 'dead'
-      ? { status: 'dead', owner }
-      : { status: 'identity-indeterminate', owner };
+    if (probe === 'dead') return { status: 'dead', owner };
+    // Same read-vs-authority split as the pointer path: where the platform records no process-birth
+    // evidence, an alive pid is the strongest signal available and the lock is occupied. Reaping
+    // still requires a positively 'dead' owner (safeToRecover === 'dead'), so nothing becomes
+    // reclaimable here; only "is this lock held" answers correctly.
+    if (probe === 'alive' && isUnobservableLivePointerState(owner)) return { status: 'live', owner };
+    return { status: 'identity-indeterminate', owner };
   }
 
   const classification = classifyRecordedIdentity(
@@ -2613,16 +2665,34 @@ function startPointerTransition(
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
     if (requireAbsent && pointer.status !== 'absent') {
-      if (pointer.status === 'usable' && pointer.state) {
+      // Same read-vs-authority split: an occupied pointer is an owner conflict even when its
+      // liveness is indeterminate, which is the only classification a live pointer can get on a
+      // platform without process-birth evidence.
+      if (pointer.state && (pointer.status === 'usable' || isUnobservableLivePointerState(pointer.state))) {
         throw ownerConflictAbort(context, requestedSessionId, pointer.state);
       }
       throw unusablePointerAbort(context, requestedSessionId, pointer);
     }
-    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+    // Read semantics, not authority: `identity-indeterminate` means "someone may still be here",
+    // and on platforms that record no process-birth evidence EVERY live pointer classifies that way
+    // (see probeIdentitylessProcess). Rejecting it outright refused legitimate sessions with a
+    // generic unusable-pointer abort and skipped lineage/metadata preservation. It is admitted as
+    // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
+    // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
+    // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    if (
+      pointer.status !== 'absent'
+      && pointer.status !== 'stale-dead'
+      && pointer.status !== 'usable'
+      && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    ) {
       throw unusablePointerAbort(context, requestedSessionId, pointer);
     }
 
-    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    const existing = pointer.status === 'usable'
+      || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+      ? pointer.state
+      : undefined;
     if (existing && !isStartCompatible(existing, requestedSessionId)) {
       throw ownerConflictAbort(context, requestedSessionId, existing);
     }
@@ -3213,13 +3283,28 @@ function nativeSessionOwnerTransition(
   options: SessionStartOptions,
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
-    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+    // Read semantics, not authority: `identity-indeterminate` means "someone may still be here",
+    // and on platforms that record no process-birth evidence EVERY live pointer classifies that way
+    // (see probeIdentitylessProcess). Rejecting it outright refused legitimate sessions with a
+    // generic unusable-pointer abort and skipped lineage/metadata preservation. It is admitted as
+    // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
+    // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
+    // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    if (
+      pointer.status !== 'absent'
+      && pointer.status !== 'stale-dead'
+      && pointer.status !== 'usable'
+      && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    ) {
       throw unusablePointerAbort(context, nativeSessionId, pointer);
     }
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
     const linuxIdentity = sessionIdentityFor(pid, platform);
-    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    const existing = pointer.status === 'usable'
+      || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+      ? pointer.state
+      : undefined;
     if (existing && (
       normalizeSessionId(existing.session_id) !== nativeSessionId
       || normalizeSessionId(existing.native_session_id) !== nativeSessionId
@@ -3343,14 +3428,29 @@ function reconcileNativeTransition(
   options: SessionStartOptions,
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
-    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+    // Read semantics, not authority: `identity-indeterminate` means "someone may still be here",
+    // and on platforms that record no process-birth evidence EVERY live pointer classifies that way
+    // (see probeIdentitylessProcess). Rejecting it outright refused legitimate sessions with a
+    // generic unusable-pointer abort and skipped lineage/metadata preservation. It is admitted as
+    // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
+    // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
+    // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    if (
+      pointer.status !== 'absent'
+      && pointer.status !== 'stale-dead'
+      && pointer.status !== 'usable'
+      && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    ) {
       throw unusablePointerAbort(context, nativeSessionId, pointer);
     }
 
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
     const linuxIdentity = sessionIdentityFor(pid, platform);
-    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    const existing = pointer.status === 'usable'
+      || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+      ? pointer.state
+      : undefined;
 
     if (!existing) {
       const ownerCandidate = verifiedOwnerCandidate(context, options);
