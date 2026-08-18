@@ -1,6 +1,6 @@
 import { existsSync } from "fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "fs/promises";
-import { join, resolve, sep } from "path";
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "path";
 import { tmpdir } from "node:os";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
@@ -140,11 +140,25 @@ function isMissingPathError(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-async function ensureManagedCacheNamespace(cacheBase: string): Promise<void> {
-	const absoluteBase = resolve(cacheBase);
-	const root = absoluteBase.startsWith(sep) ? sep : "";
-	let current = root;
-	for (const component of absoluteBase.slice(root.length).split(sep).filter(Boolean)) {
+/**
+ * Only the namespace OMX owns below the Codex home is required to be free of symlinks; a symlinked
+ * `plugins/` (or any component under the home) can redirect writes and is refused. Everything above
+ * the home belongs to the platform or the user — macOS resolves TMPDIR through `/var -> /private/var`,
+ * and symlinked home directories are ordinary — so those components are canonicalized, not rejected.
+ */
+async function ensureManagedCacheNamespace(
+	cacheBase: string,
+	codexHomeDir: string,
+): Promise<void> {
+	const managedNamespace = relative(resolve(codexHomeDir), resolve(cacheBase));
+	if (!managedNamespace || managedNamespace.startsWith("..") || isAbsolute(managedNamespace)) {
+		throw new Error(
+			`Refusing to mutate an OMX plugin cache outside the Codex home: ${resolve(cacheBase)}`,
+		);
+	}
+	await mkdir(codexHomeDir, { recursive: true });
+	let current = await realpath(codexHomeDir);
+	for (const component of managedNamespace.split(sep).filter(Boolean)) {
 		current = join(current, component);
 		try {
 			const stats = await lstat(current);
@@ -455,7 +469,7 @@ export async function materializePackagedOmxPluginCache(
 	}
 	if (!options.dryRun) {
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
-		await ensureManagedCacheNamespace(cacheBase);
+		await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
 		const rootState = await inspectCacheRoot(cacheDir);
 		if (rootState === "foreign") {
 			return { status: "unavailable", cacheDir, version };
