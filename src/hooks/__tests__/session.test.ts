@@ -103,6 +103,25 @@ async function withOwnerEnvironment(sessionId: string | undefined, run: () => Pr
   }
 }
 
+/**
+ * Identity fields for a pointer that belongs to the HOST platform.
+ *
+ * `recordedIdentityForState` only derives birth evidence from the v1 `pid_start_ticks` shape when
+ * platform === 'linux', and `classifyRecordedIdentity` refuses a recorded platform that differs from
+ * the runtime platform. An inline `platform: 'linux', pid_start_ticks: 1` fixture therefore degrades
+ * to identity-indeterminate off Linux, which silently made these cases Linux-only. Linux keeps the
+ * v1 shape byte-identically; other hosts describe the same pointer with the platform-agnostic v2
+ * identity that `matchingObservation()` (host platform, birth '1') matches.
+ */
+function hostPointerIdentity(): Record<string, unknown> {
+  if (process.platform === 'linux') return { platform: 'linux', pid_start_ticks: 1 };
+  return {
+    platform: process.platform,
+    identity_schema_version: 2,
+    process_identity: { platform: process.platform, birth: '1' },
+  };
+}
+
 function matchingObservation(platform: NodeJS.Platform = process.platform): ProcessObservation {
   return { kind: 'identity', identity: { platform, birth: '1' } };
 }
@@ -1431,8 +1450,7 @@ describe('session pointer transaction', () => {
           started_at: '2026-07-14T00:00:00.000Z',
           cwd,
           pid: process.pid,
-          platform: 'linux',
-          pid_start_ticks: 1,
+          ...hostPointerIdentity(),
         }), 'utf-8');
         assert.equal((await readSessionPointer(context)).status, 'usable');
 
