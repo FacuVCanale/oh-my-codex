@@ -111,8 +111,13 @@ import { readCatalogManifest } from "../catalog/reader.js";
 import {
 	defaultProcessInspectionProvider,
 	isValidProcessIdentity,
+	resolveSessionPointerContext,
 	type ProcessInspectionProvider,
 } from "../hooks/session.js";
+import {
+	resolveAuthoritativeTeamWorkerContext,
+	resolveConductorPolicyRoot,
+} from "../team/worker-provenance.js";
 
 let doctorClaimJournalDurabilityOverride: NativeHookClaimJournalDurability | undefined;
 
@@ -893,7 +898,8 @@ interface TeamDoctorIssue {
 		| "orphan_tmux_session"
 		| "resume_blocker"
 		| "prompt_resume_unavailable"
-		| "stale_leader";
+		| "stale_leader"
+		| "worker_policy_root_unusable";
 	message: string;
 	severity: "warn" | "fail";
 }
@@ -1098,6 +1104,54 @@ async function collectTeamDoctorIssues(
 					}
 				} catch {
 					// ignore malformed files
+				}
+			}
+
+			// #3536: run the same runtime preflight the native hook applies. A
+			// worker whose metadata cannot establish an authoritative context, or
+			// whose verified state root still yields an unusable Conductor policy
+			// root, would be denied at runtime while doctor reports all-pass.
+			const identityPath = join(workerDir, "identity.json");
+			if (existsSync(identityPath)) {
+				try {
+					const identity = JSON.parse(await readFile(identityPath, "utf-8")) as Record<string, unknown>;
+					const manifestForWorker = existsSync(manifestPath)
+						? JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>
+						: {};
+					const workerCwd = typeof identity.worktree_path === "string" && identity.worktree_path.trim() !== ""
+						? identity.worktree_path.trim()
+						: typeof identity.working_dir === "string" ? identity.working_dir.trim() : "";
+					const identityStateRoot = typeof identity.team_state_root === "string" && identity.team_state_root.trim() !== ""
+						? identity.team_state_root.trim()
+						: stateDir;
+					const leaderCwd = typeof manifestForWorker.leader_cwd === "string" ? manifestForWorker.leader_cwd.trim() : "";
+					if (workerCwd) {
+						const workerEnv = {
+							OMX_TEAM_INTERNAL_WORKER: `${teamName}/${worker.name}`,
+							OMX_TEAM_STATE_ROOT: identityStateRoot,
+							OMX_TEAM_LEADER_CWD: leaderCwd,
+						} as NodeJS.ProcessEnv;
+						const evidence = await resolveAuthoritativeTeamWorkerContext(workerCwd, { env: workerEnv });
+						if (!evidence) {
+							issues.push({
+								code: "worker_policy_root_unusable",
+								message: `${teamName}/${worker.name} identity/config/manifest metadata does not establish an authoritative worker context; runtime authorization would deny this worker`,
+								severity: "fail",
+							});
+						} else {
+							const selectedStateDir = resolveSessionPointerContext(workerCwd, workerEnv).baseStateDir;
+							const policyRoot = resolveConductorPolicyRoot(selectedStateDir, workerCwd, evidence);
+							if (!policyRoot.valid) {
+								issues.push({
+									code: "worker_policy_root_unusable",
+									message: `${teamName}/${worker.name} selected state root ${selectedStateDir} has no usable canonical session cwd and no verified Team-root binding; runtime authorization would deny this worker`,
+									severity: "fail",
+								});
+							}
+						}
+					}
+				} catch {
+					// ignore malformed worker metadata
 				}
 			}
 		}
