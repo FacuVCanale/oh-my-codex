@@ -18,7 +18,6 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
 
   { keyword: '$ultrawork', skill: 'ultrawork', priority: 10, guidance: 'Sunset: $ultrawork was removed in OMX 0.21; use $team (stub)' },
   { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Sunset: ultrawork was removed in OMX 0.21; use $team (stub)' },
-  { keyword: 'parallel', skill: 'ultrawork', priority: 10, guidance: 'Sunset: ultrawork was removed in OMX 0.21; use $team (stub)' },
   { keyword: '$ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: 'ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: '$ultraqa', skill: 'ultraqa', priority: 8, guidance: 'Activate UltraQA cycling workflow' },

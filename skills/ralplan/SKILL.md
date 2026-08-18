@@ -20,7 +20,7 @@ $ralplan "task description"
 
 ## Ontology-heavy review
 
-For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, subagent `Scholastic` may be cited as an available advisory ontology reviewer/persona. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself records Architect→Critic lifecycle evidence only; neither those reviews nor Scholastic evidence is a durable execution authorization.
+For requirements semantics, taxonomy, prompt/spec design, policy distinctions, or category-risk architecture, cite the `architect` role agent's read-only review as advisory evidence. Its findings can inform the plan or follow-up evidence when explicitly used, but `$ralplan` itself records Architect→Critic lifecycle evidence only, and advisory review is never a durable execution authorization.
 
 ## Usage with interactive mode
 
@@ -100,7 +100,7 @@ Follow the Plan skill's full documentation for consensus mode details.
 When a bound `ralplan_execution_handoff` permits execution, include product-facing goal-mode suggestions alongside the existing Ralph and team options. Record the requested lane and persist the handoff without claiming host-issued authority.
 
 - `$ultragoal` — **default goal-mode follow-up** for implementation or general goal-oriented follow-up plans that should become durable Codex/OMX goals with sequential completion tracking.
-- `$autoresearch-goal` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable.
+- `$autoresearch` — research-project follow-up when the plan centers on a question, literature/reference gathering, evaluator-backed research, or a professor/critic-style research deliverable. (`$autoresearch-goal` was retired to a sunset stub in OMX 0.21.)
 - `$performance-goal` — optimization/performance follow-up when the plan centers on speed, latency, throughput, memory, benchmark, or other measurable performance work.
 
 Keep `$team` as a first-class execution option and keep `$ralph` available only as an explicit fallback where appropriate: use Ultragoal as the default durable goal-mode follow-up, Team for coordinated parallel implementation, and Ralph only for intentionally selected persistent single-owner completion/verification pressure. For parallelizable durable-goal delivery, recommend `$ultragoal` + `$team` together: Ultragoal remains the leader-owned `.omx/ultragoal` ledger/Codex-goal wrapper while Team runs parallel lanes and returns checkpoint-ready evidence. Do not present Ralph as the recommended follow-up when durable goal tracking is needed; present Ultragoal as the superseding default, with Team for parallel delivery and Ralph only as an explicit fallback when its narrow persistence loop is specifically desired.

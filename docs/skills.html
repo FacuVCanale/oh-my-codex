@@ -36,7 +36,7 @@
         <li><code>$autopilot</code> - supervised end-to-end orchestration through <code>$deep-interview -&gt; $ralplan -&gt; $ultragoal</code></li>
         <li><code>$team</code> - coordinated multi-agent execution for the approved plan</li>
         <li><code>$ultragoal</code> - durable multi-goal planning and execution over <code>.omx/ultragoal</code> artifacts plus Codex goal handoff</li>
-        <li><code>$visual-verdict</code> - structured visual QA loop for screenshot/reference matching</li>
+        <li><code>$visual-ralph</code> - measured visual-reference loop; <em>Removed in OMX 0.21:</em> <code>$visual-verdict</code></li>
         <li><code>$ultraqa</code> - test/verify/fix loop</li>
         <li><em>Removed in OMX 0.21:</em> <code>$ralph</code>, <code>$ultrawork</code>, <code>$pipeline</code> (sunset stubs for one release)</li>
       </ul>
@@ -61,25 +61,21 @@
 
       <h2>Agent Shortcuts</h2>
       <ul>
-        <li><code>$analyze</code></li>
-        <li><code>$deepsearch</code></li>
-        <li><code>$tdd</code></li>
-        <li><code>$build-fix</code></li>
-        <li><code>$code-review</code></li>
-        <li><code>$security-review</code></li>
+        <li><code>$analyze</code> - read-only deep analysis with ranked synthesis</li>
+        <li><code>$code-review</code> - merge-readiness review</li>
         <li><code>$design</code> - maintain repo-local <code>DESIGN.md</code></li>
         <li><code>$visual-ralph</code> - measured visual-reference implementation loop</li>
-        <li><code>$git-master</code></li>
-        <li><code>$review</code></li>
+        <li><code>$git-master</code> - alias for the git workflow surface</li>
+        <li><em>Removed in OMX 0.21:</em> <code>$deepsearch</code> (use <code>$analyze</code>), <code>$tdd</code>, <code>$build-fix</code>, <code>$security-review</code> and <code>$review</code> (use <code>$code-review</code>)</li>
       </ul>
 
       <h2>Utilities</h2>
       <ul>
-        <li><code>$cancel</code>, <code>$doctor</code>, <code>$help</code>, <code>$note</code>, <code>$trace</code></li>
+        <li><code>$cancel</code>, <code>$doctor</code></li>
         <li><code>$skill</code></li>
         <li><code>$hud</code>, <code>$omx-setup</code>, <code>$configure-notifications</code></li>
-        <li><code>$ralph-init</code></li>
         <li><code>$worker</code> (internal) - team worker protocol / lifecycle</li>
+        <li><em>Removed in OMX 0.21:</em> <code>$help</code> (use <code>$omx-setup</code>), <code>$note</code>, <code>$trace</code>, <code>$ralph-init</code> (use <code>$ultragoal</code>)</li>
       </ul>
 
       <h2>Usage Examples</h2>
