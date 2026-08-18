@@ -862,12 +862,7 @@ export function isSessionStale(
   // evidence available, and this is a READ predicate, not an authority grant: the classifier still
   // returns identity-indeterminate (pinned by `classifies identity-less live non-Linux pointers as
   // identity-indeterminate`), and authority-granting paths keep requiring `usable`.
-  if (!isUnobservableLivePointerState(state, runtimePlatform)) return true;
-  try {
-    return probePid(state.pid) !== 'alive';
-  } catch {
-    return true;
-  }
+  return !isUnobservableLivePointerState(state, runtimePlatform, probePid);
 }
 
 type ProcessClassificationStatus = 'usable' | 'stale-dead' | 'identity-indeterminate';
@@ -999,16 +994,25 @@ function probeIdentitylessProcess(
  */
 function isUnobservableLivePointerState(
   state: { pid?: unknown; platform?: unknown; process_identity?: { platform?: unknown } } | undefined,
-  // Explicit rather than read from transactionDependencies: isSessionStale accepts an injected
-  // platform override, and silently using the host platform there made the linux fail-closed cases
-  // evaluate against the wrong runtime.
+  // Explicit rather than read from transactionDependencies: isSessionStale accepts injected platform
+  // and probe overrides, and silently using the host values there evaluated the linux fail-closed
+  // cases against the wrong runtime.
   runtimePlatform: NodeJS.Platform = transactionDependencies.runtimePlatform,
+  probe: (pid: number) => PidProbeResult = transactionDependencies.probePid,
 ): boolean {
   if (!state) return false;
   const recordedPlatform = state.process_identity?.platform ?? state.platform ?? runtimePlatform;
   if (recordedPlatform !== runtimePlatform) return false;
   if (recordedPlatform === 'linux') return false;
-  return typeof state.pid === 'number' && Number.isInteger(state.pid) && state.pid > 0;
+  if (typeof state.pid !== 'number' || !Number.isInteger(state.pid) || state.pid <= 0) return false;
+  // POSITIVE liveness is required, not merely a plausible shape. A pid that cannot be probed at all
+  // (for example an out-of-range one) is not evidence of a live session, and admitting it would let
+  // a stale pointer survive a relaunch instead of failing closed.
+  try {
+    return probe(state.pid) === 'alive';
+  } catch {
+    return false;
+  }
 }
 
 export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: string): boolean {
@@ -2998,7 +3002,14 @@ export async function updateDetachedSessionMetadata(
         lockPath: binding.context.lockPath, reason: `Unable to read selected session pointer: ${errorMessage(error)}`, cause: error,
       });
     }
-    if (pointerBeforeTransaction.status !== 'usable'
+    // Read against an ALREADY-authorized binding: isAuthorizedBoundPointer verifies the pointer
+    // belongs to this binding (canonical session id + launch lineage token), which is a stricter
+    // check than liveness. Admitting an unobservable-live pointer here only stops a running session
+    // on a platform without process-birth evidence from reading as absent; it grants no new
+    // authority, because the binding authorization still has to match.
+    if ((pointerBeforeTransaction.status !== 'usable'
+      && !(pointerBeforeTransaction.status === 'identity-indeterminate'
+        && isUnobservableLivePointerState(pointerBeforeTransaction.state)))
       || !isAuthorizedBoundPointer(binding, binding.context, binding.canonicalSessionId, pointerBeforeTransaction.state)) {
       throw unusablePointerAbort(binding.context, binding.canonicalSessionId, pointerBeforeTransaction);
     }
@@ -3015,7 +3026,10 @@ export async function updateDetachedSessionMetadata(
       { context: binding.context },
       DEFAULT_POINTER_TIMEOUT_MS,
       async (pointer, context) => {
-        const state = pointer.status === 'usable' ? pointer.state : undefined;
+        const state = pointer.status === 'usable'
+          || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+          ? pointer.state
+          : undefined;
         if (!state || !isAuthorizedBoundPointer(binding, context, binding.canonicalSessionId, state)) {
           throw unusablePointerAbort(context, binding.canonicalSessionId, pointer);
         }
