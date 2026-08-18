@@ -281,25 +281,6 @@ const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const SKIP_NATIVE_AGENT_REFRESH_ENV = "OMX_SKIP_NATIVE_AGENT_REFRESH";
-const HARD_DEPRECATED_SKILL_NAMES = new Set([
-	"ask-claude",
-	"ask-gemini",
-	"build-fix",
-	"deepsearch",
-	"ecomode",
-	"frontend-ui-ux",
-	"help",
-	"note",
-	"prometheus-strict",
-	"ralph-init",
-	"review",
-	"security-review",
-	"swarm",
-	"tdd",
-	"trace",
-	"visual-verdict",
-	"web-clone",
-]);
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
 const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
 const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
@@ -2313,12 +2294,33 @@ export async function validateSkillFile(skillMdPath: string): Promise<void> {
 	parseSkillFrontmatter(content, skillMdPath);
 }
 
+const INSTALLED_SKILL_BADGE_PREFIX = "[OMX] ";
+
+/**
+ * An installed skill directory is OMX-owned only when its SKILL.md still carries the badge OMX
+ * writes on install. That badge is the sole ownership evidence that survives a skill being deleted
+ * from the catalog, so it — not a hand-maintained name list — decides what setup may delete.
+ */
+async function isOmxManagedInstalledSkillDir(skillDir: string): Promise<boolean> {
+	const skillMdPath = join(skillDir, "SKILL.md");
+	if (!existsSync(skillMdPath)) return false;
+	try {
+		const metadata = parseSkillFrontmatter(
+			await readFile(skillMdPath, "utf-8"),
+			skillMdPath,
+		);
+		return metadata.description.startsWith(INSTALLED_SKILL_BADGE_PREFIX);
+	} catch {
+		return false;
+	}
+}
+
 function rewriteInstalledSkillDescriptionBadge(
 	content: string,
 	filePath = "SKILL.md",
 ): string {
 	const metadata = parseSkillFrontmatter(content, filePath);
-	const badgePrefix = "[OMX] ";
+	const badgePrefix = INSTALLED_SKILL_BADGE_PREFIX;
 	const displayDescription = metadata.description.startsWith(badgePrefix)
 		? metadata.description
 		: `${badgePrefix}${metadata.description}`;
@@ -5729,11 +5731,14 @@ export async function installSkills(
 	): boolean =>
 		isCatalogInstallableStatus(status) || installableSkillNames.has(skillName);
 	const entries = await readdir(srcDir, { withFileTypes: true });
-	const staleCandidateSkillNames = new Set(
+	const catalogKnownSkillNames = new Set(
 		manifest?.skills.map((skill) => skill.name) ?? [],
 	);
-	for (const skillName of HARD_DEPRECATED_SKILL_NAMES) {
-		staleCandidateSkillNames.add(skillName);
+	const staleCandidateSkillNames = new Set(catalogKnownSkillNames);
+	if (existsSync(dstDir)) {
+		for (const installed of await readdir(dstDir, { withFileTypes: true })) {
+			if (installed.isDirectory()) staleCandidateSkillNames.add(installed.name);
+		}
 	}
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
@@ -5816,14 +5821,24 @@ export async function installSkills(
 			const status = skillStatusByName?.get(staleSkill);
 			const disabledTeamSkill = !teamModeEnabled(options.teamMode) && TEAM_MODE_SKILL_NAMES.has(staleSkill);
 			if (isSetupInstallableSkill(staleSkill, status) && !disabledTeamSkill) continue;
-			const hardDeprecated = HARD_DEPRECATED_SKILL_NAMES.has(staleSkill);
-			if (!options.force && !hardDeprecated && !disabledTeamSkill) continue;
 
 			const staleSkillDir = join(dstDir, staleSkill);
 			if (!existsSync(staleSkillDir)) continue;
 
-			if (!options.dryRun) {
-				await rm(staleSkillDir, { recursive: true, force: true });
+			// An OMX-badged directory the catalog no longer ships is ours to retire on any refresh,
+			// which is what makes `omx update` drop deprecated skills without an extra flag.
+			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir);
+			const forcedCatalogSkill = options.force && catalogKnownSkillNames.has(staleSkill);
+			if (!omxManaged && !forcedCatalogSkill && !disabledTeamSkill) {
+				summary.skipped += 1;
+				if (options.verbose) {
+					console.log(`  kept ${staleSkill}/ (not an OMX-managed skill install)`);
+				}
+				continue;
+			}
+
+			if (await removeDirectoryCopyAware(staleSkillDir, backupContext, options)) {
+				summary.backedUp += 1;
 			}
 			summary.removed += 1;
 			if (options.verbose) {
@@ -5833,7 +5848,7 @@ export async function installSkills(
 				const label = status ?? "unlisted";
 				const reason = disabledTeamSkill
 					? ", Team mode disabled"
-					: hardDeprecated ? ", hard-deprecated" : "";
+					: omxManaged ? ", retired from the catalog" : "";
 				console.log(`  ${prefix} ${staleSkill}/ (status: ${label}${reason})`);
 			}
 		}
@@ -5928,6 +5943,19 @@ async function cleanupLegacyManagedSkills(
 		if (removed) {
 			result.backedUp += 1;
 			result.removedSkillNames.push(skillName);
+		}
+	}
+
+	// Plugin mode never reinstalls into the legacy directory, so a skill the catalog has retired
+	// would otherwise survive there forever. Retire OMX-badged orphans on every refresh.
+	for (const entry of await readdir(dstDir, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		if (installableSkillNames.has(entry.name)) continue;
+		const installedSkillDir = join(dstDir, entry.name);
+		if (!(await isOmxManagedInstalledSkillDir(installedSkillDir))) continue;
+		if (await removeDirectoryCopyAware(installedSkillDir, backupContext, options)) {
+			result.backedUp += 1;
+			result.removedSkillNames.push(entry.name);
 		}
 	}
 

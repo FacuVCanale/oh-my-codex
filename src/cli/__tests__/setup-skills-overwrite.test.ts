@@ -110,7 +110,7 @@ describe('omx setup skills overwrite behavior', () => {
       await mkdir(staleWebCloneDir, { recursive: true });
       await writeFile(
         join(staleWebCloneDir, 'SKILL.md'),
-        '---\nname: web-clone\ndescription: old standalone pipeline\n---\n\nClone a target website from its URL.\n',
+        '---\nname: web-clone\ndescription: "[OMX] old standalone pipeline"\n---\n\nClone a target website from its URL.\n',
       );
       assert.equal(existsSync(staleWebCloneDir), true);
 
@@ -118,6 +118,70 @@ describe('omx setup skills overwrite behavior', () => {
 
       assert.equal(existsSync(staleWebCloneDir), false);
       assert.equal(existsSync(join(wd, '.codex', 'skills', 'visual-ralph', 'SKILL.md')), true);
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('retires catalog-dropped OMX skills on a plain refresh while keeping user-authored skills', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      // Names removed from the catalog outright: no manifest entry and no shipped source directory.
+      const retiredDirs = ['prometheus-strict', 'pipeline', 'scholastic'].map((name) => {
+        return { name, dir: join(wd, '.codex', 'skills', name) };
+      });
+      for (const { name, dir } of retiredDirs) {
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: "[OMX] retired ${name}"\n---\n`);
+      }
+      const userSkillDir = join(wd, '.codex', 'skills', 'my-own-skill');
+      await mkdir(userSkillDir, { recursive: true });
+      await writeFile(join(userSkillDir, 'SKILL.md'), '---\nname: my-own-skill\ndescription: hand written\n---\n');
+      const editedOmxSkillDir = join(wd, '.codex', 'skills', 'ecomode');
+      await mkdir(editedOmxSkillDir, { recursive: true });
+      await writeFile(join(editedOmxSkillDir, 'SKILL.md'), '---\nname: ecomode\ndescription: my edited copy\n---\n');
+
+      // No --force: this is exactly what `omx update` runs after installing a new version.
+      await setup({ scope: 'project' });
+
+      for (const { name, dir } of retiredDirs) {
+        assert.equal(existsSync(dir), false, `${name} must not survive an ordinary refresh`);
+      }
+      assert.equal(existsSync(userSkillDir), true, 'a user-authored skill is never OMX-owned');
+      assert.equal(existsSync(editedOmxSkillDir), true, 'a badge-stripped copy is user-owned content');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('backs up a retired skill directory before deleting it', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const retiredDir = join(wd, '.codex', 'skills', 'prometheus-strict');
+      await mkdir(retiredDir, { recursive: true });
+      await writeFile(join(retiredDir, 'SKILL.md'), '---\nname: prometheus-strict\ndescription: "[OMX] retired"\n---\n');
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(retiredDir), false);
+      const setupBackupRoot = join(wd, '.omx', 'backups', 'setup');
+      const backupRoots = await readdir(setupBackupRoot).catch(() => [] as string[]);
+      const preserved = backupRoots.some((backup) => existsSync(join(setupBackupRoot, backup, '.codex', 'skills', 'prometheus-strict', 'SKILL.md')));
+      assert.equal(preserved, true, `retired skill bytes must be recoverable; backups seen: ${backupRoots.join(', ')}`);
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -189,7 +253,7 @@ describe('omx setup skills overwrite behavior', () => {
       assert.equal(existsSync(wikiDir), true);
 
       await mkdir(staleSwarmDir, { recursive: true });
-      await writeFile(join(staleSwarmDir, 'SKILL.md'), '# stale swarm\n');
+      await writeFile(join(staleSwarmDir, 'SKILL.md'), '---\nname: swarm\ndescription: "[OMX] stale swarm"\n---\n');
 
       await setup({ scope: 'project', force: true });
 
@@ -292,7 +356,7 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project', verbose: true });
       await mkdir(join(wd, '.codex', 'skills', 'swarm'), { recursive: true });
-      await writeFile(join(wd, '.codex', 'skills', 'swarm', 'SKILL.md'), '# stale swarm\n');
+      await writeFile(join(wd, '.codex', 'skills', 'swarm', 'SKILL.md'), '---\nname: swarm\ndescription: "[OMX] stale swarm"\n---\n');
       await setup({ scope: 'project', force: true, verbose: true });
 
       const output = logs.join('\n');
