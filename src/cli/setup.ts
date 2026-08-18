@@ -107,7 +107,7 @@ import {
 	isSetupPromptAssetName,
 } from "../agents/policy.js";
 import { getPackageRoot } from "../utils/package.js";
-import { readSessionState, isSessionStale } from "../hooks/session.js";
+import { readSessionState, classifySessionStateLiveness } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
@@ -4605,7 +4605,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.scope === "project"
 			? await readSessionState(projectRoot)
 			: null;
-	const sessionIsActive = activeSession && !isSessionStale(activeSession);
+	// Only a definitely dead session releases the overlay. macOS records no process-birth evidence, so
+	// a live session classifies as identity-indeterminate; treating that as stale would let setup
+	// overwrite the AGENTS.md overlay of a running session.
+	const sessionIsActive =
+		activeSession !== null &&
+		classifySessionStateLiveness(activeSession) !== "stale-dead";
 	if (isPluginInstallMode) {
 		const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
 		const pluginAgentsMdExists = pluginAgentsMdPathExists;
