@@ -49,7 +49,7 @@ omx team shutdown <team-name>
 
 1. `$deep-interview` — 當範圍或邊界仍不清楚時，先用它釐清需求。
 2. `$ralplan` — 把釐清後的範圍整理成可核准的架構與實作計畫。
-3. `$ultragoal` 或 `$team` — 需要持久目標追蹤時用 `$ultragoal`，需要協調平行執行時用 `$team`。（`$ralph` 已於 OMX 0.21 降級為 sunset stub，僅在明確選擇單一負責人持續推進時作為後備。）
+3. `$ultragoal` 或 `$team` — 需要持久目標追蹤時用 `$ultragoal`，需要協調平行執行時用 `$team`。（OMX 0.21 降級了 `$ralph`，使其成為 sunset stub，僅在明確選擇單一負責人持續推進時作為後備。）
 
 ## 核心模型
 
@@ -229,7 +229,7 @@ OMX_TEAM_AUTO_INTERRUPT_RETRY=0  # 選用：停用自適應 queue->resend 回退
 
 ### 視覺品質驗證迴圈（`$visual-ralph`）
 
-當任務需要視覺保真度驗證（參考圖片 + 生成截圖）時，請使用 `$visual-ralph`。`$visual-verdict` 已於 OMX 0.21 移除。
+當任務需要視覺保真度驗證（參考圖片 + 生成截圖）時，請使用 `$visual-ralph`。（OMX 0.21 移除了 `$visual-verdict`。）
 
 - 回傳結構化 JSON：`score`、`verdict`、`category_match`、`differences[]`、`suggestions[]`、`reasoning`
 - 建議通過門檻：**90 分以上**

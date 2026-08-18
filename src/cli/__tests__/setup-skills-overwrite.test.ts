@@ -1,10 +1,50 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
+
+
+/**
+ * Seed a retired OMX skill the way a real install leaves it: the badged directory PLUS the install
+ * receipt recording its digests. Retirement requires proof of an unmodified install, so a fixture
+ * without a receipt is conservatively retained.
+ */
+async function seedRetiredOmxSkill(skillsDir: string, name: string, description: string): Promise<string> {
+  const dir = join(skillsDir, name);
+  await mkdir(dir, { recursive: true });
+  const body = `---\nname: ${name}\ndescription: "[OMX] ${description}"\n---\n`;
+  await writeFile(join(dir, 'SKILL.md'), body);
+  await recordInstallReceipt(skillsDir, name);
+  return dir;
+}
+
+/** Record real per-file digests for one skill directory into the install receipt. */
+async function recordInstallReceipt(skillsDir: string, name: string): Promise<void> {
+  const receiptPath = join(skillsDir, '.omx-installed-skills.json');
+  let receipt: { version: 1; skills: Record<string, { files: Record<string, string> }> };
+  try {
+    receipt = JSON.parse(await readFile(receiptPath, 'utf-8'));
+  } catch {
+    receipt = { version: 1, skills: {} };
+  }
+  const files: Record<string, string> = {};
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { await walk(full, rel); continue; }
+      if (!entry.isFile()) continue;
+      files[rel] = createHash('sha256').update(await readFile(full)).digest('hex');
+    }
+  };
+  await walk(join(skillsDir, name), '');
+  receipt.skills[name] = { files };
+  await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+}
 
 describe('omx setup skills overwrite behavior', () => {
   it('installs wiki during setup even though it is omitted from the current manifest', async () => {
@@ -106,12 +146,8 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const staleWebCloneDir = join(wd, '.codex', 'skills', 'web-clone');
-      await mkdir(staleWebCloneDir, { recursive: true });
-      await writeFile(
-        join(staleWebCloneDir, 'SKILL.md'),
-        '---\nname: web-clone\ndescription: "[OMX] old standalone pipeline"\n---\n\nClone a target website from its URL.\n',
-      );
+      const skillsDir = join(wd, '.codex', 'skills');
+      const staleWebCloneDir = await seedRetiredOmxSkill(skillsDir, 'web-clone', 'old standalone pipeline');
       assert.equal(existsSync(staleWebCloneDir), true);
 
       await setup({ scope: 'project' });
@@ -134,13 +170,20 @@ describe('omx setup skills overwrite behavior', () => {
       await setup({ scope: 'project' });
 
       // Names removed from the catalog outright: no manifest entry and no shipped source directory.
-      const retiredDirs = ['prometheus-strict', 'pipeline', 'scholastic'].map((name) => {
-        return { name, dir: join(wd, '.codex', 'skills', name) };
-      });
-      for (const { name, dir } of retiredDirs) {
-        await mkdir(dir, { recursive: true });
-        await writeFile(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: "[OMX] retired ${name}"\n---\n`);
+      const skillsDir = join(wd, '.codex', 'skills');
+      const retiredDirs = [] as Array<{ name: string; dir: string }>;
+      for (const name of ['prometheus-strict', 'pipeline', 'scholastic']) {
+        retiredDirs.push({ name, dir: await seedRetiredOmxSkill(skillsDir, name, `retired ${name}`) });
       }
+      // Badged AND receipted, but the user edited the body: retirement must prove an UNMODIFIED
+      // install, so this one survives even though it carries the badge.
+      const editedRetiredDir = await seedRetiredOmxSkill(skillsDir, 'ecomode-retired', 'retired ecomode');
+      const editedRetiredBody = '---\nname: ecomode-retired\ndescription: "[OMX] retired ecomode"\n---\n\nMy own notes.\n';
+      await writeFile(join(editedRetiredDir, 'SKILL.md'), editedRetiredBody);
+      // Badged but never receipted (an install predating receipts): conservatively retained.
+      const unreceiptedDir = join(skillsDir, 'deepsearch');
+      await mkdir(unreceiptedDir, { recursive: true });
+      await writeFile(join(unreceiptedDir, 'SKILL.md'), '---\nname: deepsearch\ndescription: "[OMX] legacy install"\n---\n');
       const userSkillDir = join(wd, '.codex', 'skills', 'my-own-skill');
       await mkdir(userSkillDir, { recursive: true });
       await writeFile(join(userSkillDir, 'SKILL.md'), '---\nname: my-own-skill\ndescription: hand written\n---\n');
@@ -156,6 +199,12 @@ describe('omx setup skills overwrite behavior', () => {
       }
       assert.equal(existsSync(userSkillDir), true, 'a user-authored skill is never OMX-owned');
       assert.equal(existsSync(editedOmxSkillDir), true, 'a badge-stripped copy is user-owned content');
+      assert.equal(
+        await readFile(join(editedRetiredDir, 'SKILL.md'), 'utf-8'),
+        editedRetiredBody,
+        'a badged retired skill the user edited must survive byte-identically, not be archived away',
+      );
+      assert.equal(existsSync(unreceiptedDir), true, 'a badged install with no receipt is retained conservatively');
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
@@ -171,9 +220,7 @@ describe('omx setup skills overwrite behavior', () => {
 
       await setup({ scope: 'project' });
 
-      const retiredDir = join(wd, '.codex', 'skills', 'prometheus-strict');
-      await mkdir(retiredDir, { recursive: true });
-      await writeFile(join(retiredDir, 'SKILL.md'), '---\nname: prometheus-strict\ndescription: "[OMX] retired"\n---\n');
+      const retiredDir = await seedRetiredOmxSkill(join(wd, '.codex', 'skills'), 'prometheus-strict', 'retired');
 
       await setup({ scope: 'project' });
 
@@ -252,8 +299,7 @@ describe('omx setup skills overwrite behavior', () => {
       const staleSwarmDir = join(wd, '.codex', 'skills', 'swarm');
       assert.equal(existsSync(wikiDir), true);
 
-      await mkdir(staleSwarmDir, { recursive: true });
-      await writeFile(join(staleSwarmDir, 'SKILL.md'), '---\nname: swarm\ndescription: "[OMX] stale swarm"\n---\n');
+      await seedRetiredOmxSkill(join(wd, '.codex', 'skills'), 'swarm', 'stale swarm');
 
       await setup({ scope: 'project', force: true });
 
@@ -355,8 +401,7 @@ describe('omx setup skills overwrite behavior', () => {
       };
 
       await setup({ scope: 'project', verbose: true });
-      await mkdir(join(wd, '.codex', 'skills', 'swarm'), { recursive: true });
-      await writeFile(join(wd, '.codex', 'skills', 'swarm', 'SKILL.md'), '---\nname: swarm\ndescription: "[OMX] stale swarm"\n---\n');
+      await seedRetiredOmxSkill(join(wd, '.codex', 'skills'), 'swarm', 'stale swarm');
       await setup({ scope: 'project', force: true, verbose: true });
 
       const output = logs.join('\n');

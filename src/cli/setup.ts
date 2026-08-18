@@ -2301,6 +2301,99 @@ const INSTALLED_SKILL_BADGE_PREFIX = "[OMX] ";
  * writes on install. That badge is the sole ownership evidence that survives a skill being deleted
  * from the catalog, so it — not a hand-maintained name list — decides what setup may delete.
  */
+/**
+ * Per-file digests of what OMX actually installed, so retirement can prove a directory is an
+ * UNMODIFIED OMX install rather than merely badged.
+ *
+ * The description badge alone is not sufficient ownership evidence for deletion: a user who edits the
+ * body of a retired skill keeps the badge, and archiving their edit is not preserving it. A receipt
+ * distinguishes "we wrote exactly these bytes" from "this looks like ours". Directories with no
+ * receipt - including installs that predate it - are conservatively RETAINED, which trades slower
+ * cleanup of legacy installs for never deleting user work.
+ */
+interface InstalledSkillReceipt {
+  version: 1;
+  skills: Record<string, { files: Record<string, string> }>;
+}
+
+function installedSkillReceiptPath(skillsDir: string): string {
+  return join(skillsDir, ".omx-installed-skills.json");
+}
+
+async function readInstalledSkillReceipt(skillsDir: string): Promise<InstalledSkillReceipt> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(installedSkillReceiptPath(skillsDir), "utf-8"),
+    ) as InstalledSkillReceipt;
+    if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") return parsed;
+  } catch {
+    // A missing or unreadable receipt means "no proof of ownership", which retains conservatively.
+  }
+  return { version: 1, skills: {} };
+}
+
+async function digestSkillDirectory(skillDir: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, relPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
+    }
+  };
+  await walk(skillDir, "");
+  return files;
+}
+
+/** True only when every current file matches the digest OMX recorded at install time. */
+async function isUnmodifiedRecordedInstall(
+  skillsDir: string,
+  skillName: string,
+  skillDir: string,
+): Promise<boolean> {
+  const receipt = await readInstalledSkillReceipt(skillsDir);
+  const recorded = receipt.skills[skillName]?.files;
+  if (!recorded || Object.keys(recorded).length === 0) return false;
+  let current: Record<string, string>;
+  try {
+    current = await digestSkillDirectory(skillDir);
+  } catch {
+    return false;
+  }
+  const recordedNames = Object.keys(recorded).sort();
+  const currentNames = Object.keys(current).sort();
+  if (recordedNames.length !== currentNames.length) return false;
+  return recordedNames.every((name, index) => currentNames[index] === name && current[name] === recorded[name]);
+}
+
+async function writeInstalledSkillReceipt(
+  skillsDir: string,
+  installedSkillNames: readonly string[],
+  options: Pick<SetupOptions, "dryRun">,
+): Promise<void> {
+  if (options.dryRun) return;
+  const receipt = await readInstalledSkillReceipt(skillsDir);
+  for (const name of installedSkillNames) {
+    const skillDir = join(skillsDir, name);
+    if (!existsSync(skillDir)) continue;
+    try {
+      receipt.skills[name] = { files: await digestSkillDirectory(skillDir) };
+    } catch {
+      delete receipt.skills[name];
+    }
+  }
+  try {
+    await writeFile(installedSkillReceiptPath(skillsDir), `${JSON.stringify(receipt, null, 2)}\n`);
+  } catch {
+    // A receipt we cannot persist simply means the next refresh retains conservatively.
+  }
+}
+
 async function isOmxManagedInstalledSkillDir(skillDir: string): Promise<boolean> {
 	const skillMdPath = join(skillDir, "SKILL.md");
 	if (!existsSync(skillMdPath)) return false;
@@ -5821,6 +5914,9 @@ export async function installSkills(
 		}
 	}
 
+	// Record what we just wrote so a later refresh can prove an unmodified install before retiring it.
+	await writeInstalledSkillReceipt(dstDir, installableSkills.map((skill) => skill.name), options);
+
 	if (manifest && existsSync(dstDir)) {
 		for (const staleSkill of staleCandidateSkillNames) {
 			const status = skillStatusByName?.get(staleSkill);
@@ -5830,14 +5926,20 @@ export async function installSkills(
 			const staleSkillDir = join(dstDir, staleSkill);
 			if (!existsSync(staleSkillDir)) continue;
 
-			// An OMX-badged directory the catalog no longer ships is ours to retire on any refresh,
-			// which is what makes `omx update` drop deprecated skills without an extra flag.
-			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir);
+			// A directory the catalog no longer ships is ours to retire on any refresh - which is what
+			// makes `omx update` drop deprecated skills without an extra flag - but only when we can
+			// prove it is an UNMODIFIED install we wrote. The badge alone is not proof: a user who
+			// edits the body keeps it, and archiving their edit is not preserving it.
+			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir)
+				&& await isUnmodifiedRecordedInstall(dstDir, staleSkill, staleSkillDir);
 			const forcedCatalogSkill = options.force && catalogKnownSkillNames.has(staleSkill);
 			if (!omxManaged && !forcedCatalogSkill && !disabledTeamSkill) {
 				summary.skipped += 1;
 				if (options.verbose) {
-					console.log(`  kept ${staleSkill}/ (not an OMX-managed skill install)`);
+					const why = await isOmxManagedInstalledSkillDir(staleSkillDir)
+						? "modified since install, or installed before receipts existed"
+						: "not an OMX-managed skill install";
+					console.log(`  kept ${staleSkill}/ (${why})`);
 				}
 				continue;
 			}

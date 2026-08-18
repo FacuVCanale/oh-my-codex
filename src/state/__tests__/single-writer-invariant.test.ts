@@ -70,6 +70,55 @@ async function collectTsFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * Blank out comments and string/template literals, preserving byte offsets and newlines so reported
+ * line numbers stay correct.
+ *
+ * Raw scanning is unsound without this: `writeFile(/* ) *\/ join(dir, 'ralph-state.json'), body)`
+ * closes the argument list inside a comment, and a projection name mentioned in a doc comment or an
+ * unrelated string would be reported as a write. Masking first keeps the scan honest without pulling
+ * in a parser.
+ */
+function maskCommentsAndLiterals(content: string): string {
+  const out = content.split('');
+  let index = 0;
+  const blank = (start: number, end: number): void => {
+    for (let i = start; i < end && i < out.length; i += 1) {
+      if (out[i] !== '\n') out[i] = ' ';
+    }
+  };
+  while (index < content.length) {
+    const char = content[index];
+    const next = content[index + 1];
+    if (char === '/' && next === '/') {
+      const end = content.indexOf('\n', index);
+      blank(index, end === -1 ? content.length : end);
+      index = end === -1 ? content.length : end;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      const end = content.indexOf('*/', index + 2);
+      const stop = end === -1 ? content.length : end + 2;
+      blank(index, stop);
+      index = stop;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      let i = index + 1;
+      while (i < content.length) {
+        if (content[i] === '\\') { i += 2; continue; }
+        if (content[i] === char) break;
+        i += 1;
+      }
+      blank(index, Math.min(i + 1, content.length));
+      index = i + 1;
+      continue;
+    }
+    index += 1;
+  }
+  return out.join('');
+}
+
+/**
  * Extract the balanced argument text of a call that starts at `openParen`, so a multi-line call is
  * inspected in full rather than one line at a time.
  */
@@ -93,18 +142,22 @@ interface Violation {
   snippet: string;
 }
 
-function auditSource(relPath: string, content: string): Violation[] {
+function auditSource(relPath: string, rawContent: string): Violation[] {
   const violations: Violation[] = [];
+  // Detect against masked source so comments and literals cannot fake or hide a call; the mask
+  // preserves offsets, so hint matching and line numbers still line up with the real file.
+  const content = maskCommentsAndLiterals(rawContent);
   for (const handleMatch of content.matchAll(HANDLE_WRITE_PATTERN)) {
     const openParen = handleMatch.index + handleMatch[0].length - 1;
     const args = balancedArguments(content, openParen);
     if (args === null) continue;
-    if (!STATE_FILE_HINTS.some((hint) => args.includes(hint))) continue;
+    const rawArgs = rawContent.slice(openParen + 1, openParen + 1 + args.length);
+    if (!STATE_FILE_HINTS.some((hint) => rawArgs.includes(hint))) continue;
     violations.push({
       module: relPath,
       line: content.slice(0, handleMatch.index).split('\n').length,
       call: `handle.${handleMatch[1]}`,
-      snippet: `${handleMatch[0]}${args})`.replace(/\s+/g, ' ').slice(0, 120),
+      snippet: `${handleMatch[0]}${rawArgs})`.replace(/\s+/g, ' ').slice(0, 120),
     });
   }
   for (const call of MUTATING_CALLS) {
@@ -113,12 +166,16 @@ function auditSource(relPath: string, content: string): Violation[] {
       const openParen = match.index + match[0].length - 1;
       const args = balancedArguments(content, openParen);
       if (args === null) continue;
-      if (!STATE_FILE_HINTS.some((hint) => args.includes(hint))) continue;
+      // Hints are matched on the RAW argument text: a hard-coded '<mode>-state.json' lives inside a
+      // string literal, which the mask blanks out. The mask is only used to find real call sites and
+      // real parentheses.
+      const rawArgs = rawContent.slice(openParen + 1, openParen + 1 + args.length);
+      if (!STATE_FILE_HINTS.some((hint) => rawArgs.includes(hint))) continue;
       violations.push({
         module: relPath,
         line: content.slice(0, match.index).split('\n').length,
         call,
-        snippet: `${call}(${args})`.replace(/\s+/g, ' ').slice(0, 120),
+        snippet: `${call}(${rawArgs})`.replace(/\s+/g, ' ').slice(0, 120),
       });
     }
   }
@@ -170,6 +227,24 @@ describe('State writer audit (#3498)', () => {
       auditSource('fake/unrelated.ts', "await writeFile(join(dir, 'notes.md'), body);"),
       [],
       'writes unrelated to mode state must not be flagged',
+    );
+    // A comment containing a close paren must not truncate the argument scan.
+    assert.equal(
+      auditSource('fake/comment.ts', "await writeFile(/* ) */ join(dir, 'ralph-state.json'), body);").length,
+      1,
+      'a close paren inside a comment must not hide the call',
+    );
+    // A projection name mentioned only in a comment is not a write.
+    assert.deepEqual(
+      auditSource('fake/mention.ts', "// writeFile(join(dir, 'ralph-state.json'), body)\nconst x = 1;"),
+      [],
+      'a commented-out call must not be reported',
+    );
+    // A call name inside a string literal is not a call.
+    assert.deepEqual(
+      auditSource('fake/string.ts', "const doc = \"writeFile(join(dir, 'ralph-state.json'))\";"),
+      [],
+      'a call name inside a string literal must not be reported',
     );
   });
 

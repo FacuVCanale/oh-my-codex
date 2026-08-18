@@ -1015,6 +1015,29 @@ function isUnobservableLivePointerState(
   }
 }
 
+/**
+ * May an existing pointer whose liveness could NOT be proven be reconciled in place?
+ *
+ * `isUnobservableLivePointerState` answers "someone may be here", which is enough to REFUSE a foreign
+ * claim or to preserve lineage, but it is not proof of WHO is here, so reconciling it is an adoption
+ * and needs its own justification.
+ *
+ * Neither pid NOR platform equality can be required here, and both were measured rather than assumed:
+ * native SessionStart reconciliation exists so a native Codex process can adopt a pointer an OMX
+ * launch wrote, so the pid legitimately differs, and `preserves canonical session id while
+ * reconciling native SessionStart metadata` also reconciles with a different announced platform.
+ * Requiring either refused legitimate reconciliation (that test fails), which is the defect this
+ * change set fixes.
+ *
+ * What bounds the adoption is therefore: this cwd-authority check, asserted locally so the invariant
+ * is visible at the mutation site instead of only implied by the classifier's foreign-cwd rejection;
+ * plus native-id compatibility and owner-alias merge in the caller. A pointer for another working
+ * directory or another session can never be adopted.
+ */
+function mayAdoptUnprovenPointer(existing: SessionState, cwd: string): boolean {
+  return isSessionStateAuthoritativeForCwd(existing, cwd);
+}
+
 export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: string): boolean {
   if (!normalizeSessionId(state.session_id)) return false;
   if (typeof state.cwd !== 'string' || !state.cwd.trim()) return false;
@@ -3461,10 +3484,15 @@ function reconcileNativeTransition(
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
     const linuxIdentity = sessionIdentityFor(pid, platform);
-    const existing = pointer.status === 'usable'
+    const livenessProven = pointer.status === 'usable';
+    const existing = livenessProven
       || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
       ? pointer.state
       : undefined;
+
+    if (existing && !livenessProven && !mayAdoptUnprovenPointer(existing, context.cwd)) {
+      throw ownerConflictAbort(context, nativeSessionId, existing);
+    }
 
     if (!existing) {
       const ownerCandidate = verifiedOwnerCandidate(context, options);

@@ -109,15 +109,20 @@ describe('sunset routing contract', () => {
     for (const relPath of DOC_SURFACES) {
       const content = readFileSync(join(repoRoot, relPath), 'utf-8');
       content.split('\n').forEach((line, index) => {
-        const labelled = REMOVAL_LABELS.some((label) => line.includes(label));
-        if (labelled) return;
+        // Each retired token must be bound to its OWN declaration: a removal label exempts only the
+        // part of the line that follows it, so one generic "Removed in ..." phrase cannot silently
+        // license every other token sitting earlier on the same line.
+        const labelOffsets = REMOVAL_LABELS
+          .map((label) => line.indexOf(label))
+          .filter((offset) => offset >= 0);
+        const earliestLabel = labelOffsets.length > 0 ? Math.min(...labelOffsets) : -1;
         for (const match of line.matchAll(/\$([a-z][a-z0-9-]*)/g)) {
           const token = match[1];
           // `$name` is a prose placeholder, not a skill invocation.
           if (token === 'name') continue;
-          if (!invocable.has(token)) {
-            violations.push(`${relPath}:${index + 1} $${token}`);
-          }
+          if (invocable.has(token)) continue;
+          const exempt = earliestLabel >= 0 && match.index > earliestLabel;
+          if (!exempt) violations.push(`${relPath}:${index + 1} $${token}`);
         }
       });
     }
@@ -137,6 +142,19 @@ describe('sunset routing contract', () => {
       'utf-8',
     );
     assert.equal(mirror, root, 'the plugin mirror must match the canonical ralplan skill exactly');
+  });
+
+  it('binds each retired token to its own removal label', () => {
+    // Regression for a permissive allowlist: a label must not license a token that precedes it.
+    const invocable = invocableSkillNames();
+    const line = 'Use `$deepsearch` freely. Removed in OMX 0.21: `$tdd`';
+    const labelOffset = line.indexOf('Removed in OMX 0.21');
+    const offenders: string[] = [];
+    for (const match of line.matchAll(/\$([a-z][a-z0-9-]*)/g)) {
+      if (invocable.has(match[1])) continue;
+      if (match.index < labelOffset) offenders.push(match[1]);
+    }
+    assert.deepEqual(offenders, ['deepsearch'], 'a token before the label must still be reported');
   });
 
   it('does not cite a deleted prompt or role as available', () => {

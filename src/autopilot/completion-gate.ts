@@ -151,12 +151,28 @@ function validIsoTimestamp(value: unknown): boolean {
  * absent field still routes to the advisory path.
  */
 function assertNoForgedRalplanHandoffEvidence(state: JsonObject): void {
-  const gate = objectRecord(stateField(state, 'ralplan_consensus_gate'));
-  const execution = objectRecord(stateField(state, 'ralplan_execution_handoff'));
-  const architect = objectRecord(gate.ralplan_architect_review);
-  const critic = objectRecord(gate.ralplan_critic_review);
   const present = (value: unknown): boolean => value !== undefined && value !== null;
   const forged: string[] = [];
+
+  // Container shapes are validated BEFORE objectRecord() normalizes them. objectRecord turns a
+  // scalar, array, or null into {}, which is indistinguishable from an absent container - so a
+  // supplied-but-malformed gate or review would read as "evidence simply missing" and take the
+  // advisory path instead of failing closed as corruption. Absent stays advisory; supplied-and-
+  // malformed is corruption.
+  const requireObjectShape = (value: unknown, label: string): void => {
+    if (!present(value)) return;
+    if (typeof value !== 'object' || Array.isArray(value)) forged.push(`${label} must be an object`);
+  };
+  const rawGate = stateField(state, 'ralplan_consensus_gate');
+  const rawExecution = stateField(state, 'ralplan_execution_handoff');
+  requireObjectShape(rawGate, 'ralplan_consensus_gate');
+  requireObjectShape(rawExecution, 'ralplan_execution_handoff');
+  const gate = objectRecord(rawGate);
+  const execution = objectRecord(rawExecution);
+  requireObjectShape(gate.ralplan_architect_review, 'ralplan_architect_review');
+  requireObjectShape(gate.ralplan_critic_review, 'ralplan_critic_review');
+  const architect = objectRecord(gate.ralplan_architect_review);
+  const critic = objectRecord(gate.ralplan_critic_review);
   const requireInteger = (value: unknown, label: string): void => {
     if (present(value) && exactInteger(value) === null) forged.push(`${label} must be an integer`);
   };
