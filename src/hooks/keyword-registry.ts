@@ -6,18 +6,12 @@ export interface KeywordTriggerDefinition {
 }
 
 export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = [
-  { keyword: '$ralph', skill: 'ralph', priority: 9, guidance: 'Sunset: $ralph was removed in OMX 0.21; use $ultragoal (stub)' },
-  { keyword: "don't stop", skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
-  { keyword: 'must complete', skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
-  { keyword: 'keep going', skill: 'ralph', priority: 9, guidance: 'Sunset: ralph was removed in OMX 0.21; use $ultragoal (stub)' },
 
   { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
   { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
   { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
   { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
 
-  { keyword: '$ultrawork', skill: 'ultrawork', priority: 10, guidance: 'Sunset: $ultrawork was removed in OMX 0.21; use $team (stub)' },
-  { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Sunset: ultrawork was removed in OMX 0.21; use $team (stub)' },
   { keyword: '$ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: 'ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: '$ultraqa', skill: 'ultraqa', priority: 8, guidance: 'Activate UltraQA cycling workflow' },
@@ -72,9 +66,7 @@ export interface ExplicitSkillDefinition {
   readonly priority: number;
 }
 
-export const EXPLICIT_SKILL_ALIASES: readonly ExplicitSkillAlias[] = Object.freeze([
-  Object.freeze({ source: 'ulw', target: 'ultrawork' }),
-]);
+export const EXPLICIT_SKILL_ALIASES: readonly ExplicitSkillAlias[] = Object.freeze([]);
 
 function createExplicitSkillLookup(): Readonly<Record<string, ExplicitSkillDefinition>> {
   const canonical = Object.create(null) as Record<string, ExplicitSkillDefinition>;

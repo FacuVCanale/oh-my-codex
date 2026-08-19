@@ -1,4 +1,5 @@
 import { describe, it, mock } from 'node:test';
+import { getRemovedSkillInfo } from '../sunset-stub.js';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -158,15 +159,15 @@ describe('keyword detector team compatibility', () => {
   });
 
   it('supports mixed-form explicit multi-skill invocation ordering and dedupe', () => {
-    const matches = detectKeywords('$oh-my-codex:ralplan $ralph $oh-my-codex:ralplan ship this');
-    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ralph']);
-    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ralph']);
+    const matches = detectKeywords('$oh-my-codex:ralplan $ultragoal $oh-my-codex:ralplan ship this');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ultragoal']);
+    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ultragoal']);
   });
 
   it('keeps recognized tokens on both sides of an unknown plugin-prefixed token in the same contiguous block', () => {
-    const matches = detectKeywords('$oh-my-codex:ralplan $oh-my-codex:unknown $ralph');
-    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ralph']);
-    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ralph']);
+    const matches = detectKeywords('$oh-my-codex:ralplan $oh-my-codex:unknown $ultragoal');
+    assert.deepEqual(matches.map((m) => m.skill), ['ralplan', 'ultragoal']);
+    assert.deepEqual(matches.map((m) => m.keyword), ['$oh-my-codex:ralplan', '$ultragoal']);
   });
 
   it('limits mixed-form explicit invocation to the first contiguous block', () => {
@@ -174,11 +175,10 @@ describe('keyword detector team compatibility', () => {
     assert.deepEqual(matches.map((m) => m.skill), ['ralplan']);
   });
 
-  it('normalizes plugin-prefixed ulw shorthand token', () => {
-    const ulw = detectPrimaryKeyword('$oh-my-codex:ulw continue');
-    assert.ok(ulw);
-    assert.equal(ulw.skill, 'ultrawork');
-    assert.equal(ulw.keyword, '$oh-my-codex:ulw');
+  it('does not route the plugin-prefixed ulw shorthand at a sunset skill', () => {
+    // ulw was shorthand for ultrawork, which is now a sunset skill with no trigger. The plugin prefix
+    // must not resurrect that route.
+    assert.equal(detectPrimaryKeyword('$oh-my-codex:ulw continue'), null);
   });
 
   it('supports plugin-prefixed hyphenated workflow tokens', () => {
@@ -346,11 +346,15 @@ describe('keyword detector team compatibility', () => {
     assert.equal(match, null);
   });
 
-  it('still triggers ralph for explicit $ralph invocation', () => {
-    const match = detectPrimaryKeyword('$ralph continue verification');
-    assert.ok(match);
-    assert.equal(match.skill, 'ralph');
-    assert.equal(match.keyword.toLowerCase(), '$ralph');
+  it('does not activate a workflow for the sunset $ralph token', () => {
+    // Approved decision: $ralph is a sunset skill token, so it must produce a non-activating
+    // diagnostic rather than mutating workflow state. The `omx ralph` CLI and the ralph persistence
+    // runtime are separate entry points and stay live - only the keyword surface is retired.
+    assert.equal(detectPrimaryKeyword('$ralph continue verification'), null);
+    const info = getRemovedSkillInfo('ralph');
+    assert.ok(info, '$ralph must be declared as a removed skill so the diagnostic path fires');
+    assert.equal(info.replacement, '$ultragoal');
+    assert.match(info.message, /removed/i);
   });
 
   it('prefers ralplan over ralph follow-up language when both implicit routes are present', () => {
@@ -486,19 +490,16 @@ describe('keyword detector team compatibility', () => {
     assert.equal(detectPrimaryKeyword('running 8 tests in parallel across 4 workers'), null);
   });
 
-  it('normalizes the Korean keyboard typo for ulw to ultrawork only', () => {
-    const match = detectPrimaryKeyword('ㅕㅣㅈ로 이 작업 처리해줘');
-
-    assert.ok(match);
-    assert.equal(match.skill, 'ultrawork');
-    assert.equal(match.keyword, 'ulw');
-
-    const explicitMatch = detectPrimaryKeyword('$ㅕㅣㅈ로 이 작업 처리해줘');
-    assert.ok(explicitMatch);
-    assert.equal(explicitMatch.skill, 'ultrawork');
-    assert.equal(explicitMatch.keyword, '$ulw');
-
-    assert.equal(detectPrimaryKeyword('ㅁㅔㅔ로 처리해줘'), null);
+  it('no longer routes the Korean ulw keyboard typo, whose only target is a sunset skill', () => {
+    // The IME typo alias existed solely to reach ultrawork's `ulw` shorthand. ultrawork is now a
+    // sunset skill with no trigger, so normalizing the typo would route a user at a token the catalog
+    // no longer ships. The four cases that pinned that routing are replaced by this one, which pins
+    // the retirement instead; the normalizer seam is kept for a future LIVE shorthand.
+    assert.equal(detectPrimaryKeyword('ㅕㅣㅈ로 이 작업 처리해줘'), null);
+    assert.equal(detectPrimaryKeyword('$ㅕㅣㅈ로 이 작업 처리해줘'), null);
+    const info = getRemovedSkillInfo('ultrawork');
+    assert.ok(info, '$ultrawork must be declared as a removed skill');
+    assert.equal(info.replacement, '$team');
   });
 });
 
@@ -507,11 +508,9 @@ describe('keyword input classification direct grammar', () => {
     const cases = [
       { text: '$ralplan implement this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
       { text: '\u00a0$RALPLAN implement this', skills: ['ralplan'], keywords: ['$RALPLAN'], priorities: [11] },
-      { text: '- $team $ralph ship this', skills: ['team', 'ralph'], keywords: ['$team', '$ralph'], priorities: [8, 9] },
+      { text: '- $team $ultragoal ship this', skills: ['team', 'ultragoal'], keywords: ['$team', '$ultragoal'], priorities: [8, 10] },
       { text: '12) $oh-my-codex:ralplan build this', skills: ['ralplan'], keywords: ['$oh-my-codex:ralplan'], priorities: [11] },
-      { text: '$ulw build this', skills: ['ultrawork'], keywords: ['$ulw'], priorities: [10] },
-      { text: '$ralplan $unknown $ralplan $ralph ship this', skills: ['ralplan', 'ralph'], keywords: ['$ralplan', '$ralph'], priorities: [11, 9] },
-      { text: '$ㅕㅣㅈ 병렬 작업', skills: ['ultrawork'], keywords: ['$ulw'], priorities: [10] },
+      { text: '$ralplan $unknown $ralplan $ultragoal ship this', skills: ['ralplan', 'ultragoal'], keywords: ['$ralplan', '$ultragoal'], priorities: [11, 10] },
       { text: 'use $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
       { text: 'please use $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
       { text: 'run $ralplan plan this', skills: ['ralplan'], keywords: ['$ralplan'], priorities: [11] },
@@ -523,8 +522,8 @@ describe('keyword input classification direct grammar', () => {
       { text: 'start $deep-interview', skills: ['deep-interview'], keywords: ['$deep-interview'], priorities: [8] },
       { text: 'enable $ultragoal', skills: ['ultragoal'], keywords: ['$ultragoal'], priorities: [10] },
       { text: 'launch $autopilot', skills: ['autopilot'], keywords: ['$autopilot'], priorities: [10] },
-      { text: 'invoke $ralph', skills: ['ralph'], keywords: ['$ralph'], priorities: [9] },
-      { text: 'activate $ultrawork', skills: ['ultrawork'], keywords: ['$ultrawork'], priorities: [10] },
+      { text: 'invoke $ultragoal', skills: ['ultragoal'], keywords: ['$ultragoal'], priorities: [10] },
+      { text: 'activate $team', skills: ['team'], keywords: ['$team'], priorities: [8] },
       { text: 'resume $team', skills: ['team'], keywords: ['$team'], priorities: [8] },
       { text: 'continue $code-review', skills: ['code-review'], keywords: ['$code-review'], priorities: [6] },
     ] as const;
@@ -980,10 +979,10 @@ describe('keyword input classification direct grammar', () => {
 
   it('accepts only direct punctuation and list boundaries', () => {
     const cases = [
-      { text: '* $ralph', skills: ['ralph'] },
+      { text: '* $ultragoal', skills: ['ultragoal'] },
       { text: '+ $team', skills: ['team'] },
       { text: '1. $ralplan', skills: ['ralplan'] },
-      { text: '999) $ultrawork', skills: ['ultrawork'] },
+      { text: '999) $team', skills: ['team'] },
       { text: '($ralplan)', skills: [] },
       { text: '[$ralplan]', skills: [] },
       { text: '1,$ralplan', skills: [] },
@@ -1138,7 +1137,7 @@ describe('keyword input classification direct grammar', () => {
       { text: '- /prompts:architect is the prompt command documentation\n$ralplan plan it', skills: ['ralplan'] },
       { text: '- $ralplan, $autopilot are workflow commands\n$team execute it', skills: ['team'] },
       { text: '- $ralplan and $autopilot are workflow commands\n$team execute it', skills: ['team'] },
-      { text: '- $ralplan, $autopilot, and $team are workflow commands\n$ralph execute it', skills: ['ralph'] },
+      { text: '- $ralplan, $autopilot, and $team are workflow commands\n$ultragoal execute it', skills: ['ultragoal'] },
       { text: '- $ralplan / $autopilot are workflow commands\n$team execute it', skills: ['team'] },
       { text: '- $ralplan/$autopilot are workflow commands\n$team execute it', skills: ['team'] },
       { text: 'use $ralplan is the consensus-planning command\n$autopilot build it', skills: ['autopilot'] },
@@ -1165,7 +1164,7 @@ describe('keyword input classification direct grammar', () => {
       { text: 'For instance: manual mode is slower。 Use autopilot mode.', skills: ['autopilot'] },
       { text: 'use $ralplan is the workflow command; autopilot mode is its alias; $team execute it', skills: ['team'] },
       { text: 'use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it', skills: ['team'] },
-      { text: 'use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ralph execute it', skills: ['ralph'] },
+      { text: 'use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ultragoal execute it', skills: ['ultragoal'] },
       { text: `use $ralplan is the workflow command; use${' '.repeat(161)}$autopilot build it`, skills: ['autopilot'] },
       { text: 'use $ralplan is the consensus-planning command! run $autopilot', skills: ['autopilot'] },
       { text: 'use $ralplan is the consensus-planning command？ run $autopilot', skills: ['autopilot'] },
@@ -1297,7 +1296,9 @@ describe('keyword input classification direct grammar', () => {
     for (const testCase of [
       { text: 'Use autopilot mode.', skills: ['autopilot'] },
       { text: 'List files and use autopilot mode.', skills: ['autopilot'] },
-      { text: "No, don't stop.", skills: ['ralph'] },
+      // "don't stop" was an implicit ralph trigger. Ralph's keyword surface is retired, so the phrase
+      // must no longer activate any workflow - a bare English phrase should never start one.
+      { text: "No, don't stop.", skills: [] },
       { text: 'Do not use deep interview, but use autopilot mode.', skills: ['autopilot'] },
       { text: 'Do not use deep interview but use autopilot mode.', skills: ['autopilot'] },
       { text: 'Do not use deep interview but instead use autopilot mode.', skills: ['autopilot'] },
@@ -1616,12 +1617,12 @@ describe('keyword input classification direct grammar', () => {
         ],
       },
       {
-        text: '$ultrawork $ulw',
+        // $ulw is retired, so it is no longer a candidate at all; $team alone carries the block.
+        text: '$team ship this',
         reservedInput: null,
-        skills: ['ultrawork'],
+        skills: ['team'],
         candidates: [
-          { rawKeyword: '$ultrawork', reasons: [] },
-          { rawKeyword: '$ulw', reasons: [] },
+          { rawKeyword: '$team', reasons: [] },
         ],
       },
       {
@@ -2850,7 +2851,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralph continue verification',
+        text: '$ultragoal continue verification',
         sessionId: 'sess-overlap',
         threadId: 'thread-overlap',
         turnId: 'turn-2',
@@ -2860,7 +2861,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.ok(result);
       assert.deepEqual(
         result.active_skills?.map((entry) => entry.skill),
-        ['team', 'ralph'],
+        ['team', 'ultragoal'],
       );
 
       const persisted = JSON.parse(
@@ -2868,14 +2869,14 @@ describe('keyword detector skill-active-state lifecycle', () => {
       ) as { active_skills?: Array<{ skill: string }> };
       assert.deepEqual(
         persisted.active_skills?.map((entry) => entry.skill),
-        ['team', 'ralph'],
+        ['team', 'ultragoal'],
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('keeps a session-scoped Ralph activation out of the root canonical state for other sessions', async () => {
+  it('keeps a session-scoped Ultragoal activation out of the root canonical state for other sessions', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ralph-isolation-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -2883,7 +2884,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralph continue verification',
+        text: '$ultragoal continue verification',
         sessionId: 'sess-ralph-a',
         threadId: 'thread-ralph-a',
         turnId: 'turn-ralph-a',
@@ -2903,7 +2904,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         await readFile(join(stateDir, 'sessions', 'sess-ralph-a', SKILL_ACTIVE_STATE_FILE), 'utf-8'),
       ) as { active_skills?: Array<{ skill: string; session_id?: string }> };
       assert.deepEqual(sessionScopedSkillState.active_skills, [{
-        skill: 'ralph',
+        skill: 'ultragoal',
         phase: 'planning',
         active: true,
         activated_at: '2026-04-14T00:00:00.000Z',
@@ -2995,60 +2996,30 @@ describe('keyword detector skill-active-state lifecycle', () => {
           session_id: 'sess-visible',
           active_skills: [
             { skill: 'team', phase: 'running', active: true },
-            { skill: 'ralph', phase: 'executing', active: true, session_id: 'sess-visible' },
+            { skill: 'ultraqa', phase: 'executing', active: true, session_id: 'sess-visible' },
           ],
         }, null, 2),
       );
 
       const allowed = await recordSkillActivation({
         stateDir,
-        text: '$ultrawork continue',
+        text: '$autoresearch continue',
         sessionId: 'sess-visible',
         nowIso: '2026-04-10T00:00:00.000Z',
       });
 
       assert.equal(allowed?.transition_error, undefined);
-      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-visible', 'ultrawork-state.json')), true);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-visible', 'autoresearch-state.json')), true);
 
       const persisted = JSON.parse(
         await readFile(join(stateDir, 'sessions', 'sess-visible', SKILL_ACTIVE_STATE_FILE), 'utf-8'),
       ) as { active_skills?: Array<{ skill: string }> };
-      assert.deepEqual(persisted.active_skills?.map((entry) => entry.skill), ['team', 'ralph', 'ultrawork']);
+      assert.deepEqual(persisted.active_skills?.map((entry) => entry.skill), ['team', 'ultraqa', 'autoresearch']);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
   });
 
-  it('activates ultrawork mode from the Korean keyboard typo for ulw', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-'));
-    const stateDir = join(cwd, '.omx', 'state');
-    try {
-      await mkdir(stateDir, { recursive: true });
-      const result = await recordSkillActivation({
-        stateDir,
-        text: 'ㅕㅣㅈ로 병렬 처리해줘',
-        sessionId: 'sess-ulw-ko',
-        threadId: 'thread-ulw-ko',
-        turnId: 'turn-ulw-ko',
-        nowIso: '2026-04-21T00:00:00.000Z',
-      });
-
-      assert.ok(result);
-      assert.equal(result.skill, 'ultrawork');
-      assert.equal(result.keyword, 'ulw');
-      assert.equal(result.initialized_mode, 'ultrawork');
-      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-ulw-ko/ultrawork-state.json');
-
-      const modeState = JSON.parse(
-        await readFile(join(stateDir, 'sessions', 'sess-ulw-ko', 'ultrawork-state.json'), 'utf-8'),
-      ) as { mode: string; active: boolean; current_phase: string };
-      assert.equal(modeState.mode, 'ultrawork');
-      assert.equal(modeState.active, true);
-      assert.equal(modeState.current_phase, 'planning');
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
 
   it('seeds executing state for autoresearch prompt-submit activation', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autoresearch-'));
@@ -3373,7 +3344,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralplan $team $ralph ship this fix',
+        text: '$ralplan $team $ultragoal ship this fix',
         sessionId: 'sess-multi',
         nowIso: '2026-04-10T00:00:00.000Z',
       });
@@ -3382,10 +3353,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result?.transition_message, undefined);
       assert.equal(result?.skill, 'ralplan');
       assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralplan']);
-      assert.deepEqual(result?.deferred_skills, ['team', 'ralph']);
+      assert.deepEqual(result?.deferred_skills, ['team', 'ultragoal']);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-multi', 'ralplan-state.json')), true);
       assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
-      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-multi', 'ralph-state.json')), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-multi', 'ultragoal-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3399,7 +3370,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralph $ralplan continue',
+        text: '$ultragoal $ralplan continue',
         sessionId: 'sess-priority',
         nowIso: '2026-04-10T00:00:00.000Z',
       });
@@ -3407,9 +3378,9 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.equal(result?.transition_error, undefined);
       assert.equal(result?.skill, 'ralplan');
       assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralplan']);
-      assert.deepEqual(result?.deferred_skills, ['ralph']);
+      assert.deepEqual(result?.deferred_skills, ['ultragoal']);
       assert.equal(existsSync(join(stateDir, 'sessions', 'sess-priority', 'ralplan-state.json')), true);
-      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-priority', 'ralph-state.json')), false);
+      assert.equal(existsSync(join(stateDir, 'sessions', 'sess-priority', 'ultragoal-state.json')), false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3485,16 +3456,16 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$team $ralph ship this fix',
+        text: '$team $ultragoal ship this fix',
         sessionId: 'sess-team-disabled-primary',
         nowIso: '2026-04-10T01:00:00.000Z',
       });
 
-      assert.equal(result?.skill, 'ralph');
-      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralph']);
+      assert.equal(result?.skill, 'ultragoal');
+      assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ultragoal']);
       assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
       assert.equal(
-        existsSync(join(stateDir, 'sessions', 'sess-team-disabled-primary', 'ralph-state.json')),
+        existsSync(join(stateDir, 'sessions', 'sess-team-disabled-primary', 'ultragoal-state.json')),
         true,
       );
     } finally {
@@ -3515,14 +3486,14 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralplan $team $ralph ship this fix',
+        text: '$ralplan $team $ultragoal ship this fix',
         sessionId: 'sess-team-disabled-deferred',
         nowIso: '2026-04-10T00:00:00.000Z',
       });
 
       assert.equal(result?.skill, 'ralplan');
       assert.deepEqual(result?.active_skills?.map((entry) => entry.skill), ['ralplan']);
-      assert.deepEqual(result?.deferred_skills, ['ralph']);
+      assert.deepEqual(result?.deferred_skills, ['ultragoal']);
       assert.equal(existsSync(join(stateDir, 'team-state.json')), false);
       assert.equal(
         existsSync(join(stateDir, 'sessions', 'sess-team-disabled-deferred', 'team-state.json')),
@@ -3619,7 +3590,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
   });
 
 
-  it('keeps root team state out of the session-scoped Ralph canonical state', async () => {
+  it('keeps root team state out of the session-scoped Ultragoal canonical state', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-ralph-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -3633,18 +3604,18 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       const result = await recordSkillActivation({
         stateDir,
-        text: '$ralph complete the approved plan',
+        text: '$ultragoal complete the approved plan',
         sessionId: 'sess-team-ralph',
         nowIso: '2026-04-09T00:05:00.000Z',
       });
 
       assert.ok(result);
-      assert.equal(result.skill, 'ralph');
+      assert.equal(result.skill, 'ultragoal');
 
       assert.equal(
         existsSync(join(stateDir, SKILL_ACTIVE_STATE_FILE)),
         false,
-        'session-scoped team and Ralph activations should stay out of root canonical state when no root state exists',
+        'session-scoped team and Ultragoal activations should stay out of root canonical state when no root state exists',
       );
 
       const sessionCanonical = JSON.parse(
@@ -3658,7 +3629,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
         })),
         [
           { skill: 'team', phase: 'planning', session_id: 'sess-team-ralph' },
-          { skill: 'ralph', phase: 'planning', session_id: 'sess-team-ralph' },
+          { skill: 'ultragoal', phase: 'planning', session_id: 'sess-team-ralph' },
         ],
       );
     } finally {
@@ -4708,85 +4679,7 @@ deepMaxRounds = 21
     }
   });
 
-  it('keeps Korean ulw typo first in mixed explicit workflow persistence', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-mixed-'));
-    const stateDir = join(cwd, '.omx', 'state');
-    try {
-      await mkdir(stateDir, { recursive: true });
-      const result = await recordSkillActivation({
-        stateDir,
-        text: '$ㅕㅣㅈ $autopilot 병렬 작업으로 처리해줘',
-        sessionId: 'sess-ulw-ko-mixed',
-        nowIso: '2026-04-21T00:20:00.000Z',
-      });
 
-      assert.ok(result);
-      assert.equal(result.skill, 'ultrawork');
-      assert.equal(result.keyword, '$ulw');
-      assert.deepEqual(result.requested_skills, ['ultrawork', 'autopilot']);
-      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['ultrawork', 'autopilot']);
-      assert.equal(
-        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-mixed', 'ultrawork-state.json')),
-        true,
-      );
-      assert.equal(
-        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-mixed', 'autopilot-state.json')),
-        true,
-      );
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it('lets an explicit Korean ulw typo override an active workflow continuation', async () => {
-    const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-ulw-ko-explicit-'));
-    const stateDir = join(cwd, '.omx', 'state');
-    try {
-      await mkdir(join(stateDir, 'sessions', 'sess-ulw-ko-explicit'), { recursive: true });
-      await writeFile(
-        join(stateDir, 'sessions', 'sess-ulw-ko-explicit', SKILL_ACTIVE_STATE_FILE),
-        JSON.stringify({
-          version: 1,
-          active: true,
-          skill: 'autopilot',
-          keyword: '$autopilot',
-          phase: 'executing',
-          activated_at: '2026-04-21T00:00:00.000Z',
-          updated_at: '2026-04-21T00:05:00.000Z',
-          source: 'keyword-detector',
-          session_id: 'sess-ulw-ko-explicit',
-          active_skills: [
-            {
-              skill: 'autopilot',
-              phase: 'executing',
-              active: true,
-              activated_at: '2026-04-21T00:00:00.000Z',
-              updated_at: '2026-04-21T00:05:00.000Z',
-              session_id: 'sess-ulw-ko-explicit',
-            },
-          ],
-        }, null, 2),
-      );
-
-      const result = await recordSkillActivation({
-        stateDir,
-        text: '$ㅕㅣㅈ continue',
-        sessionId: 'sess-ulw-ko-explicit',
-        nowIso: '2026-04-21T00:10:00.000Z',
-      });
-
-      assert.ok(result);
-      assert.equal(result.skill, 'ultrawork');
-      assert.equal(result.keyword, '$ulw');
-      assert.deepEqual(result.active_skills?.map((entry) => entry.skill), ['autopilot', 'ultrawork']);
-      assert.equal(
-        existsSync(join(stateDir, 'sessions', 'sess-ulw-ko-explicit', 'ultrawork-state.json')),
-        true,
-      );
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
 
   it('routes bare keep-going continuation to the active autopilot skill instead of generic ralph continuation', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-autopilot-bare-continuation-'));
