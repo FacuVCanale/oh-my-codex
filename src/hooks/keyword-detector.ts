@@ -210,7 +210,11 @@ const STATEFUL_SKILL_SEED_CONFIG: Record<StatefulSkillMode, StatefulSkillSeedCon
   autoresearch: { mode: 'autoresearch', initialPhase: 'executing' },
   ralph: { mode: 'ralph', initialPhase: 'starting', includeIteration: true },
   ralplan: { mode: 'ralplan', initialPhase: 'planning' },
-  team: { mode: 'team', initialPhase: 'starting', scope: 'root' },
+  // Session-keyed like every other stateful skill in this table. A root-scoped projection is a SHARED
+  // file, so two sessions activating Team clobber each other's state even though readers session-verify
+  // whatever they find. Readers already prefer the session-scoped path and only fall back to the root
+  // for an owner whose session_id matches, so a session-keyed write stays discoverable.
+  team: { mode: 'team', initialPhase: 'starting' },
   ultragoal: { mode: 'ultragoal', initialPhase: 'planning' },
   ultrawork: { mode: 'ultrawork', initialPhase: 'planning' },
   ultraqa: { mode: 'ultraqa', initialPhase: 'planning' },

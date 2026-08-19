@@ -3415,7 +3415,7 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('seeds first-class root team state for team prompt-submit activation', async () => {
+  it('seeds session-keyed team state for team prompt-submit activation', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
@@ -3430,10 +3430,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
       assert.ok(result);
       assert.equal(result.skill, 'team');
       assert.equal(result.initialized_mode, 'team');
-      assert.equal(result.initialized_state_path, '.omx/state/team-state.json');
+      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-team/team-state.json');
 
       const modeState = JSON.parse(
-        await readFile(join(stateDir, 'team-state.json'), 'utf-8'),
+        await readFile(join(stateDir, 'sessions', 'sess-team', 'team-state.json'), 'utf-8'),
       ) as { mode: string; active: boolean; current_phase: string };
       assert.equal(modeState.mode, 'team');
       assert.equal(modeState.active, true);
@@ -3533,13 +3533,13 @@ describe('keyword detector skill-active-state lifecycle', () => {
     }
   });
 
-  it('preserves active team root state when $team is re-entered from prompt routing', async () => {
+  it('preserves active session-keyed team state when $team is re-entered from prompt routing', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-keyword-state-team-preserve-'));
     const stateDir = join(cwd, '.omx', 'state');
     try {
-      await mkdir(stateDir, { recursive: true });
+      await mkdir(join(stateDir, 'sessions', 'sess-team-preserve'), { recursive: true });
       await writeFile(
-        join(stateDir, 'team-state.json'),
+        join(stateDir, 'sessions', 'sess-team-preserve', 'team-state.json'),
         JSON.stringify({
           active: true,
           mode: 'team',
@@ -3559,10 +3559,10 @@ describe('keyword detector skill-active-state lifecycle', () => {
 
       assert.ok(result);
       assert.equal(result.initialized_mode, 'team');
-      assert.equal(result.initialized_state_path, '.omx/state/team-state.json');
+      assert.equal(result.initialized_state_path, '.omx/state/sessions/sess-team-preserve/team-state.json');
 
       const modeState = JSON.parse(
-        await readFile(join(stateDir, 'team-state.json'), 'utf-8'),
+        await readFile(join(stateDir, 'sessions', 'sess-team-preserve', 'team-state.json'), 'utf-8'),
       ) as { mode: string; active: boolean; current_phase: string; team_name?: string };
       assert.equal(modeState.mode, 'team');
       assert.equal(modeState.active, true);
