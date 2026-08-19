@@ -3294,8 +3294,12 @@ export function createMadmaxIsolatedRoot(
   argv: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const runsRoot = resolveMadmaxRunsRoot(env);
+  let runsRoot = resolveMadmaxRunsRoot(env);
   mkdirSync(runsRoot, { recursive: true });
+  // Re-resolve after creating it: on a first launch the directory does not exist yet, so the realpath
+  // inside resolveMadmaxRunsRoot falls back to the raw value and the macOS /var vs /private/var alias
+  // survives into the run directory and the active-record path.
+  runsRoot = resolveMadmaxRunsRoot(env);
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = Math.random().toString(16).slice(2, 6);
   const runDir = join(runsRoot, sanitizeRunIdSegment(`run-${stamp}-${suffix}`));
