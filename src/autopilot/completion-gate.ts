@@ -3,6 +3,7 @@ import { assertValidHandoffCarriersIn } from '../state/handoff-carrier.js';
 import { inferRunOutcome, inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import { existsSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
+import { canonicalizeComparablePath } from '../utils/paths.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -32,6 +33,10 @@ function existingRepoArtifact(
   const rel = relative(resolve(cwd), absolute);
   const allowedRoot = resolve(cwd, '.omx');
   const allowedRel = relative(allowedRoot, absolute);
+  const canonicalAllowedRel = relative(
+    canonicalizeComparablePath(allowedRoot),
+    canonicalizeComparablePath(absolute),
+  ).replace(/\\/g, '/');
   return !isAbsolute(rel)
     && rel !== '..'
     && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
@@ -39,6 +44,10 @@ function existingRepoArtifact(
     && allowedRel !== '..'
     && !allowedRel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
     && allowedPrefixes.some((prefix) => allowedRel.replace(/\\/g, '/').startsWith(prefix))
+    && !isAbsolute(canonicalAllowedRel)
+    && canonicalAllowedRel !== '..'
+    && !canonicalAllowedRel.startsWith('../')
+    && allowedPrefixes.some((prefix) => canonicalAllowedRel.startsWith(prefix))
     && existsSync(absolute);
 }
 
@@ -55,13 +64,21 @@ function isCanonicalArtifactPath(
   const rel = relative(resolve(cwd), absolute);
   const allowedRoot = resolve(cwd, '.omx');
   const allowedRel = relative(allowedRoot, absolute).replace(/\\/g, '/');
+  const canonicalAllowedRel = relative(
+    canonicalizeComparablePath(allowedRoot),
+    canonicalizeComparablePath(absolute),
+  ).replace(/\\/g, '/');
   return !isAbsolute(rel)
     && rel !== '..'
     && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
     && !isAbsolute(allowedRel)
     && allowedRel !== '..'
     && !allowedRel.startsWith('..' + '/')
-    && allowedPrefixes.some((prefix) => allowedRel.startsWith(prefix));
+    && allowedPrefixes.some((prefix) => allowedRel.startsWith(prefix))
+    && !isAbsolute(canonicalAllowedRel)
+    && canonicalAllowedRel !== '..'
+    && !canonicalAllowedRel.startsWith('../')
+    && allowedPrefixes.some((prefix) => canonicalAllowedRel.startsWith(prefix));
 }
 
 function assertCanonicalArtifactPath(

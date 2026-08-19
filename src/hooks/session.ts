@@ -815,12 +815,11 @@ function parseProcessIdentityOutput(stdout: string): ProcessObservation {
  * Callers needing a safe live-session answer today use `classifySessionStateLiveness(...) !==
  * 'stale-dead'` (see src/cli/setup.ts overwrite guard).
  */
-export function isSessionStale(
-  state: SessionState,
-  options: SessionStaleCheckOptions = {},
-): boolean {
-  if (!Number.isInteger(state.pid) || state.pid <= 0) return true;
-
+function sessionClassificationDependencies(options: SessionStaleCheckOptions): {
+  runtimePlatform: NodeJS.Platform;
+  probePid: (pid: number) => PidProbeResult;
+  observeProcess: (pid: number, platform: NodeJS.Platform) => ProcessObservation;
+} {
   const runtimePlatform = options.platform ?? transactionDependencies.runtimePlatform ?? process.platform;
   const probePid = options.probePid ?? (options.isPidAlive
     ? (pid: number): PidProbeResult => options.isPidAlive!(pid) ? 'alive' : 'dead'
@@ -841,6 +840,16 @@ export function isSessionStale(
       };
     }
     : transactionDependencies.observeProcess);
+  return { runtimePlatform, probePid, observeProcess };
+}
+
+export function isSessionStale(
+  state: SessionState,
+  options: SessionStaleCheckOptions = {},
+): boolean {
+  if (!Number.isInteger(state.pid) || state.pid <= 0) return true;
+
+  const { runtimePlatform, probePid, observeProcess } = sessionClassificationDependencies(options);
   const dependencies = {
     ...transactionDependencies,
     runtimePlatform,
@@ -1055,12 +1064,13 @@ export function isSessionStateUsable(
 ): boolean {
   if (!normalizeSessionId(state.session_id)) return false;
   if (typeof state.cwd === 'string' && state.cwd.trim() && !isSessionStateAuthoritativeForCwd(state, cwd)) return false;
-  const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
-  const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
-    || typeof state.pid_cmdline === 'string'
-    || state.identity_schema_version !== undefined
-    || state.process_identity !== undefined;
-  return !hasPidMetadata && !hasIdentityMetadata || !isSessionStale(state, options);
+  const { runtimePlatform, probePid, observeProcess } = sessionClassificationDependencies(options);
+  return classifySessionProcess(state, {
+    ...transactionDependencies,
+    runtimePlatform,
+    probePid,
+    observeProcess,
+  }) === 'usable';
 }
 
 function isValidStartTicks(value: unknown): value is number {

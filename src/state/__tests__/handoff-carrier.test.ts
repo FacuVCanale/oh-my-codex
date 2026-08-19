@@ -20,9 +20,12 @@ describe('handoff carrier invariant', () => {
     for (const valid of [undefined, null, {}, { ralplan: { plan_path: 'p.md' } }]) {
       assert.equal(isValidHandoffCarrier(valid), true, `${JSON.stringify(valid)} must be valid`);
     }
-    for (const invalid of [[], ['a'], 'forged', 42, true, false]) {
+    for (const invalid of [[], ['a'], 'forged', 42, true, false, new Date(0), new Map()]) {
       assert.equal(isValidHandoffCarrier(invalid), false, `${JSON.stringify(invalid)} must be invalid`);
     }
+    const nullPrototype = Object.create(null) as Record<string, unknown>;
+    nullPrototype.ralplan = { plan_path: 'p.md' };
+    assert.equal(isValidHandoffCarrier(nullPrototype), true);
   });
 
   it('names the supplying surface when it rejects a carrier', () => {

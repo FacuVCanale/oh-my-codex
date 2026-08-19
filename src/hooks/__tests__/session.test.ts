@@ -17,6 +17,7 @@ import {
   __setSessionPointerTransactionDependenciesForTests,
   inspectSessionPointerLock,
   isSessionPointerLaunchAbort,
+  isSessionStateUsable,
   isSessionStale,
   readSessionPointer,
   readSessionState,
@@ -872,6 +873,18 @@ describe('isSessionStale', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it('does not promote a live Darwin identity-indeterminate pointer to usable authority', () => {
+    const state = makeState({ platform: 'darwin' });
+
+    assert.equal(
+      isSessionStateUsable(state, state.cwd, {
+        platform: 'darwin',
+        isPidAlive: () => true,
+      }),
+      false,
+    );
   });
 });
 

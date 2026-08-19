@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -295,6 +295,34 @@ describe('Autopilot completion advisory contract', () => {
       ),
       /out-of-scope artifact path/,
     );
+  });
+
+  it('rejects an interview artifact symlink that resolves outside the repository', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-symlink-artifact-'));
+    const outside = await mkdtemp(join(tmpdir(), 'omx-autopilot-symlink-target-'));
+    try {
+      await mkdir(join(cwd, '.omx', 'specs'), { recursive: true });
+      await writeFile(join(outside, 'forged.md'), '# forged\n');
+      await symlink(join(outside, 'forged.md'), join(cwd, '.omx', 'specs', 'handoff.md'));
+
+      assert.throws(
+        () => validateAutopilotCompletionTransition(
+          { mode: 'autopilot', active: true, current_phase: 'deep-interview', workingDirectory: cwd },
+          {
+            mode: 'autopilot',
+            active: true,
+            current_phase: 'ralplan',
+            workingDirectory: cwd,
+            handoff_artifacts: { deep_interview: { spec_path: '.omx/specs/handoff.md' } },
+            deep_interview_gate: { status: 'complete', rationale: 'Requirements resolved.' },
+          },
+        ),
+        /out-of-scope artifact path/,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it('fails closed on a malformed handoff carrier and treats explicit null as absence', async () => {

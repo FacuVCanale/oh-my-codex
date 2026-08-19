@@ -14,7 +14,9 @@
 /** Is this value an acceptable carrier, i.e. absent or a plain (non-array) record? */
 export function isValidHandoffCarrier(value: unknown): boolean {
   if (value === undefined || value === null) return true;
-  return typeof value === 'object' && !Array.isArray(value);
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 /**
@@ -40,9 +42,9 @@ export function assertValidHandoffCarrier(value: unknown, label: string): void {
  * back into "valid but empty", since legitimate absence already returns `{}`.
  */
 function readPersistedHandoffCarrier(value: unknown): Record<string, unknown> | null {
+  if (!isValidHandoffCarrier(value)) return null;
   if (value === undefined || value === null) return {};
-  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
-  return null;
+  return value as Record<string, unknown>;
 }
 
 /**
