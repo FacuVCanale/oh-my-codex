@@ -1185,13 +1185,12 @@ function maximalExplicitTokenEnd(text: string, initialEnd: number): number {
 /**
  * Korean 2-set keyboard typo aliases for workflow keywords.
  *
- * Now a no-op. Its only mapping was the `ulw` shorthand for ultrawork, and ultrawork is a sunset skill
- * with no trigger, so normalizing to it would route a typo at a token the catalog no longer ships. The
- * seam is kept so a future live shorthand can be added deliberately rather than by resurrecting a
- * mapping to a removed skill.
+ * Keep this intentionally narrow: only the `ulw` ultrawork shorthand is
+ * normalized so users who forget to switch IMEs get the same activation path
+ * as the canonical keyword without introducing broad transliteration surprises.
  */
 function normalizeWorkflowKeyboardTypos(text: string): string {
-  return text;
+  return text.replace(/\$ㅕㅣㅈ(?=로)/g, '$ulw ').replace(/ㅕㅣㅈ/g, 'ulw');
 }
 
 
