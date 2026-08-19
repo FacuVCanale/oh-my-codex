@@ -2591,7 +2591,17 @@ interface MadmaxDetachedActiveRecord {
 }
 
 function resolveMadmaxRunsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  const configured = env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  // Canonicalize, because the detached active-record path is derived from this root and macOS reaches
+  // the same directory as both `/var/...` and `/private/var/...`. Without this, a launch that recorded
+  // its active detached session under one alias could not be found under the other, so the reuse guard
+  // silently started a DUPLICATE detached launch instead of attaching to the live one.
+  try {
+    return realpathSync(configured);
+  } catch {
+    // Not created yet: the raw path is correct for the first launch, which creates it.
+    return configured;
+  }
 }
 
 function canonicalizeLaunchCwd(cwd: string): string {
