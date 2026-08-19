@@ -869,6 +869,50 @@ describe('state operations directory initialization', () => {
     }
   });
 
+
+  it('serializes concurrent Autopilot read-modify-write updates without losing fields', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-autopilot-concurrency-'));
+    try {
+      const { stateDir, sessionId } = await seedWritableScope(wd, 'sess-autopilot-concurrency');
+      const sessionDir = join(stateDir, 'sessions', sessionId);
+      await writeFile(
+        join(sessionDir, 'autopilot-state.json'),
+        JSON.stringify({
+          mode: 'autopilot',
+          active: true,
+          current_phase: 'deep-interview',
+          session_id: sessionId,
+          workingDirectory: wd,
+          started_at: '2026-08-19T00:00:00.000Z',
+        }),
+      );
+
+      const [first, second] = await Promise.all([
+        executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          state: { current_phase: 'code-review', thread_id: 'thread-a' },
+        }),
+        executeStateOperation('state_write', {
+          workingDirectory: wd,
+          session_id: sessionId,
+          mode: 'autopilot',
+          state: { current_phase: 'code-review', turn_id: 'turn-b' },
+        }),
+      ]);
+      assert.equal(first.isError, undefined);
+      assert.equal(second.isError, undefined);
+
+      const state = JSON.parse(await readFile(join(sessionDir, 'autopilot-state.json'), 'utf-8')) as Record<string, unknown>;
+      assert.equal(state.current_phase, 'code-review');
+      assert.equal(state.thread_id, 'thread-a');
+      assert.equal(state.turn_id, 'turn-b');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('does not report a legacy root mode active after clearing the current session scope', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-state-ops-clear-root-fallback-'));
     try {

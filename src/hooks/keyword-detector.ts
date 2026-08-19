@@ -35,7 +35,7 @@ import {
   type TrackedWorkflowMode,
 } from '../state/workflow-transition.js';
 import { reconcileWorkflowTransition } from '../state/workflow-transition-reconcile.js';
-import { writeStateFile } from '../state/operations.js';
+import { executeStateOperation, writeStateFile } from '../state/operations.js';
 import {
   clearDeepInterviewQuestionObligation,
   type DeepInterviewQuestionEnforcementState,
@@ -49,7 +49,6 @@ import { inferTerminalLifecycleOutcome } from '../runtime/run-outcome.js';
 import { resolveAutopilotPlannerRouting } from '../autopilot/planner-routing.js';
 import {
   isAutopilotSuccessfulTerminalState,
-  validateAutopilotCompletionTransition,
   type AutopilotCompletionAdvisory,
 } from '../autopilot/completion-gate.js';
 import {
@@ -3558,6 +3557,7 @@ async function resolveAutopilotSupervisedChildPhaseState(
 }
 
 async function persistAutopilotSupervisedChildPhaseState(
+  cwd: string,
   stateDir: string,
   sessionId: string | undefined,
   childSkill: string,
@@ -3580,28 +3580,34 @@ async function persistAutopilotSupervisedChildPhaseState(
   // above which only rebuilds fresh state. A corrupt persisted carrier must therefore stop the
   // transition rather than be discarded; the caller turns this throw into a transition_error.
   assertValidHandoffCarriersIn((existing ?? {}) as Record<string, unknown>, 'stored autopilot');
-  const nextState = {
-    ...(existing ?? {}),
+  const nextState: Record<string, unknown> = {
     active: true,
     mode: 'autopilot',
     current_phase: childSkill,
-    started_at: safeString(existing?.started_at).trim() || nowIso,
     updated_at: nowIso,
-    session_id: (sessionId ?? safeString(existing?.session_id).trim()) || undefined,
-    thread_id: (options.threadId ?? safeString(existing?.thread_id).trim()) || undefined,
-    turn_id: (options.turnId ?? safeString(existing?.turn_id).trim()) || undefined,
+    ...(sessionId ? { session_id: sessionId } : {}),
+    ...(options.threadId ? { thread_id: options.threadId } : {}),
+    ...(options.turnId ? { turn_id: options.turnId } : {}),
   };
-  const completionAdvisory = validateAutopilotCompletionTransition(existing ?? {}, nextState);
-  const advisedState = appendAutopilotCompletionAdvisory(nextState, completionAdvisory);
-
-  await mkdir(dirname(absolutePath), { recursive: true });
-  await writeStateFile(absolutePath, JSON.stringify(withModeRuntimeContext(
-    existing ?? {},
-    advisedState,
-    { nowIso },
-  ), null, 2));
-
-  return { effectivePhase: childSkill, advisory: completionAdvisory };
+  const response = await executeStateOperation('state_write', {
+    workingDirectory: cwd,
+    ...(sessionId ? { session_id: sessionId } : {}),
+    mode: 'autopilot',
+    state: nextState,
+  });
+  if (response.isError) {
+    const payload = response.payload as Record<string, unknown>;
+    throw new Error(
+      typeof payload.error === 'string'
+        ? payload.error
+        : 'Cannot advance supervised Autopilot child phase through state operations',
+    );
+  }
+  const payload = response.payload as Record<string, unknown>;
+  const advisory = payload.advisory && typeof payload.advisory === 'object' && !Array.isArray(payload.advisory)
+    ? payload.advisory as AutopilotCompletionAdvisory
+    : null;
+  return { effectivePhase: childSkill, advisory };
 }
 
 async function reconcileAutopilotSupervisedChildModeStates(
@@ -3613,7 +3619,7 @@ async function reconcileAutopilotSupervisedChildModeStates(
   options: { threadId?: string; turnId?: string } = {},
 ): Promise<{ completedPaths: string[]; effectivePhase: string; advisory: AutopilotCompletionAdvisory | null }> {
   if (!isTrackedWorkflowMode(childSkill)) {
-    const persisted = await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
+    const persisted = await persistAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
     return { completedPaths: [], ...persisted };
   }
 
@@ -3643,7 +3649,7 @@ async function reconcileAutopilotSupervisedChildModeStates(
     sessionId,
     source: 'autopilot-supervised-child',
   });
-  const persisted = await persistAutopilotSupervisedChildPhaseState(stateDir, sessionId, childSkill, nowIso, options);
+  const persisted = await persistAutopilotSupervisedChildPhaseState(cwd, stateDir, sessionId, childSkill, nowIso, options);
   return { completedPaths: transition.completedPaths, ...persisted };
 }
 

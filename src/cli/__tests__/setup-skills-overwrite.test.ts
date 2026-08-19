@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setup } from '../setup.js';
 
@@ -24,7 +24,7 @@ async function seedRetiredOmxSkill(skillsDir: string, name: string, description:
 
 /** Record real per-file digests for one skill directory into the install receipt. */
 async function recordInstallReceipt(skillsDir: string, name: string): Promise<void> {
-  const receiptPath = join(skillsDir, '.omx-installed-skills.json');
+  const receiptPath = join(dirname(dirname(skillsDir)), '.omx', 'state', 'setup', 'installed-skills.json');
   let receipt: { version: 1; skills: Record<string, { files: Record<string, string> }> };
   try {
     receipt = JSON.parse(await readFile(receiptPath, 'utf-8'));
@@ -43,6 +43,7 @@ async function recordInstallReceipt(skillsDir: string, name: string): Promise<vo
   };
   await walk(join(skillsDir, name), '');
   receipt.skills[name] = { files };
+  await mkdir(dirname(receiptPath), { recursive: true });
   await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
 }
 
@@ -231,6 +232,46 @@ describe('omx setup skills overwrite behavior', () => {
 
       assert.equal(existsSync(dir), true, 'a directory holding an unreceipted user file must survive');
       assert.equal(await readFile(join(dir, '__proto__'), 'utf-8'), 'user notes\n');
+    } finally {
+      process.chdir(previousCwd);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+
+  it('preserves user files when the skills-directory receipt and badge are forged', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-skills-'));
+    const previousCwd = process.cwd();
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+      process.chdir(wd);
+
+      await setup({ scope: 'project' });
+
+      const skillsDir = join(wd, '.codex', 'skills');
+      const dir = await seedRetiredOmxSkill(skillsDir, 'prometheus-strict', 'retired');
+      const userFile = join(dir, 'user-notes.md');
+      await writeFile(userFile, 'user-owned notes\n');
+      // An attacker who can edit the skills directory can replace the visible badge and forge the
+      // legacy receipt beside it. Cleanup must ignore both; the authoritative receipt lives under
+      // .omx/state/setup, outside the skills directory.
+      const forgedReceipt = {
+        version: 1,
+        skills: {
+          'prometheus-strict': {
+            files: {
+              'SKILL.md': createHash('sha256').update(await readFile(join(dir, 'SKILL.md'))).digest('hex'),
+              'user-notes.md': createHash('sha256').update(await readFile(userFile)).digest('hex'),
+            },
+          },
+        },
+      };
+      await writeFile(join(skillsDir, '.omx-installed-skills.json'), `${JSON.stringify(forgedReceipt, null, 2)}\n`);
+
+      await setup({ scope: 'project' });
+
+      assert.equal(existsSync(dir), true, 'ordinary cleanup must preserve a directory with user files');
+      assert.equal(await readFile(userFile, 'utf-8'), 'user-owned notes\n');
     } finally {
       process.chdir(previousCwd);
       await rm(wd, { recursive: true, force: true });
