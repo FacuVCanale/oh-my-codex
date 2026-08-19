@@ -2562,7 +2562,7 @@ exit 0
 
       for (const orderedCase of [
         { text: '$ralplan $autopilot plan this change', skill: 'ralplan' },
-        { text: '$ralph $autopilot ship this change', skill: 'ralph' },
+        { text: '$ultragoal $autopilot ship this change', skill: 'ultragoal' },
       ]) {
         const orderedSessionId = `sess-notify-primary-${orderedCase.skill}`;
         const orderedThreadId = `thread-notify-primary-${orderedCase.skill}`;

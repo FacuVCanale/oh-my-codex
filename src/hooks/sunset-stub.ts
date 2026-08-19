@@ -47,6 +47,14 @@ export const REMOVED_SKILLS: Readonly<Record<string, RemovedSkillInfo>> = Object
     replacement: null,
     message: 'Skill "$note" has been removed. Use OMX memory/notepad surfaces instead.',
   },
+  ralph: {
+    replacement: "$ultragoal",
+    message: 'Skill "$ralph" has been removed. Use "$ultragoal" instead. The `omx ralph` CLI and ralph persistence runtime are unaffected.',
+  },
+  ultrawork: {
+    replacement: "$team",
+    message: 'Skill "$ultrawork" has been removed. Use "$team" instead.',
+  },
   "ralph-init": {
     // Was "$ralph", which is a sunset stub in the catalog: another two-hop dead end.
     replacement: "$ultragoal",
