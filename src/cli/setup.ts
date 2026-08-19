@@ -200,6 +200,8 @@ interface SetupOptions {
 	verbose?: boolean;
 	agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
 	skipNativeAgentRefresh?: boolean;
+	/** Trusted setup-owned receipt location, never inside the user skills directory. */
+	skillReceiptPath?: string;
 	setupScopePrompt?: (defaultScope: SetupScope) => Promise<SetupScope>;
 	persistedSetupReviewPrompt?: (
 		preferences: Partial<PersistedSetupScope>,
@@ -2297,10 +2299,147 @@ export async function validateSkillFile(skillMdPath: string): Promise<void> {
 const INSTALLED_SKILL_BADGE_PREFIX = "[OMX] ";
 
 /**
- * An installed skill directory is OMX-owned only when its SKILL.md still carries the badge OMX
- * writes on install. That badge is the sole ownership evidence that survives a skill being deleted
- * from the catalog, so it — not a hand-maintained name list — decides what setup may delete.
+ * Does this installed skill directory carry the badge OMX writes on install?
+ *
+ * The badge replaced a hand-maintained name list as the SIGNAL that a directory came from OMX, and it
+ * is the only such signal that survives a skill being deleted from the catalog. It is NOT sufficient
+ * for deletion on its own: a user who edits the body keeps the badge, so ordinary removal paths also
+ * require `isUnmodifiedRecordedInstall` proof from the install receipt. The single exception is
+ * `--force` on a catalog-known name, which is an explicit destructive opt-in.
  */
+/**
+ * Per-file digests of what OMX actually installed, so retirement can prove a directory is an
+ * UNMODIFIED OMX install rather than merely badged.
+ *
+ * The description badge alone is not sufficient ownership evidence for deletion: a user who edits the
+ * body of a retired skill keeps the badge, and archiving their edit is not preserving it. A receipt
+ * distinguishes "we wrote exactly these bytes" from "this looks like ours". Directories with no
+ * receipt - including installs that predate it - are conservatively RETAINED, which trades slower
+ * cleanup of legacy installs for never deleting user work.
+ */
+interface InstalledSkillReceipt {
+  version: 1;
+  skills: Record<string, { files: Record<string, string> }>;
+}
+
+function installedSkillReceiptPath(scope: SetupScope, projectRoot: string): string {
+  const authorityRoot = scope === "project" ? projectRoot : homedir();
+  return join(authorityRoot, ".omx", "state", "setup", "installed-skills.json");
+}
+
+async function readInstalledSkillReceipt(receiptPath: string): Promise<InstalledSkillReceipt> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(receiptPath, "utf-8"),
+    ) as InstalledSkillReceipt;
+    if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") {
+      // Re-key through a prototype-less record so a `__proto__` entry in a persisted receipt is a
+      // real own property on both sides of the comparison.
+      const skills: InstalledSkillReceipt["skills"] = Object.create(null);
+      for (const [name, entry] of Object.entries(parsed.skills)) {
+        const files: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [file, digest] of Object.entries(entry?.files ?? {})) files[file] = String(digest);
+        skills[name] = { files };
+      }
+      return { version: 1, skills };
+    }
+  } catch {
+    // A missing or unreadable receipt means "no proof of ownership", which retains conservatively.
+  }
+  return { version: 1, skills: Object.create(null) as InstalledSkillReceipt["skills"] };
+}
+
+/**
+ * Digest the CURRENT contents of a skill directory, used to compare against a receipt.
+ *
+ * Non-regular entries (symlinks, sockets) are recorded as a sentinel rather than skipped, so a
+ * directory containing one can never compare equal to a receipt of regular files and is therefore
+ * retained instead of deleted.
+ */
+async function digestSkillDirectory(skillDir: string): Promise<Record<string, string>> {
+  // Prototype-less: a file literally named `__proto__` assigned into a normal object literal is not an
+  // own enumerable property, so it would vanish from Object.keys() and let a user entry be deleted
+  // while the comparison still reported equality.
+  const files: Record<string, string> = Object.create(null) as Record<string, string>;
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, relPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        files[relPath] = "non-regular-entry";
+        continue;
+      }
+      files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
+    }
+  };
+  await walk(skillDir, "");
+  return files;
+}
+
+/** True only when every current file matches the digest OMX recorded at install time. */
+async function isUnmodifiedRecordedInstall(
+  receiptPath: string,
+  skillName: string,
+  skillDir: string,
+): Promise<boolean> {
+  const receipt = await readInstalledSkillReceipt(receiptPath);
+  const recorded = receipt.skills[skillName]?.files;
+  if (!recorded || Object.keys(recorded).length === 0) return false;
+  let current: Record<string, string>;
+  try {
+    current = await digestSkillDirectory(skillDir);
+  } catch {
+    return false;
+  }
+  const recordedNames = Object.keys(recorded).sort();
+  const currentNames = Object.keys(current).sort();
+  if (recordedNames.length !== currentNames.length) return false;
+  return recordedNames.every((name, index) => currentNames[index] === name && current[name] === recorded[name]);
+}
+
+/**
+ * Record digests for EXACTLY the files OMX wrote, keyed by skill.
+ *
+ * Digesting the destination tree instead would poison the receipt: a note a user drops into an active
+ * skill directory would be recorded as OMX-owned and then deleted when that skill is later retired.
+ * The receipt therefore describes the installer's own output, and any extra entry present at
+ * retirement time makes the comparison fail, which retains the directory.
+ */
+async function writeInstalledSkillReceipt(
+  receiptPath: string,
+  skillsDir: string,
+  writtenFilesBySkill: ReadonlyMap<string, readonly string[]>,
+  options: Pick<SetupOptions, "dryRun">,
+): Promise<void> {
+  if (options.dryRun) return;
+  const receipt = await readInstalledSkillReceipt(receiptPath);
+  for (const [name, relativePaths] of writtenFilesBySkill) {
+    const files: Record<string, string> = Object.create(null) as Record<string, string>;
+    let complete = true;
+    for (const relPath of relativePaths) {
+      const full = join(skillsDir, name, relPath);
+      try {
+        files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
+      } catch {
+        complete = false;
+        break;
+      }
+    }
+    if (complete && Object.keys(files).length > 0) receipt.skills[name] = { files };
+    else delete receipt.skills[name];
+  }
+  try {
+    await mkdir(dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  } catch {
+    // A receipt we cannot persist simply means the next refresh retains conservatively.
+  }
+}
+
 async function isOmxManagedInstalledSkillDir(skillDir: string): Promise<boolean> {
 	const skillMdPath = join(skillDir, "SKILL.md");
 	if (!existsSync(skillMdPath)) return false;
@@ -4085,6 +4224,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const scopeSourceMessage =
 		resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
+	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
 	const pluginAgentsMdDst =
 		resolvedScope.scope === "project"
@@ -4352,7 +4492,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				skillsSrc,
 				skillsDst,
 				backupContext,
-				{ dryRun, verbose },
+				{ dryRun, verbose, skillReceiptPath },
 			);
 			summary.skills.backedUp += cleanup.backedUp;
 			summary.skills.removed += cleanup.removedSkillNames.length;
@@ -4378,6 +4518,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					force,
 					dryRun,
 					verbose,
+					skillReceiptPath,
 					teamMode: resolvedTeamMode,
 				},
 			);
@@ -5781,6 +5922,7 @@ export async function installSkills(
 		await validateSkillFile(join(skill.sourceDir, "SKILL.md"));
 	}
 
+	const writtenFilesBySkill = new Map<string, readonly string[]>();
 	for (const skill of installableSkills) {
 		const skillName = skill.name;
 		const skillSrc = skill.sourceDir;
@@ -5791,11 +5933,13 @@ export async function installSkills(
 		}
 
 		const skillFiles = await readdir(skillSrc);
+		const writtenForSkill: string[] = [];
 		for (const sf of skillFiles) {
 			const sfPath = join(skillSrc, sf);
 			const sfStat = await stat(sfPath);
 			if (!sfStat.isFile()) continue;
 			const dstPath = join(skillDst, sf);
+			writtenForSkill.push(sf);
 			if (sf === "SKILL.md") {
 				await syncManagedContent(
 					rewriteInstalledSkillDescriptionBadge(
@@ -5819,6 +5963,14 @@ export async function installSkills(
 				`skill ${skillName}/${sf}`,
 			);
 		}
+		writtenFilesBySkill.set(skillName, writtenForSkill);
+	}
+
+	// Record what we just wrote so a later refresh can prove an unmodified install before retiring it.
+	// Without an authority path, refuse to create a receipt rather than placing deletion authority
+	// in the user-writable skills directory.
+	if (options.skillReceiptPath) {
+		await writeInstalledSkillReceipt(options.skillReceiptPath, dstDir, writtenFilesBySkill, options);
 	}
 
 	if (manifest && existsSync(dstDir)) {
@@ -5830,14 +5982,24 @@ export async function installSkills(
 			const staleSkillDir = join(dstDir, staleSkill);
 			if (!existsSync(staleSkillDir)) continue;
 
-			// An OMX-badged directory the catalog no longer ships is ours to retire on any refresh,
-			// which is what makes `omx update` drop deprecated skills without an extra flag.
-			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir);
+			// A directory the catalog no longer ships is ours to retire on any refresh - which is what
+			// makes `omx update` drop deprecated skills without an extra flag - but only when we can
+			// prove it is an UNMODIFIED install we wrote. The badge alone is not proof: a user who
+			// edits the body keeps it, and archiving their edit is not preserving it.
+			const unmodifiedInstall = Boolean(options.skillReceiptPath)
+				&& await isUnmodifiedRecordedInstall(options.skillReceiptPath!, staleSkill, staleSkillDir);
+			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir) && unmodifiedInstall;
 			const forcedCatalogSkill = options.force && catalogKnownSkillNames.has(staleSkill);
-			if (!omxManaged && !forcedCatalogSkill && !disabledTeamSkill) {
+			// Disabling Team mode is a configuration change, not a destructive opt-in, so it must not
+			// delete a directory we cannot prove we wrote. --force remains the explicit destructive path.
+			const removableDisabledTeamSkill = disabledTeamSkill && unmodifiedInstall;
+			if (!omxManaged && !forcedCatalogSkill && !removableDisabledTeamSkill) {
 				summary.skipped += 1;
 				if (options.verbose) {
-					console.log(`  kept ${staleSkill}/ (not an OMX-managed skill install)`);
+					const why = await isOmxManagedInstalledSkillDir(staleSkillDir)
+						? "modified since install, or installed before receipts existed"
+						: "not an OMX-managed skill install";
+					console.log(`  kept ${staleSkill}/ (${why})`);
 				}
 				continue;
 			}
@@ -5851,7 +6013,7 @@ export async function installSkills(
 					? "would remove stale skill"
 					: "removed stale skill";
 				const label = status ?? "unlisted";
-				const reason = disabledTeamSkill
+				const reason = removableDisabledTeamSkill
 					? ", Team mode disabled"
 					: omxManaged ? ", retired from the catalog" : "";
 				console.log(`  ${prefix} ${staleSkill}/ (status: ${label}${reason})`);
@@ -5902,7 +6064,7 @@ async function cleanupLegacyManagedSkills(
 	srcDir: string,
 	dstDir: string,
 	backupContext: SetupBackupContext,
-	options: Pick<SetupOptions, "dryRun" | "verbose">,
+	options: Pick<SetupOptions, "dryRun" | "verbose" | "skillReceiptPath">,
 ): Promise<LegacySkillCleanupResult> {
 	const result: LegacySkillCleanupResult = {
 		backedUp: 0,
@@ -5939,6 +6101,15 @@ async function cleanupLegacyManagedSkills(
 			result.warnings.push(warning);
 			continue;
 		}
+		// A matching SKILL.md does not prove the whole directory is ours: a user file sitting beside it
+		// would be deleted with the directory. Require the same unmodified-install proof the ordinary
+		// retirement sweep uses.
+		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, skillName, installedSkillDir))) {
+			const warning = `Skipping legacy skill cleanup for ${skillName}: directory contents are not a receipted unmodified OMX install.`;
+			result.skippedSkillNames.push(skillName);
+			result.warnings.push(warning);
+			continue;
+		}
 
 		const removed = await removeDirectoryCopyAware(
 			installedSkillDir,
@@ -5958,6 +6129,14 @@ async function cleanupLegacyManagedSkills(
 		if (installableSkillNames.has(entry.name)) continue;
 		const installedSkillDir = join(dstDir, entry.name);
 		if (!(await isOmxManagedInstalledSkillDir(installedSkillDir))) continue;
+		// The badge alone is not proof of ownership for deletion; a user-edited body keeps it.
+		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, entry.name, installedSkillDir))) {
+			result.skippedSkillNames.push(entry.name);
+			result.warnings.push(
+				`Skipping retired skill ${entry.name}: modified since install, or installed before receipts existed.`,
+			);
+			continue;
+		}
 		if (await removeDirectoryCopyAware(installedSkillDir, backupContext, options)) {
 			result.backedUp += 1;
 			result.removedSkillNames.push(entry.name);

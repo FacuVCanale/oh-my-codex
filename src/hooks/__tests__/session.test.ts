@@ -17,6 +17,7 @@ import {
   __setSessionPointerTransactionDependenciesForTests,
   inspectSessionPointerLock,
   isSessionPointerLaunchAbort,
+  isSessionStateUsable,
   isSessionStale,
   readSessionPointer,
   readSessionState,
@@ -101,6 +102,25 @@ async function withOwnerEnvironment(sessionId: string | undefined, run: () => Pr
     if (previous === undefined) delete process.env.OMX_SESSION_ID;
     else process.env.OMX_SESSION_ID = previous;
   }
+}
+
+/**
+ * Identity fields for a pointer that belongs to the HOST platform.
+ *
+ * `recordedIdentityForState` only derives birth evidence from the v1 `pid_start_ticks` shape when
+ * platform === 'linux', and `classifyRecordedIdentity` refuses a recorded platform that differs from
+ * the runtime platform. An inline `platform: 'linux', pid_start_ticks: 1` fixture therefore degrades
+ * to identity-indeterminate off Linux, which silently made these cases Linux-only. Linux keeps the
+ * v1 shape byte-identically; other hosts describe the same pointer with the platform-agnostic v2
+ * identity that `matchingObservation()` (host platform, birth '1') matches.
+ */
+function hostPointerIdentity(): Record<string, unknown> {
+  if (process.platform === 'linux') return { platform: 'linux', pid_start_ticks: 1 };
+  return {
+    platform: process.platform,
+    identity_schema_version: 2,
+    process_identity: { platform: process.platform, birth: '1' },
+  };
 }
 
 function matchingObservation(platform: NodeJS.Platform = process.platform): ProcessObservation {
@@ -854,6 +874,18 @@ describe('isSessionStale', () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it('does not promote a live Darwin identity-indeterminate pointer to usable authority', () => {
+    const state = makeState({ platform: 'darwin' });
+
+    assert.equal(
+      isSessionStateUsable(state, state.cwd, {
+        platform: 'darwin',
+        isPidAlive: () => true,
+      }),
+      false,
+    );
+  });
 });
 
 describe('verified-dead selected session pointer recovery', { concurrency: false }, () => {
@@ -1431,8 +1463,7 @@ describe('session pointer transaction', () => {
           started_at: '2026-07-14T00:00:00.000Z',
           cwd,
           pid: process.pid,
-          platform: 'linux',
-          pid_start_ticks: 1,
+          ...hostPointerIdentity(),
         }), 'utf-8');
         assert.equal((await readSessionPointer(context)).status, 'usable');
 
@@ -1775,11 +1806,18 @@ describe('session pointer transaction', () => {
       expected: string;
     }> = [
       { name: 'dead', owner: validLockOwner(), probePid: 'dead', expected: 'dead' },
-      { name: 'reused', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'identity', identity: { platform: 'linux', birth: '2' } }, expected: 'reused' },
+      // Birth mismatch must be observed on the HOST platform: a cross-platform observation is
+      // rejected as identity-unavailable first, which would mask the reuse this row exists to prove.
+      { name: 'reused', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'identity', identity: { platform: process.platform, birth: '2' } }, expected: 'reused' },
       { name: 'indeterminate-probe', owner: validLockOwner(), probePid: 'indeterminate', expected: 'identity-indeterminate' },
       { name: 'indeterminate-identity', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'error' }, expected: 'identity-indeterminate' },
-      { name: 'foreign-identity', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'identity', identity: { platform: 'darwin', birth: '1' } }, expected: 'identity-indeterminate' },
-      { name: 'missing-required-hash', owner: validLockOwner({ pid_cmdline_hash: 'a'.repeat(64) }), probePid: 'alive', observation: matchingObservation(), expected: 'identity-indeterminate' },
+      // Genuinely foreign relative to the host, not hardcoded: on darwin a 'darwin' observation is
+      // the host platform and would legitimately match.
+      { name: 'foreign-identity', owner: validLockOwner(), probePid: 'alive', observation: { kind: 'identity', identity: { platform: process.platform === 'win32' ? 'darwin' : 'win32', birth: '1' } }, expected: 'identity-indeterminate' },
+      // The required hash must live where the owner's schema actually reads it: v1 uses top-level
+      // pid_cmdline_hash, v2 reads process_identity.cmdline_hash. Putting it only at the top level
+      // made this row a no-op off Linux, where the fixture is v2 and the hash was silently dropped.
+      { name: 'missing-required-hash', owner: validLockOwner({ process_identity: { platform: process.platform, birth: '1', cmdline_hash: 'a'.repeat(64) } }), probePid: 'alive', observation: matchingObservation(), expected: 'identity-indeterminate' },
       { name: 'missing', probePid: 'alive', expected: 'missing' },
       { name: 'malformed', owner: { version: 1 }, probePid: 'alive', expected: 'malformed' },
     ];
@@ -3527,18 +3565,22 @@ describe('session pointer transaction', () => {
       assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-absent')).status, 'absent');
       await withPointerDependencies({
         probePid: (pid) => pid === 11 ? 'dead' : 'alive',
-        observeProcess: () => ({ kind: 'identity', identity: { platform: 'linux' as const, birth: '1' } }),
+        // Host platform: a cross-platform observation is rejected as identity-unavailable before any
+        // of this test's ownership assertions can be reached.
+        observeProcess: () => matchingObservation(),
       }, async () => {
         await writeNativeSessionOwner(
           cwd,
           'native-owner-recovery',
-          { pid: 11, platform: 'linux' },
+          // Host platform: cross-platform evidence is untrustworthy and classifies indeterminate, so
+          // a hardcoded 'linux' owner could never reach stale-dead off Linux.
+          { pid: 11, platform: process.platform },
         );
         assert.equal((await readNativeSessionOwnerEvidence(cwd, 'native-owner-recovery')).status, 'stale-dead');
         const recovered = await writeNativeSessionOwner(
           cwd,
           'native-owner-recovery',
-          { pid: 22, platform: 'linux' },
+          { pid: 22, platform: process.platform },
         );
         assert.equal(recovered.pid, 22);
 
@@ -3580,8 +3622,10 @@ describe('session pointer transaction', () => {
           started_at: new Date().toISOString(),
           cwd,
           pid: 22,
-          platform: 'linux',
-          pid_start_ticks: 1,
+          // Host-aligned: this row proves a FORGED SESSION ID is an owner conflict. Recording it for
+          // another platform is a different case, covered by `rejects owner sidecars recorded for
+          // another platform`, and would short-circuit this assertion.
+          ...hostPointerIdentity(),
         }), 'utf-8');
         const forgedBefore = await readFile(forgedPath, 'utf-8');
         assert.equal(await readNativeSessionOwner(cwd, 'native-owner-forged'), null);
@@ -3589,7 +3633,7 @@ describe('session pointer transaction', () => {
           writeNativeSessionOwner(
             cwd,
             'native-owner-forged',
-            { pid: 22, platform: 'linux' },
+            { pid: 22, platform: process.platform },
           ),
           (error: unknown) => isSessionPointerLaunchAbort(error)
             && error.code === 'session_pointer_owner_conflict',
@@ -3610,8 +3654,7 @@ describe('session pointer transaction', () => {
           native_session_id: 'native-owner-missing-cwd',
           started_at: new Date().toISOString(),
           pid: 22,
-          platform: 'linux',
-          pid_start_ticks: 1,
+          ...hostPointerIdentity(),
         }), 'utf-8');
         const missingCwdBefore = await readFile(missingCwdPath, 'utf-8');
         assert.equal(await readNativeSessionOwner(cwd, 'native-owner-missing-cwd'), null);
@@ -3619,7 +3662,7 @@ describe('session pointer transaction', () => {
           writeNativeSessionOwner(
             cwd,
             'native-owner-missing-cwd',
-            { pid: 22, platform: 'linux' },
+            { pid: 22, platform: process.platform },
           ),
           (error: unknown) => isSessionPointerLaunchAbort(error)
             && error.code === 'session_pointer_owner_conflict',

@@ -5,6 +5,7 @@ import {
   updateAutopilotPipelineState,
   updateModeState,
 } from '../modes/base.js';
+import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
@@ -568,9 +569,19 @@ export async function runRalplanConsensus(
         }, options.sessionId);
 
         if (supervisedAutopilot && options.sessionId && autopilotParent) {
-            const existingHandoffs = autopilotParent.handoff_artifacts && typeof autopilotParent.handoff_artifacts === 'object'
-              ? autopilotParent.handoff_artifacts as Record<string, unknown>
-              : {};
+            // Never spread a corrupt persisted carrier into a fresh object: that laundered a stored
+            // array into a valid-looking record and defeated the writer-side guard. A corrupt parent
+            // carrier fails closed here instead.
+            // Both representations, because the gate reads either one.
+            const parentNested = autopilotParent.state;
+            const nestedCarrier = parentNested && typeof parentNested === 'object' && !Array.isArray(parentNested)
+              ? (parentNested as Record<string, unknown>).handoff_artifacts
+              : undefined;
+            requirePersistedHandoffCarrier(nestedCarrier, 'parent state.handoff_artifacts carrier');
+            const existingHandoffs = requirePersistedHandoffCarrier(
+              autopilotParent.handoff_artifacts,
+              'parent handoff_artifacts carrier',
+            );
             await updateAutopilotPipelineState({
               active: true,
               current_phase: 'ultragoal',

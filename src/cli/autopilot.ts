@@ -69,6 +69,23 @@ async function readAutopilot(cwd: string, sessionId?: string) {
     : readModeState('autopilot', cwd);
 }
 
+/**
+ * A terminalization that carried skipped gates must never read as clean success. The durable
+ * marker is the machine token `complete-with-skipped-gates`; this renders the human string and
+ * names each skipped gate with its missing evidence so the report is actionable.
+ */
+function skippedGateReport(state: Record<string, unknown>): string | null {
+  if (state.completion_status !== 'complete-with-skipped-gates') return null;
+  const entries = Array.isArray(state.skipped_gates) ? state.skipped_gates : [];
+  const lines = entries.map((entry) => {
+    const record = (entry ?? {}) as Record<string, unknown>;
+    const gate = typeof record.skippedGate === 'string' ? record.skippedGate : 'unknown gate';
+    const missing = typeof record.missingEvidence === 'string' ? record.missingEvidence : 'unspecified evidence';
+    return `  - ${gate}: missing ${missing}`;
+  });
+  return ['autopilot: complete with skipped gates', ...lines].join('\n');
+}
+
 function instruction(state: Record<string, unknown>): string {
   const phase = deriveAutopilotChildPhase(state);
   const task = typeof state.task_description === 'string' ? state.task_description : '';
@@ -116,8 +133,10 @@ export async function autopilotCommand(args: string[], deps: AutopilotCommandDep
 
   if (command === 'status' || command === 'next') {
     const nextInstruction = instruction(state);
+    const skippedGates = skippedGateReport(state as unknown as Record<string, unknown>);
     if (json) stdout(JSON.stringify({ state, instruction: nextInstruction }));
-    else stdout(command === 'next' ? nextInstruction : `autopilot: ${state.current_phase}\n${nextInstruction}`);
+    else if (command === 'next') stdout(nextInstruction);
+    else stdout([skippedGates ?? `autopilot: ${state.current_phase}`, nextInstruction].join('\n'));
     return;
   }
 

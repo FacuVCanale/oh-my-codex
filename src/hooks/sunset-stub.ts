@@ -30,8 +30,10 @@ export const REMOVED_SKILLS: Readonly<Record<string, RemovedSkillInfo>> = Object
     message: 'Skill "$deepsearch" has been removed. Use "$analyze" instead.',
   },
   "ecomode": {
-    replacement: "$ultrawork",
-    message: 'Skill "$ecomode" has been removed. Use "$ultrawork" instead.',
+    // Was "$ultrawork", which is itself a sunset stub: a two-hop dead end that bounced the user
+    // from one removed skill to another. Replacements must name a live catalog skill.
+    replacement: "$team",
+    message: 'Skill "$ecomode" has been removed. Use "$team" instead.',
   },
   "frontend-ui-ux": {
     replacement: "$design",
@@ -45,9 +47,18 @@ export const REMOVED_SKILLS: Readonly<Record<string, RemovedSkillInfo>> = Object
     replacement: null,
     message: 'Skill "$note" has been removed. Use OMX memory/notepad surfaces instead.',
   },
+  ralph: {
+    replacement: "$ultragoal",
+    message: 'Skill "$ralph" has been removed. Use "$ultragoal" instead. The `omx ralph` CLI and ralph persistence runtime are unaffected.',
+  },
+  ultrawork: {
+    replacement: "$team",
+    message: 'Skill "$ultrawork" has been removed. Use "$team" instead.',
+  },
   "ralph-init": {
-    replacement: "$ralph",
-    message: 'Skill "$ralph-init" has been removed. Use "$ralph" instead.',
+    // Was "$ralph", which is a sunset stub in the catalog: another two-hop dead end.
+    replacement: "$ultragoal",
+    message: 'Skill "$ralph-init" has been removed. Use "$ultragoal" instead.',
   },
   "review": {
     replacement: "$code-review",

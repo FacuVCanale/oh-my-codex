@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { assertValidHandoffCarriersIn, requirePersistedHandoffCarrier } from './handoff-carrier.js';
 
 import { withModeRuntimeContext } from './mode-state-context.js';
 import {
@@ -32,6 +33,7 @@ import {
   hasCleanAutopilotReviewAndQaEvidence,
   isAutopilotSuccessfulTerminalState,
   validateAutopilotCompletionTransition,
+  type AutopilotCompletionAdvisory,
 } from '../autopilot/completion-gate.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
@@ -258,7 +260,12 @@ function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown
   const reviewVerdict = state.review_verdict;
   const qaVerdict = state.qa_verdict;
   const nestedState = { ...objectRecord(state.state) };
-  const handoffArtifacts = { ...objectRecord(nestedState.handoff_artifacts ?? state.handoff_artifacts) };
+  // Same invariant as the writers: objectRecord() would turn a corrupt carrier into {}, and this
+  // function then stamps clean review/QA verdicts onto it. Writing completion evidence over corruption
+  // would launder it into a valid-looking clean terminal state, so a corrupt carrier fails closed.
+  // Both locations, in the same precedence order the completion gate's stateField() uses.
+  const rawCarrier = nestedState.handoff_artifacts ?? state.handoff_artifacts;
+  const handoffArtifacts = { ...requirePersistedHandoffCarrier(rawCarrier, 'handoff_artifacts carrier') };
 
   handoffArtifacts.code_review = reviewVerdict;
   handoffArtifacts.ultraqa = qaVerdict;
@@ -269,6 +276,28 @@ function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown
   nestedState.qa_verdict = qaVerdict;
   nestedState.return_to_ralplan_reason = null;
   state.state = nestedState;
+}
+
+function appendAutopilotCompletionAdvisory(
+  state: Record<string, unknown>,
+  completionAdvisory: AutopilotCompletionAdvisory | null,
+): void {
+  const existing = Array.isArray(state.skipped_gates)
+    ? state.skipped_gates.filter((entry): entry is AutopilotCompletionAdvisory => (
+      Boolean(entry)
+      && typeof entry === 'object'
+      && !Array.isArray(entry)
+      && typeof (entry as Record<string, unknown>).skippedGate === 'string'
+      && typeof (entry as Record<string, unknown>).missingEvidence === 'string'
+      && typeof (entry as Record<string, unknown>).message === 'string'
+    ))
+    : [];
+  const skippedGates = completionAdvisory && !existing.some((entry) => entry.skippedGate === completionAdvisory.skippedGate)
+    ? [...existing, completionAdvisory]
+    : existing;
+  if (skippedGates.length === 0) return;
+  state.skipped_gates = skippedGates;
+  if (isAutopilotSuccessfulTerminalState(state)) state.completion_status = 'complete-with-skipped-gates';
 }
 
 function isCompleteRalplanTerminalState(state: Record<string, unknown>): boolean {
@@ -685,6 +714,7 @@ export async function executeStateOperation(
           : {};
         let validationError: string | null = null;
         let transitionMessage: string | undefined;
+        let completionAdvisory: AutopilotCompletionAdvisory | null = null;
         let ensureRalphArtifacts = false;
         let skillActivePrimaryCommitted = false;
 
@@ -798,12 +828,13 @@ export async function executeStateOperation(
             if (typeof mergedRaw.workingDirectory !== 'string' || mergedRaw.workingDirectory.trim() === '') {
               mergedRaw.workingDirectory = cwd;
             }
-            const existingHandoffs = existing.handoff_artifacts && typeof existing.handoff_artifacts === 'object' && !Array.isArray(existing.handoff_artifacts)
-              ? existing.handoff_artifacts as Record<string, unknown>
-              : {};
-            const nextHandoffs = mergedRaw.handoff_artifacts && typeof mergedRaw.handoff_artifacts === 'object' && !Array.isArray(mergedRaw.handoff_artifacts)
-              ? mergedRaw.handoff_artifacts as Record<string, unknown>
-              : {};
+            // state_write is an independent public writer with its own merge, so it needs the same
+            // invariant as modes/base.ts: reject a supplied malformed carrier BEFORE normalizing it.
+            // Otherwise an existing non-empty carrier simply overwrote the malformed value and the gate
+            // saw an ordinary object, which is how a forged array advanced a phase with an advisory.
+            assertValidHandoffCarriersIn(mergedRaw, 'state_write');
+            const existingHandoffs = requirePersistedHandoffCarrier(existing.handoff_artifacts, 'stored handoff_artifacts carrier');
+            const nextHandoffs = requirePersistedHandoffCarrier(mergedRaw.handoff_artifacts, 'state_write handoff_artifacts carrier');
             if (Object.keys(existingHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
               mergedRaw.handoff_artifacts = { ...existingHandoffs, ...nextHandoffs };
             }
@@ -813,14 +844,11 @@ export async function executeStateOperation(
 
 
           if (mode === 'autopilot') {
-            const completionTransitionError = validateAutopilotCompletionTransition(
+            completionAdvisory = validateAutopilotCompletionTransition(
               existing as Record<string, unknown>,
               mergedRaw,
             );
-            if (completionTransitionError) {
-              validationError = completionTransitionError;
-              return;
-            }
+            appendAutopilotCompletionAdvisory(mergedRaw, completionAdvisory);
           }
 
 
@@ -921,6 +949,7 @@ export async function executeStateOperation(
             mode,
             path,
             ...(transitionMessage ? { transition: transitionMessage } : {}),
+            ...(completionAdvisory ? { advisory: completionAdvisory } : {}),
           },
         };
       }
@@ -1019,124 +1048,4 @@ export async function executeStateOperation(
       isError: true,
     };
   }
-}
-
-// ---------------------------------------------------------------------------
-// Upgrade-time neutralization of stale workflow-state projections (#3498).
-//
-// On the first run of 0.21 in a workspace that previously ran 0.20.x, stale
-// ralph/ralplan/transition projections may remain in `.omx/state/`. These are
-// neutralized (marked terminal) so they never block a session. The operation
-// is idempotent, authority-decreasing, and never throws.
-// ---------------------------------------------------------------------------
-
-const STATE_NEUTRALIZATION_MARKER_FILENAME = 'state-neutralized-0.21.json';
-
-const NEUTRALIZABLE_STALE_MODES = new Set([
-  'ralph',
-  'ralplan',
-  'deep-interview',
-  'autopilot',
-  'ultrawork',
-  'pipeline',
-]);
-
-function isStaleActiveState(state: Record<string, unknown>): boolean {
-  if (state.active !== true) return false;
-  const phase = typeof state.current_phase === 'string'
-    ? state.current_phase.trim().toLowerCase()
-    : '';
-  return !['complete', 'completed', 'cancelled', 'canceled', 'failed', 'cleared'].includes(phase);
-}
-
-function buildNeutralizedState(
-  existing: Record<string, unknown>,
-  mode: string,
-  nowIso: string,
-): Record<string, unknown> {
-  return {
-    ...existing,
-    active: false,
-    current_phase: 'cancelled',
-    completed_at: typeof existing.completed_at === 'string' ? existing.completed_at : nowIso,
-    neutralized_at: nowIso,
-    neutralized_by: 'upgrade-0.21',
-    neutralization_reason: `Stale ${mode} state from pre-0.21 workflow; neutralized by state SSOT unification (#3498).`,
-  };
-}
-
-export interface StateNeutralizationResult {
-  ran: boolean;
-  neutralizedFiles: string[];
-  skipped: number;
-}
-
-/**
- * Idempotent upgrade-time neutralization of stale `.omx/state/` workflow
- * projections. Runs once per workspace (tracked by a marker file), scans all
- * session-scoped and root `{mode}-state.json` files, and marks any active
- * stale ralph/ralplan/transition/autopilot/ultrawork/pipeline projections
- * terminal. Never throws, never blocks a session.
- */
-export async function neutralizeStaleWorkflowStateProjections(
-  cwd: string,
-): Promise<StateNeutralizationResult> {
-  const { getBaseStateDir, getAllScopedStateDirs } = await import('../mcp/state-paths.js');
-  const baseStateDir = getBaseStateDir(cwd);
-  const markerPath = join(baseStateDir, STATE_NEUTRALIZATION_MARKER_FILENAME);
-
-  if (existsSync(markerPath)) {
-    return { ran: false, neutralizedFiles: [], skipped: 0 };
-  }
-
-  const nowIso = new Date().toISOString();
-  const neutralizedFiles: string[] = [];
-  let skipped = 0;
-
-  const stateDirs = await getAllScopedStateDirs(cwd).catch(() => [baseStateDir]);
-
-  for (const stateDir of stateDirs) {
-    if (!existsSync(stateDir)) continue;
-    const files = await readdir(stateDir).catch(() => []);
-    for (const file of files) {
-      if (!file.endsWith('-state.json') || file === 'run-state.json') continue;
-      if (file === 'skill-active-state.json') continue;
-      const mode = file.replace('-state.json', '');
-      if (!NEUTRALIZABLE_STALE_MODES.has(mode)) {
-        skipped++;
-        continue;
-      }
-      const path = join(stateDir, file);
-      try {
-        const data = JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>;
-        if (!isStaleActiveState(data)) {
-          skipped++;
-          continue;
-        }
-        const neutralized = buildNeutralizedState(data, mode, nowIso);
-        const payload = JSON.stringify(neutralized, null, 2);
-        await writeStateFile(path, payload);
-        neutralizedFiles.push(path);
-      } catch {
-        // Malformed state file — skip, never block.
-        skipped++;
-      }
-    }
-  }
-
-  // Write marker file so this never runs twice for the same workspace.
-  try {
-    await mkdir(baseStateDir, { recursive: true });
-    const markerPayload = JSON.stringify({
-      version: 1,
-      neutralized_at: nowIso,
-      neutralized_files: neutralizedFiles.length,
-      schema: 'state-neutralization-0.21',
-    }, null, 2);
-    await writeStateFile(markerPath, markerPayload);
-  } catch {
-    // Marker write failure is non-fatal; worst case it re-runs next time.
-  }
-
-  return { ran: true, neutralizedFiles, skipped };
 }

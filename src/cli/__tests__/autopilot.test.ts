@@ -64,16 +64,19 @@ describe('autopilot CLI supervisor', () => {
     }
   });
 
-  it('rejects non-adjacent phase bypasses', async () => {
+  it('permits non-adjacent phase bypasses with a phase-order advisory', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-cli-bypass-'));
     const sessionId = 'sess-autopilot-cli-bypass';
     try {
       await writeSession(cwd, sessionId);
       await invoke(cwd, ['start', '--task', 'bypass test', '--session', sessionId]);
-      await assert.rejects(
-        () => invoke(cwd, ['advance', '--to', 'ultragoal', '--session', sessionId, '--handoff-json', '{}']),
-        /Cannot advance Autopilot from deep-interview to ultragoal/,
-      );
+      const advanced = await invoke(cwd, ['advance', '--to', 'ultragoal', '--session', sessionId, '--handoff-json', '{}', '--json']);
+      const result = JSON.parse(advanced[0]) as { state: Record<string, unknown> };
+      assert.equal(result.state.current_phase, 'ultragoal');
+      const skippedGates = result.state.skipped_gates as Array<{ skippedGate?: string; missingEvidence?: string }>;
+      assert.equal(skippedGates.length, 1);
+      assert.equal(skippedGates[0]?.skippedGate, 'phase-order');
+      assert.ok(skippedGates[0]?.missingEvidence);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -117,6 +120,37 @@ describe('autopilot CLI supervisor', () => {
         })]),
         /durable completed interview gate and handoff artifact/,
       );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('reports complete with skipped gates instead of clean success', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-autopilot-cli-skipped-gates-'));
+    const sessionId = 'sess-autopilot-cli-skipped-gates';
+    try {
+      await writeSession(cwd, sessionId);
+      await invoke(cwd, ['start', '--task', 'skipped gate reporting', '--session', sessionId]);
+
+      // Terminalize straight from deep-interview: permitted under the advisory contract, but it
+      // skips the ralplan gate, so the report must not read as a clean completion.
+      const statePath = join(cwd, '.omx', 'state', 'sessions', sessionId, 'autopilot-state.json');
+      const state = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
+      await writeFile(statePath, JSON.stringify({
+        ...state,
+        active: false,
+        current_phase: 'complete',
+        completion_status: 'complete-with-skipped-gates',
+        skipped_gates: [
+          { skippedGate: 'ralplan', missingEvidence: 'the required deep-interview to ralplan transition', message: 'skipped ralplan' },
+        ],
+      }));
+
+      const status = await invoke(cwd, ['status', '--session', sessionId]);
+      const rendered = status.join('\n');
+      assert.match(rendered, /complete with skipped gates/);
+      assert.match(rendered, /ralplan: missing the required deep-interview to ralplan transition/);
+      assert.doesNotMatch(rendered, /^autopilot: complete$/m);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

@@ -464,6 +464,7 @@ jobs:
           - node-version: 20
             lane: cli-core-rest
             test-roots: >-
+              dist/autopilot/__tests__
               dist/cli/__tests__
               dist/agents/__tests__
               dist/autoresearch/__tests__
@@ -471,7 +472,6 @@ jobs:
               dist/compat/__tests__
               dist/config/__tests__
               dist/modes/__tests__
-              dist/pipeline/__tests__
               dist/planning/__tests__
               dist/scripts/__tests__
               dist/session-history/__tests__

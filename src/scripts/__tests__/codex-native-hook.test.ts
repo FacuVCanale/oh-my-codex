@@ -1488,18 +1488,18 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "directive-documentation-trailing-prose-then-command", prompt: "use $ralplan is the workflow command for planning\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "directive-documentation-implicit-prose", prompt: "use $ralplan is the workflow command for autopilot mode", expectedSkill: null },
       { name: "directive-documentation-alias-prose", prompt: "use $ralplan is the consensus-planning command\nAutopilot mode is its alias.", expectedSkill: null },
-      { name: "directive-coordinated-documentation-then-command", prompt: "- use $ralplan and $autopilot are workflow commands\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-coordinated-documentation-then-command", prompt: "- use $ralplan and $autopilot are workflow commands\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-documentation-semicolon-directive", prompt: "use $ralplan is the consensus-planning command; use $autopilot build it", expectedSkill: "autopilot" },
-      { name: "directive-two-documentation-blocks", prompt: "use $ralplan is the consensus-planning command\nuse $autopilot is the autonomous workflow command\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-two-documentation-blocks", prompt: "use $ralplan is the consensus-planning command\nuse $autopilot is the autonomous workflow command\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-documentation-embedded-token-then-command", prompt: "use $ralplan is the workflow command for $team\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "directive-documentation-task-noun-followup", prompt: "use $ralplan is the workflow command; use $autopilot update the documentation", expectedSkill: "autopilot" },
       { name: "directive-documentation-implicit-semicolon-followup", prompt: "use $ralplan is the consensus-planning command; use autopilot mode.", expectedSkill: "autopilot" },
       { name: "directive-documentation-transition-followup", prompt: "use $ralplan is the consensus-planning command; then use $autopilot build it", expectedSkill: "autopilot" },
       { name: "directive-documentation-explicit-alias", prompt: "use $ralplan is the consensus-planning command; $team is its alias", expectedSkill: null },
-      { name: "directive-documentation-implicit-chain", prompt: "use $ralplan is the consensus-planning command\nAutopilot mode is its alias.\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-documentation-implicit-chain", prompt: "use $ralplan is the consensus-planning command\nAutopilot mode is its alias.\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-documentation-fullwidth-separator", prompt: "use $ralplan，$autopilot are workflow commands", expectedSkill: null },
-      { name: "directive-documentation-compact-slash", prompt: "use $ralplan/$autopilot are workflow commands\n$ralph execute it", expectedSkill: "ralph" },
-      { name: "reference-prompts-title-then-command", prompt: "[docs]: /target \"title\nUse /prompts:architect\"\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-documentation-compact-slash", prompt: "use $ralplan/$autopilot are workflow commands\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
+      { name: "reference-prompts-title-then-command", prompt: "[docs]: /target \"title\nUse /prompts:architect\"\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "doc-period-implicit", prompt: "use $ralplan is the consensus-planning command. Use autopilot mode.", expectedSkill: "autopilot" },
       { name: "doc-bare-implicit", prompt: "use $ralplan is the consensus-planning command; autopilot mode.", expectedSkill: "autopilot" },
       { name: "doc-fullwidth-semicolon", prompt: "use $ralplan is the consensus-planning command； use $autopilot build it", expectedSkill: "autopilot" },
@@ -1517,13 +1517,13 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "fullwidth-frame-reset", prompt: "For instance: manual mode is slower。 Use autopilot mode.", expectedSkill: "autopilot" },
       { name: "doc-abbreviation", prompt: "use $ralplan is the workflow command, e.g. use $autopilot in examples.", expectedSkill: null },
       { name: "implicit-doc-mention", prompt: "use $ralplan is the workflow command; autopilot mode appears in the documentation.", expectedSkill: null },
-      { name: "implicit-doc-chain", prompt: "use $ralplan is the workflow command; autopilot mode is its alias; $ralph execute it", expectedSkill: "ralph" },
+      { name: "implicit-doc-chain", prompt: "use $ralplan is the workflow command; autopilot mode is its alias; $ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "long-command-gap", prompt: `use $ralplan is the workflow command; use${" ".repeat(161)}$autopilot build it`, expectedSkill: "autopilot" },
       { name: "ideographic-negation", prompt: "$ralplan、 $autopilot are prohibited", expectedSkill: null },
       { name: "implicit-ideographic-negation", prompt: "Autopilot mode、 deep interview are prohibited.", expectedSkill: null },
       { name: "doc-exclamation-followup", prompt: "use $ralplan is the consensus-planning command! run $autopilot", expectedSkill: "autopilot" },
       { name: "doc-fullwidth-question-followup", prompt: "use $ralplan is the consensus-planning command？ run $autopilot", expectedSkill: "autopilot" },
-      { name: "implicit-doc-predecessor", prompt: "Autopilot mode is workflow documentation.\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "implicit-doc-predecessor", prompt: "Autopilot mode is workflow documentation.\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "confusable-use-verb", prompt: "uſe $ralplan plan it", expectedSkill: null },
       { name: "confusable-please-prefix", prompt: "pleaſe use $ralplan plan it", expectedSkill: null },
       { name: "confusable-prompts-token-then-command", prompt: "/promptſ:architect; use autopilot mode.", expectedSkill: "autopilot" },
@@ -1548,8 +1548,8 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "compact-explicit-negation", prompt: "$ralplan,$autopilot are prohibited", expectedSkill: null },
       { name: "compact-implicit-negation", prompt: "Autopilot mode،deep interview are prohibited.", expectedSkill: null },
       { name: "doc-clause-local-prefix", prompt: "$ralplan; $autopilot is documented in the guide.", expectedSkill: "ralplan" },
-      { name: "doc-chain-described", prompt: "use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
-      { name: "doc-chain-workflow", prompt: "use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ralph execute it", expectedSkill: "ralph" },
+      { name: "doc-chain-described", prompt: "use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it", expectedSkill: "team", insideTmux: true },
+      { name: "doc-chain-workflow", prompt: "use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "ref-inline-explicit", prompt: "[docs]: $ralplan\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "ref-inline-prompts", prompt: "[docs]: /prompts:architect\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "list-fullwidth-explicit-doc", prompt: "- $ralplan： consensus-planning workflow", expectedSkill: null },
@@ -1574,10 +1574,10 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "neg-fw-dot-reopen", prompt: "Do not run $ralplan． use $autopilot build it", expectedSkill: "autopilot" },
       { name: "neg-greek-q-reopen", prompt: "Do not run $ralplan; use $autopilot build it", expectedSkill: "autopilot" },
       { name: "unicode-attached-contrast", prompt: "Do not use deep interview яbut use autopilot mode.", expectedSkill: null },
-      { name: "prefix-list-followup", prompt: "Do not run $ralplan, $autopilot; use $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
+      { name: "prefix-list-followup", prompt: "Do not run $ralplan, $autopilot; use $team execute it", expectedSkill: "team", insideTmux: true },
       { name: "mixed-postposed-chain", prompt: "$ralplan, autopilot mode, $team are prohibited.", expectedSkill: null },
-      { name: "implicit-first-doc-chain", prompt: "Autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
-      { name: "both-mixed-doc-followup", prompt: "Both autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
+      { name: "implicit-first-doc-chain", prompt: "Autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", insideTmux: true },
+      { name: "both-mixed-doc-followup", prompt: "Both autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", insideTmux: true },
       { name: "doc-semicolon-preserves-earlier", prompt: "Use autopilot mode; use $ralplan is the workflow command.", expectedSkill: "autopilot" },
       { name: "doc-independent-comma", prompt: "Use autopilot mode, and $ralplan is documented in the guide.", expectedSkill: "autopilot" },
       { name: "reference-unclosed-quote-destination", prompt: "[docs]: \"target\n$autopilot build it", expectedSkill: null },
@@ -1601,8 +1601,8 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "directive-start-ralplan", prompt: "start $ralplan plan this", expectedSkill: "ralplan" },
       { name: "directive-enable-deep-interview", prompt: "enable $deep-interview", expectedSkill: "deep-interview", expectedStopBlock: false },
       { name: "directive-launch-autopilot", prompt: "launch $autopilot", expectedSkill: "autopilot" },
-      { name: "directive-invoke-ralph", prompt: "invoke $ralph", expectedSkill: "ralph" },
-      { name: "directive-activate-ultrawork", prompt: "activate $ultrawork", expectedSkill: "ultrawork" },
+      { name: "directive-invoke-ralph", prompt: "invoke $ultragoal", expectedSkill: "ultragoal", expectedStopBlock: false },
+      { name: "directive-activate-ultrawork", prompt: "activate $ultragoal", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-resume-ralplan", prompt: "resume $ralplan plan this", expectedSkill: "ralplan" },
       { name: "directive-continue-code-review", prompt: "continue $code-review", expectedSkill: "code-review", expectedStopBlock: false },
       { name: "directive-documentation", prompt: "use $ralplan is the consensus-planning command", expectedSkill: null },
@@ -1755,7 +1755,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "implicit-positive-contrast", prompt: "Do not use deep interview, but use autopilot mode.", expectedSkill: "autopilot" },
       { name: "implicit-but-instead-positive", prompt: "Do not use deep interview but instead use autopilot mode.", expectedSkill: "autopilot" },
       { name: "implicit-list-verb-positive", prompt: "List files and use autopilot mode.", expectedSkill: "autopilot" },
-      { name: "implicit-dont-stop-positive", prompt: "No, don't stop.", expectedSkill: "ralph" },
+      { name: "implicit-dont-stop-positive", prompt: "No, don't stop.", expectedSkill: null },
       { name: "implicit-doc-suffix", prompt: "autopilot mode is workflow documentation.", expectedSkill: null },
       { name: "implicit-inline-code", prompt: "`autopilot mode`", expectedSkill: null },
       { name: "implicit-blockquote", prompt: "> autopilot mode", expectedSkill: null },
@@ -1858,7 +1858,14 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
         const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
         const skillStatePath = join(sessionDir, "skill-active-state.json");
         if (testCase.expectedSkill === null) {
-          assert.equal(existsSync(skillStatePath), false, testCase.name);
+          // No activation. A RETIRED token additionally leaves a refusal record - active false with no
+          // active skills - which is a diagnostic rather than an activation, so assert that nothing was
+          // activated instead of that no file exists.
+          if (existsSync(skillStatePath)) {
+          	const refused = JSON.parse(await readFile(skillStatePath, "utf-8")) as { active?: boolean; active_skills?: unknown[] };
+          	assert.equal(refused.active, false, testCase.name);
+          	assert.deepEqual(refused.active_skills ?? [], [], testCase.name);
+          }
         } else {
           const skillState = JSON.parse(await readFile(skillStatePath, "utf-8")) as { active?: boolean; skill?: string; phase?: string; error?: string; deferred_skills?: string[]; active_skills?: Array<{ skill?: string }> };
           assert.equal(skillState.active, true, testCase.name);
@@ -1923,18 +1930,18 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "directive-documentation-trailing-prose-then-command", prompt: "use $ralplan is the workflow command for planning\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "directive-documentation-implicit-prose", prompt: "use $ralplan is the workflow command for autopilot mode", expectedSkill: null },
       { name: "directive-documentation-alias-prose", prompt: "use $ralplan is the consensus-planning command\nAutopilot mode is its alias.", expectedSkill: null },
-      { name: "directive-coordinated-documentation-then-command", prompt: "- use $ralplan and $autopilot are workflow commands\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-coordinated-documentation-then-command", prompt: "- use $ralplan and $autopilot are workflow commands\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-documentation-semicolon-directive", prompt: "use $ralplan is the consensus-planning command; use $autopilot build it", expectedSkill: "autopilot" },
-      { name: "directive-two-documentation-blocks", prompt: "use $ralplan is the consensus-planning command\nuse $autopilot is the autonomous workflow command\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-two-documentation-blocks", prompt: "use $ralplan is the consensus-planning command\nuse $autopilot is the autonomous workflow command\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-documentation-embedded-token-then-command", prompt: "use $ralplan is the workflow command for $team\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "directive-documentation-task-noun-followup", prompt: "use $ralplan is the workflow command; use $autopilot update the documentation", expectedSkill: "autopilot" },
       { name: "directive-documentation-implicit-semicolon-followup", prompt: "use $ralplan is the consensus-planning command; use autopilot mode.", expectedSkill: "autopilot" },
       { name: "directive-documentation-transition-followup", prompt: "use $ralplan is the consensus-planning command; then use $autopilot build it", expectedSkill: "autopilot" },
       { name: "directive-documentation-explicit-alias", prompt: "use $ralplan is the consensus-planning command; $team is its alias", expectedSkill: null },
-      { name: "directive-documentation-implicit-chain", prompt: "use $ralplan is the consensus-planning command\nAutopilot mode is its alias.\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-documentation-implicit-chain", prompt: "use $ralplan is the consensus-planning command\nAutopilot mode is its alias.\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-documentation-fullwidth-separator", prompt: "use $ralplan，$autopilot are workflow commands", expectedSkill: null },
-      { name: "directive-documentation-compact-slash", prompt: "use $ralplan/$autopilot are workflow commands\n$ralph execute it", expectedSkill: "ralph" },
-      { name: "reference-prompts-title-then-command", prompt: "[docs]: /target \"title\nUse /prompts:architect\"\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "directive-documentation-compact-slash", prompt: "use $ralplan/$autopilot are workflow commands\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
+      { name: "reference-prompts-title-then-command", prompt: "[docs]: /target \"title\nUse /prompts:architect\"\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "doc-period-implicit", prompt: "use $ralplan is the consensus-planning command. Use autopilot mode.", expectedSkill: "autopilot" },
       { name: "doc-bare-implicit", prompt: "use $ralplan is the consensus-planning command; autopilot mode.", expectedSkill: "autopilot" },
       { name: "doc-fullwidth-semicolon", prompt: "use $ralplan is the consensus-planning command； use $autopilot build it", expectedSkill: "autopilot" },
@@ -1952,13 +1959,13 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "fullwidth-frame-reset", prompt: "For instance: manual mode is slower。 Use autopilot mode.", expectedSkill: "autopilot" },
       { name: "doc-abbreviation", prompt: "use $ralplan is the workflow command, e.g. use $autopilot in examples.", expectedSkill: null },
       { name: "implicit-doc-mention", prompt: "use $ralplan is the workflow command; autopilot mode appears in the documentation.", expectedSkill: null },
-      { name: "implicit-doc-chain", prompt: "use $ralplan is the workflow command; autopilot mode is its alias; $ralph execute it", expectedSkill: "ralph" },
+      { name: "implicit-doc-chain", prompt: "use $ralplan is the workflow command; autopilot mode is its alias; $ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "long-command-gap", prompt: `use $ralplan is the workflow command; use${" ".repeat(161)}$autopilot build it`, expectedSkill: "autopilot" },
       { name: "ideographic-negation", prompt: "$ralplan、 $autopilot are prohibited", expectedSkill: null },
       { name: "implicit-ideographic-negation", prompt: "Autopilot mode、 deep interview are prohibited.", expectedSkill: null },
       { name: "doc-exclamation-followup", prompt: "use $ralplan is the consensus-planning command! run $autopilot", expectedSkill: "autopilot" },
       { name: "doc-fullwidth-question-followup", prompt: "use $ralplan is the consensus-planning command？ run $autopilot", expectedSkill: "autopilot" },
-      { name: "implicit-doc-predecessor", prompt: "Autopilot mode is workflow documentation.\n$ralph execute it", expectedSkill: "ralph" },
+      { name: "implicit-doc-predecessor", prompt: "Autopilot mode is workflow documentation.\n$ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "confusable-use-verb", prompt: "uſe $ralplan plan it", expectedSkill: null },
       { name: "confusable-please-prefix", prompt: "pleaſe use $ralplan plan it", expectedSkill: null },
       { name: "confusable-prompts-token-then-command", prompt: "/promptſ:architect; use autopilot mode.", expectedSkill: "autopilot" },
@@ -1983,8 +1990,8 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "compact-explicit-negation", prompt: "$ralplan,$autopilot are prohibited", expectedSkill: null },
       { name: "compact-implicit-negation", prompt: "Autopilot mode،deep interview are prohibited.", expectedSkill: null },
       { name: "doc-clause-local-prefix", prompt: "$ralplan; $autopilot is documented in the guide.", expectedSkill: "ralplan" },
-      { name: "doc-chain-described", prompt: "use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
-      { name: "doc-chain-workflow", prompt: "use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ralph execute it", expectedSkill: "ralph" },
+      { name: "doc-chain-described", prompt: "use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it", expectedSkill: "team", insideTmux: true },
+      { name: "doc-chain-workflow", prompt: "use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ultragoal execute it", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "ref-inline-explicit", prompt: "[docs]: $ralplan\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "ref-inline-prompts", prompt: "[docs]: /prompts:architect\n$autopilot build it", expectedSkill: "autopilot" },
       { name: "list-fullwidth-explicit-doc", prompt: "- $ralplan： consensus-planning workflow", expectedSkill: null },
@@ -2009,10 +2016,10 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "neg-fw-dot-reopen", prompt: "Do not run $ralplan． use $autopilot build it", expectedSkill: "autopilot" },
       { name: "neg-greek-q-reopen", prompt: "Do not run $ralplan; use $autopilot build it", expectedSkill: "autopilot" },
       { name: "unicode-attached-contrast", prompt: "Do not use deep interview яbut use autopilot mode.", expectedSkill: null },
-      { name: "prefix-list-followup", prompt: "Do not run $ralplan, $autopilot; use $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
+      { name: "prefix-list-followup", prompt: "Do not run $ralplan, $autopilot; use $team execute it", expectedSkill: "team", insideTmux: true },
       { name: "mixed-postposed-chain", prompt: "$ralplan, autopilot mode, $team are prohibited.", expectedSkill: null },
-      { name: "implicit-first-doc-chain", prompt: "Autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
-      { name: "both-mixed-doc-followup", prompt: "Both autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", expectedStopBlock: false, insideTmux: true },
+      { name: "implicit-first-doc-chain", prompt: "Autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", insideTmux: true },
+      { name: "both-mixed-doc-followup", prompt: "Both autopilot mode and $ralplan are workflow commands; use $team execute it", expectedSkill: "team", insideTmux: true },
       { name: "doc-semicolon-preserves-earlier", prompt: "Use autopilot mode; use $ralplan is the workflow command.", expectedSkill: "autopilot" },
       { name: "doc-independent-comma", prompt: "Use autopilot mode, and $ralplan is documented in the guide.", expectedSkill: "autopilot" },
       { name: "reference-unclosed-quote-destination", prompt: "[docs]: \"target\n$autopilot build it", expectedSkill: null },
@@ -2036,8 +2043,8 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "directive-start-ralplan", prompt: "start $ralplan plan this", expectedSkill: "ralplan" },
       { name: "directive-enable-deep-interview", prompt: "enable $deep-interview", expectedSkill: "deep-interview", expectedStopBlock: false },
       { name: "directive-launch-autopilot", prompt: "launch $autopilot", expectedSkill: "autopilot" },
-      { name: "directive-invoke-ralph", prompt: "invoke $ralph", expectedSkill: "ralph" },
-      { name: "directive-activate-ultrawork", prompt: "activate $ultrawork", expectedSkill: "ultrawork" },
+      { name: "directive-invoke-ralph", prompt: "invoke $ultragoal", expectedSkill: "ultragoal", expectedStopBlock: false },
+      { name: "directive-activate-ultrawork", prompt: "activate $ultragoal", expectedSkill: "ultragoal", expectedStopBlock: false },
       { name: "directive-resume-ralplan", prompt: "resume $ralplan plan this", expectedSkill: "ralplan" },
       { name: "directive-continue-code-review", prompt: "continue $code-review", expectedSkill: "code-review", expectedStopBlock: false },
       { name: "directive-documentation", prompt: "use $ralplan is the consensus-planning command", expectedSkill: null },
@@ -2212,7 +2219,7 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
       { name: "implicit-positive-contrast", prompt: "Do not use deep interview, but use autopilot mode.", expectedSkill: "autopilot" },
       { name: "implicit-but-instead-positive", prompt: "Do not use deep interview but instead use autopilot mode.", expectedSkill: "autopilot" },
       { name: "implicit-list-verb-positive", prompt: "List files and use autopilot mode.", expectedSkill: "autopilot" },
-      { name: "implicit-dont-stop-positive", prompt: "No, don't stop.", expectedSkill: "ralph" },
+      { name: "implicit-dont-stop-positive", prompt: "No, don't stop.", expectedSkill: null },
       { name: "implicit-doc-then-positive", prompt: "Autopilot mode is workflow documentation.\nUse autopilot mode.", expectedSkill: "autopilot" },
       { name: "prompts-then-positive", prompt: "Use /prompts:architect.\nUse autopilot mode.", expectedSkill: "autopilot" },
       { name: "mixed-negative-explicit-positive-implicit", prompt: "Do not run $ralplan but instead use autopilot mode.", expectedSkill: "autopilot" },
@@ -2337,7 +2344,14 @@ describe("codex native hook dispatch", { concurrency: false }, () => {
         const sessionDir = join(cwd, ".omx", "state", "sessions", sessionId);
         const skillStatePath = join(sessionDir, "skill-active-state.json");
         if (testCase.expectedSkill === null) {
-          assert.equal(existsSync(skillStatePath), false, testCase.name);
+          // No activation. A RETIRED token additionally leaves a refusal record - active false with no
+          // active skills - which is a diagnostic rather than an activation, so assert that nothing was
+          // activated instead of that no file exists.
+          if (existsSync(skillStatePath)) {
+          	const refused = JSON.parse(await readFile(skillStatePath, "utf-8")) as { active?: boolean; active_skills?: unknown[] };
+          	assert.equal(refused.active, false, testCase.name);
+          	assert.deepEqual(refused.active_skills ?? [], [], testCase.name);
+          }
           assert.equal(existsSync(join(sessionDir, "ralplan-state.json")), false, testCase.name);
           assert.equal(existsSync(join(sessionDir, "autopilot-state.json")), false, testCase.name);
         } else {
@@ -9319,90 +9333,25 @@ ${JSON.stringify({
 		}
 	});
 
-	it("normalizes the Korean keyboard typo for ulw during UserPromptSubmit activation", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ulw-ko-"));
-		try {
-			await mkdir(join(cwd, ".omx", "state"), { recursive: true });
-			const result = await dispatchCodexNativeHook(
-				{
-					hook_event_name: "UserPromptSubmit",
-					cwd,
-					session_id: "sess-ulw-ko",
-					thread_id: "thread-ulw-ko",
-					turn_id: "turn-ulw-ko",
-					prompt: "ㅕㅣㅈ로 병렬 처리해줘",
-				},
-				{ cwd },
-			);
-
-			assert.equal(result.omxEventName, "keyword-detector");
-			assert.equal(result.skillState?.skill, "ultrawork");
-			assert.equal(result.skillState?.keyword, "ulw");
-			const additionalContext = String(
-				(
-					result.outputJson as {
-						hookSpecificOutput?: { additionalContext?: string };
-					}
-				)?.hookSpecificOutput?.additionalContext || "",
-			);
-			assert.match(additionalContext, /workflow keyword \"ulw\" -> ultrawork/);
-			assert.equal(
-				existsSync(
-					join(
-						cwd,
-						".omx",
-						"state",
-						"sessions",
-						"sess-ulw-ko",
-						"ultrawork-state.json",
-					),
-				),
-				true,
-			);
-		} finally {
-			await rm(cwd, { recursive: true, force: true });
+	it("does not activate ultrawork from its retired token or Korean typo shorthand", async () => {
+		// ultrawork is a sunset skill with no trigger, and the Korean IME alias existed only to reach its
+		// `ulw` shorthand, so neither form may seed a projection through UserPromptSubmit.
+		for (const [label, prompt] of [["explicit", "$ultrawork fan out the regression checks"], ["korean-typo", "\u3155\u3163\u3148\ub85c \ubcc4\ub82c \ucc98\ub9ac\ud574\uc918"]]) {
+			const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ultrawork-retired-"));
+			try {
+				await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+				const result = await dispatchCodexNativeHook(
+					{ hook_event_name: "UserPromptSubmit", cwd, session_id: "sess-uw-retired", thread_id: "thread-uw-retired", turn_id: "turn-uw-retired", prompt },
+					{ cwd },
+				);
+				assert.notEqual(result.skillState?.active, true, `${label} must not activate ultrawork`);
+				assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-uw-retired", "ultrawork-state.json")), false, `${label} must not seed an ultrawork projection`);
+			} finally {
+				await rm(cwd, { recursive: true, force: true });
+			}
 		}
 	});
 
-	it("adds ultrawork-specific activation guidance only for true ultrawork workflow activation", async () => {
-		const cwd = await mkdtemp(
-			join(tmpdir(), "omx-native-hook-ultrawork-routing-"),
-		);
-		try {
-			await mkdir(join(cwd, ".omx", "state"), { recursive: true });
-			const result = await dispatchCodexNativeHook(
-				{
-					hook_event_name: "UserPromptSubmit",
-					cwd,
-					session_id: "sess-ultrawork-msg",
-					thread_id: "thread-ultrawork-msg",
-					turn_id: "turn-ultrawork-msg",
-					prompt: "$ultrawork fan out the regression checks",
-				},
-				{ cwd },
-			);
-
-			assert.equal(result.omxEventName, "keyword-detector");
-			assert.equal(result.skillState?.skill, "ultrawork");
-			const message = String(
-				(
-					result.outputJson as {
-						hookSpecificOutput?: { additionalContext?: string };
-					}
-				)?.hookSpecificOutput?.additionalContext || "",
-			);
-			assert.match(message, /\$ultrawork" -> ultrawork/);
-			assert.match(message, /ground the task before editing/i);
-			assert.match(message, /define pass\/fail acceptance criteria/i);
-			assert.match(message, /direct-tool plus background evidence lanes/i);
-			assert.match(
-				message,
-				/Ralph owns persistence and the full verified-completion promise/i,
-			);
-		} finally {
-			await rm(cwd, { recursive: true, force: true });
-		}
-	});
 
 	it("does not activate Ralph workflow state from a plain conversational mention", async () => {
 		const cwd = await mkdtemp(
@@ -9544,89 +9493,28 @@ ${JSON.stringify({
 		}
 	});
 
-	it("clarifies that prompt-side $ralph activation does not invoke the PRD-gated CLI path", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-routing-"));
-		try {
-			await mkdir(join(cwd, ".omx", "state"), { recursive: true });
-			const result = await dispatchCodexNativeHook(
-				{
-					hook_event_name: "UserPromptSubmit",
-					cwd,
-					session_id: "sess-ralph-msg",
-					thread_id: "thread-ralph-msg",
-					turn_id: "turn-ralph-msg",
-					prompt: "$ralph continue verification",
-				},
-				{ cwd },
-			);
-
-			assert.equal(result.omxEventName, "keyword-detector");
-			assert.equal(result.skillState?.skill, "ralph");
-			const message = String(
-				(
-					result.outputJson as {
-						hookSpecificOutput?: { additionalContext?: string };
-					}
-				)?.hookSpecificOutput?.additionalContext || "",
-			);
-			assert.match(message, /\$ralph" -> ralph/);
-			assert.match(
-				message,
-				/use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/,
-			);
-			assert.match(
-				message,
-				/Prompt-side `\$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`\./,
-			);
-			assert.match(
-				message,
-				/Use `omx ralph --prd \.\.\.` only when you explicitly want the PRD-gated CLI startup path\./,
-			);
-		} finally {
-			await rm(cwd, { recursive: true, force: true });
+	it("does not activate Ralph from a prompt-side $ralph token, leaving the CLI path untouched", async () => {
+		// These two cases pinned that prompt-side `$ralph` seeded Ralph workflow state while only
+		// `omx ralph --prd` used the PRD-gated CLI startup. `$ralph` is a sunset skill token now, so the
+		// prompt side seeds nothing; the durable half of their subject - the CLI is a separate, live
+		// surface - is what this asserts.
+		for (const prompt of ["$ralph continue verification", "$oh-my-codex:ralph continue verification"]) {
+			const cwd = await mkdtemp(join(tmpdir(), "omx-native-hook-ralph-routing-"));
+			try {
+				await mkdir(join(cwd, ".omx", "state"), { recursive: true });
+				const result = await dispatchCodexNativeHook(
+					{ hook_event_name: "UserPromptSubmit", cwd, session_id: "sess-ralph-msg", thread_id: "thread-ralph-msg", turn_id: "turn-ralph-msg", prompt },
+					{ cwd },
+				);
+				// `skill` still names the REJECTED token as diagnostic metadata, so assert non-activation.
+				assert.notEqual(result.skillState?.active, true, `${prompt} must not activate Ralph`);
+				assert.equal(existsSync(join(cwd, ".omx", "state", "sessions", "sess-ralph-msg", "ralph-state.json")), false, `${prompt} must not seed a Ralph projection`);
+			} finally {
+				await rm(cwd, { recursive: true, force: true });
+			}
 		}
 	});
 
-	it("clarifies that plugin-prefixed prompt-side $ralph activation does not invoke the PRD-gated CLI path", async () => {
-		const cwd = await mkdtemp(
-			join(tmpdir(), "omx-native-hook-plugin-ralph-routing-"),
-		);
-		try {
-			await mkdir(join(cwd, ".omx", "state"), { recursive: true });
-			const result = await dispatchCodexNativeHook(
-				{
-					hook_event_name: "UserPromptSubmit",
-					cwd,
-					session_id: "sess-plugin-ralph-msg",
-					thread_id: "thread-plugin-ralph-msg",
-					turn_id: "turn-plugin-ralph-msg",
-					prompt: "$oh-my-codex:ralph continue verification",
-				},
-				{ cwd },
-			);
-
-			assert.equal(result.omxEventName, "keyword-detector");
-			assert.equal(result.skillState?.skill, "ralph");
-			const message = String(
-				(
-					result.outputJson as {
-						hookSpecificOutput?: { additionalContext?: string };
-					}
-				)?.hookSpecificOutput?.additionalContext || "",
-			);
-			assert.match(message, /\$oh-my-codex:ralph" -> ralph/);
-			assert.match(
-				message,
-				/use CLI-first state updates via `omx state write\/read\/clear --input '<json>' --json`/,
-			);
-			assert.match(
-				message,
-				/Prompt-side `\$ralph` activation seeds Ralph workflow state only; it does not invoke `omx ralph`\./,
-			);
-		} finally {
-			await rm(cwd, { recursive: true, force: true });
-		}
-	});
 
 	it("keeps bare keep-going continuation on the active autopilot skill instead of denying with generic ralph overlap", async () => {
 		const cwd = await mkdtemp(
@@ -9682,7 +9570,9 @@ ${JSON.stringify({
 					}
 				)?.hookSpecificOutput?.additionalContext || "",
 			);
-			assert.match(message, /"keep going" -> ralph/);
+			// "keep going" is a retired trigger, so the guidance must not claim the mapping while the
+			// continuation still stays on the active skill.
+			assert.doesNotMatch(message, /"keep going" -> ralph/);
 			assert.match(message, /Autopilot protocol:/);
 			assert.match(
 				message,
@@ -10081,22 +9971,22 @@ ${JSON.stringify({
 			await writeJson(join(sessionDir, "skill-active-state.json"), {
 				version: 1,
 				active: true,
-				skill: "ralph",
-				keyword: "$ralph",
+				skill: "ultragoal",
+				keyword: "$ultragoal",
 				phase: "executing",
 				session_id: sessionId,
 				active_skills: [
 					{
-						skill: "ralph",
+						skill: "ultragoal",
 						phase: "executing",
 						active: true,
 						session_id: sessionId,
 					},
 				],
 			});
-			await writeJson(join(sessionDir, "ralph-state.json"), {
+			await writeJson(join(sessionDir, "ultragoal-state.json"), {
 				active: true,
-				mode: "ralph",
+				mode: "ultragoal",
 				current_phase: "verifying",
 				started_at: "2026-04-19T00:00:00.000Z",
 				updated_at: "2026-04-19T00:10:00.000Z",
@@ -10118,7 +10008,7 @@ ${JSON.stringify({
 			);
 
 			assert.equal(result.omxEventName, "keyword-detector");
-			assert.equal(result.skillState?.skill, "ralph");
+			assert.equal(result.skillState?.skill, "ultragoal");
 			const message = String(
 				(
 					result.outputJson as {
@@ -10126,7 +10016,9 @@ ${JSON.stringify({
 					}
 				)?.hookSpecificOutput?.additionalContext || "",
 			);
-			assert.match(message, /"keep going" -> ralph/);
+			// "keep going" is a retired trigger, so the guidance must not claim the mapping while the
+			// continuation still stays on the active skill.
+			assert.doesNotMatch(message, /"keep going" -> ralph/);
 			assert.doesNotMatch(message, /denied workflow keyword/i);
 			assert.doesNotMatch(message, /mode transiting:/);
 		} finally {
@@ -10646,7 +10538,7 @@ export async function onHookEvent(event) {
 					session_id: "sess-multi-1",
 					thread_id: "thread-multi-1",
 					turn_id: "turn-multi-1",
-					prompt: "$ralplan $team $ralph ship this fix",
+					prompt: "$ralplan $team $ultragoal ship this fix",
 				},
 				{ cwd },
 			);
@@ -10660,11 +10552,11 @@ export async function onHookEvent(event) {
 			);
 			assert.match(message, /\$ralplan" -> ralplan/);
 			assert.match(message, /\$team" -> team/);
-			assert.match(message, /\$ralph" -> ralph/);
+			assert.match(message, /\$ultragoal" -> ultragoal/);
 			assert.doesNotMatch(message, /mode transiting:/);
 			assert.match(
 				message,
-				/planning preserved over simultaneous execution follow-up; deferred skills: team, ralph\./,
+				/planning preserved over simultaneous execution follow-up; deferred skills: team, ultragoal\./,
 			);
 			assert.match(
 				message,
@@ -10693,7 +10585,7 @@ export async function onHookEvent(event) {
 					session_id: "sess-plugin-multi-1",
 					thread_id: "thread-plugin-multi-1",
 					turn_id: "turn-plugin-multi-1",
-					prompt: "$oh-my-codex:ralplan $team $oh-my-codex:ralph ship this fix",
+					prompt: "$oh-my-codex:ralplan $team $oh-my-codex:ultragoal ship this fix",
 				},
 				{ cwd },
 			);
@@ -10707,11 +10599,11 @@ export async function onHookEvent(event) {
 			);
 			assert.match(message, /\$oh-my-codex:ralplan" -> ralplan/);
 			assert.match(message, /\$team" -> team/);
-			assert.match(message, /\$oh-my-codex:ralph" -> ralph/);
+			assert.match(message, /\$oh-my-codex:ultragoal" -> ultragoal/);
 			assert.doesNotMatch(message, /mode transiting:/);
 			assert.match(
 				message,
-				/planning preserved over simultaneous execution follow-up; deferred skills: team, ralph\./,
+				/planning preserved over simultaneous execution follow-up; deferred skills: team, ultragoal\./,
 			);
 			assert.match(
 				message,
@@ -12093,7 +11985,7 @@ exit 0
           hook_event_name: "UserPromptSubmit",
           cwd,
           session_id: "sess-di-handoff",
-          prompt: "$ralph implement the clarified spec in src/implementation.ts",
+          prompt: "$ultragoal implement the clarified spec in src/implementation.ts",
         },
         { cwd },
       );
@@ -23413,22 +23305,22 @@ describe("codex native hook triage integration", () => {
           session_id: "sess-disabled-team-primary",
           thread_id: "thread-disabled-team-primary",
           turn_id: "turn-disabled-team-primary",
-          prompt: "$team $ralph fix this",
+          prompt: "$team $ultragoal fix this",
         },
         { cwd },
       );
 
-      assert.equal(result.skillState?.skill, "ralph");
+      assert.equal(result.skillState?.skill, "ultragoal");
       assert.equal(result.skillState?.transition_error, undefined);
       assert.equal(existsSync(join(cwd, ".omx", "state", "team-state.json")), false);
       assert.equal(
-        existsSync(join(cwd, ".omx", "state", "sessions", "sess-disabled-team-primary", "ralph-state.json")),
+        existsSync(join(cwd, ".omx", "state", "sessions", "sess-disabled-team-primary", "ultragoal-state.json")),
         true,
       );
       const additionalContext = String(
         (result.outputJson as { hookSpecificOutput?: { additionalContext?: string } })?.hookSpecificOutput?.additionalContext ?? "",
       );
-      assert.match(additionalContext, /detected workflow keyword "\$ralph" -> ralph/);
+      assert.match(additionalContext, /detected workflow keyword "\$ultragoal" -> ultragoal/);
       assert.doesNotMatch(additionalContext, /Codex App\/native outside-tmux sessions cannot activate/);
     } finally {
       await rm(cwd, { recursive: true, force: true });

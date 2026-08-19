@@ -2591,7 +2591,26 @@ interface MadmaxDetachedActiveRecord {
 }
 
 function resolveMadmaxRunsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  const configured = env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  // Canonicalize, because the detached active-record path is derived from this root and macOS reaches
+  // the same directory as both `/var/...` and `/private/var/...`. Without this, a launch that recorded
+  // its active detached session under one alias could not be found under the other, so the reuse guard
+  // silently started a DUPLICATE detached launch instead of attaching to the live one.
+  try {
+    return realpathSync(configured);
+  } catch {
+    // Not created yet: the raw path is correct for the first launch, which creates it.
+    return configured;
+  }
+}
+
+function canonicalizeExistingPath(target: string): string {
+  if (!target) return target;
+  try {
+    return realpathSync(target);
+  } catch {
+    return target;
+  }
 }
 
 function canonicalizeLaunchCwd(cwd: string): string {
@@ -2600,9 +2619,13 @@ function canonicalizeLaunchCwd(cwd: string): string {
       cwd,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim() || cwd;
+    }).trim() || canonicalizeExistingPath(cwd);
   } catch {
-    return cwd;
+    // Outside a git checkout realpath is the only canonical form available. Returning the raw value let
+    // the macOS /var vs /private/var alias survive into the context key, so the same directory reached
+    // by two aliases hashed to two different keys and a legitimate inherited context failed its own
+    // verification.
+    return canonicalizeExistingPath(cwd);
   }
 }
 
@@ -2658,7 +2681,7 @@ export function buildMadmaxDetachedLaunchContextKey(
   const payload = JSON.stringify({
     source_cwd: canonicalizeLaunchCwd(sourceCwd),
     argv: normalizeMadmaxDetachedLaunchArgv(argv),
-    run_identity: runIdentity,
+    run_identity: canonicalizeExistingPath(runIdentity),
   });
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
@@ -3284,8 +3307,12 @@ export function createMadmaxIsolatedRoot(
   argv: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const runsRoot = resolveMadmaxRunsRoot(env);
+  let runsRoot = resolveMadmaxRunsRoot(env);
   mkdirSync(runsRoot, { recursive: true });
+  // Re-resolve after creating it: on a first launch the directory does not exist yet, so the realpath
+  // inside resolveMadmaxRunsRoot falls back to the raw value and the macOS /var vs /private/var alias
+  // survives into the run directory and the active-record path.
+  runsRoot = resolveMadmaxRunsRoot(env);
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = Math.random().toString(16).slice(2, 6);
   const runDir = join(runsRoot, sanitizeRunIdSegment(`run-${stamp}-${suffix}`));
@@ -6148,18 +6175,6 @@ async function completePreLaunchSetup(
     degraded.push("orphan-reaping");
     logCliOperationFailure(error);
   }
-  // 0.4. Upgrade-time neutralization of stale workflow-state projections (#3498).
-  try {
-    const { neutralizeStaleWorkflowStateProjections } = await import("../state/operations.js");
-    const result = await neutralizeStaleWorkflowStateProjections(cwd);
-    if (result.ran && result.neutralizedFiles.length > 0) {
-      console.log(`[omx] Neutralized ${result.neutralizedFiles.length} stale workflow-state projection(s) from pre-0.21.`);
-    }
-  } catch (err) {
-    logCliOperationFailure(err);
-    // Non-fatal: stale-state neutralization must never block a session.
-  }
-
   let instructions: string;
   try {
     const orchestrationMode = await resolveSessionOrchestrationMode(cwd, sessionId);

@@ -77,7 +77,10 @@ Recommended read precedence for terminal lifecycle interpretation:
 - `src/state/workflow-transition.ts` — transition policy and decision model
 - `src/state/workflow-transition-reconcile.ts` — shared transition reconciliation helper
 - `src/modes/base.ts` — mode start/update lifecycle
-- `src/mcp/state-server.ts` — MCP state writes/reads/clears
+- `src/mcp/state-server.ts` — MCP state projection, **read-only**: it advertises `state_read`,
+  `state_list_active`, and `state_get_status` only. `state_write`/`state_clear` are not part of
+  the advertised MCP surface; durable mutation goes through `executeStateOperation` in
+  `src/state/operations.ts`
 - `src/hooks/keyword-detector.ts` — prompt keyword activation + state seeding
 - `src/scripts/codex-native-hook.ts` — native hook routing and prompt-submit output
 
@@ -87,7 +90,7 @@ Recommended read precedence for terminal lifecycle interpretation:
 flowchart TD
   A[Prompt / CLI / MCP request] --> B[Detect requested workflow skill(s)]
   B --> C[Evaluate transition policy]
-  C -->|deny| D[Return denial message]
+  C -->|fail closed: malformed state, identity/scope violation| D[Return denial message]
   C -->|allow overlap| E[Keep current active modes + add destination]
   C -->|allow auto-complete| F[Complete source mode(s)]
   F --> G[Sync compatibility skill-active state]
