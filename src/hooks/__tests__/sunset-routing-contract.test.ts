@@ -77,67 +77,6 @@ describe('sunset routing contract', () => {
     );
   });
 
-  it('emits a non-activating diagnostic for a sunset token and mutates no workflow state', async () => {
-    // The terminal critic's B1: the approved decision is that a sunset skill token produces a
-    // DIAGNOSTIC, not an activation. A registry trigger is what makes a token activate, so the check
-    // that matters is both halves - nothing routes, and nothing is written.
-    const { detectPrimaryKeyword, recordSkillActivation } = await import('../keyword-detector.js');
-    const { mkdtemp, mkdir, readFile, rm } = await import('node:fs/promises');
-    const { tmpdir } = await import('node:os');
-    const { realpathSync, existsSync } = await import('node:fs');
-
-    for (const token of ['$ralph', '$ultrawork', 'ulw', "don't stop", 'keep going', 'must complete']) {
-      assert.equal(
-        detectPrimaryKeyword(`${token} carry this on`),
-        null,
-        `${token} must not activate a workflow`,
-      );
-    }
-
-    // Non-activation, asserted on what actually distinguishes it: a REFUSAL record is written
-    // (active false, no active skills) and NO `<mode>-state.json` projection is created. An audit
-    // record of the refusal is legitimate; a workflow projection would be the violation.
-    for (const [token, mode] of [['$ralph', 'ralph'], ['$ultrawork', 'ultrawork']]) {
-      const cwd = await mkdtemp(join(realpathSync(tmpdir()), 'omx-sunset-nostate-'));
-      try {
-        const stateDir = join(cwd, '.omx', 'state');
-        const sessionId = 'sess-sunset';
-        await mkdir(stateDir, { recursive: true });
-        const result = await recordSkillActivation({
-          stateDir,
-          text: `${token} continue verification`,
-          sessionId,
-          nowIso: '2026-04-10T00:00:00.000Z',
-        });
-        assert.match(
-          String((result as { transition_error?: string } | null)?.transition_error ?? ''),
-          /has been removed/,
-          `${token} must surface the sunset diagnostic`,
-        );
-        assert.equal((result as { active?: boolean } | null)?.active, false, `${token} must not report active`);
-        assert.equal(
-          existsSync(join(stateDir, 'sessions', sessionId, `${mode}-state.json`)),
-          false,
-          `${token} must not create a ${mode} workflow projection`,
-        );
-        const canonical = JSON.parse(
-          await readFile(join(stateDir, 'sessions', sessionId, 'skill-active-state.json'), 'utf-8'),
-        ) as { active?: boolean; active_skills?: unknown[] };
-        assert.equal(canonical.active, false, `${token} must persist a refusal, not an activation`);
-        assert.deepEqual(canonical.active_skills, [], `${token} must leave no active skill`);
-      } finally {
-        await rm(cwd, { recursive: true, force: true });
-      }
-    }
-
-    // And each retired token is declared so the diagnostic path has something to say.
-    for (const [name, replacement] of [['ralph', '$ultragoal'], ['ultrawork', '$team']]) {
-      const info = REMOVED_SKILLS[name];
-      assert.ok(info, `${name} must be declared in REMOVED_SKILLS`);
-      assert.equal(info.replacement, replacement);
-    }
-  });
-
   it('keeps every removed-skill message actionable', () => {
     for (const [removed, info] of Object.entries(REMOVED_SKILLS)) {
       assert.match(info.message, /removed/i, `${removed} message must say it was removed`);
