@@ -2604,15 +2604,28 @@ function resolveMadmaxRunsRoot(env: NodeJS.ProcessEnv = process.env): string {
   }
 }
 
+function canonicalizeExistingPath(target: string): string {
+  if (!target) return target;
+  try {
+    return realpathSync(target);
+  } catch {
+    return target;
+  }
+}
+
 function canonicalizeLaunchCwd(cwd: string): string {
   try {
     return execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim() || cwd;
+    }).trim() || canonicalizeExistingPath(cwd);
   } catch {
-    return cwd;
+    // Outside a git checkout realpath is the only canonical form available. Returning the raw value let
+    // the macOS /var vs /private/var alias survive into the context key, so the same directory reached
+    // by two aliases hashed to two different keys and a legitimate inherited context failed its own
+    // verification.
+    return canonicalizeExistingPath(cwd);
   }
 }
 
@@ -2668,7 +2681,7 @@ export function buildMadmaxDetachedLaunchContextKey(
   const payload = JSON.stringify({
     source_cwd: canonicalizeLaunchCwd(sourceCwd),
     argv: normalizeMadmaxDetachedLaunchArgv(argv),
-    run_identity: runIdentity,
+    run_identity: canonicalizeExistingPath(runIdentity),
   });
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
