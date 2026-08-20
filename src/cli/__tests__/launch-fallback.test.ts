@@ -106,6 +106,14 @@ fi
 if [ "$1" = "set-option" ] && [ "$2" = "-t" ] && [ "$4" = "@omx_instance_id" ]; then
   printf '%s' "$5" > /tmp/omx-test-detached-owner-id
 fi
+if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{pane_dead}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
+  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
+  pane=$(cat "$0.detached-leader-pane" 2>/dev/null || printf '%%12')
+  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then owner='foreign-owner'; else owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf ''); fi
+  printf '0\t%s\t%s\t%s\t$1\t1\t@1\t%s\n' "$pane" "$leader_pid" "$session" "$owner"
+  exit 0
+fi
 if [ "$1" = "list-panes" ] && case "$*" in *'#{session_created}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
   ${JSON.stringify(implementationPath)} "$@" >/dev/null 2>&1 || true
   session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
@@ -195,6 +203,14 @@ fi
 if [ "$1" = "set-option" ] && [ "$2" = "-t" ] && [ "$4" = "@omx_instance_id" ]; then
   printf '%s' "$5" > /tmp/omx-test-detached-owner-id
 fi
+if [ "$1" = "display-message" ] && [ "$2" = "-p" ] && [ "$3" = "-t" ] && case "$5" in *'#{pane_dead}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
+  session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
+  leader_pid=$(cat "$0.detached-leader-pid" 2>/dev/null || printf 123)
+  pane=$(cat "$0.detached-leader-pane" 2>/dev/null || printf '%%12')
+  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then owner='foreign-owner'; else owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf ''); fi
+  printf '0\t%s\t%s\t%s\t$1\t1\t@1\t%s\n' "$pane" "$leader_pid" "$session" "$owner"
+  exit 0
+fi
 if [ "$1" = "list-panes" ] && case "$*" in *'#{session_created}'*'#{@omx_instance_id}'*) true;; *) false;; esac; then
   ${JSON.stringify(tmuxImpl)} "$@" >/dev/null 2>&1 || true
   session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf omx-test)
@@ -216,6 +232,26 @@ if [ "$1" = "if-shell" ] && [ "$2" = "-F" ] && [ "$3" = "-t" ]; then
   ${JSON.stringify(tmuxImpl)} "$@" >/dev/null 2>&1 || true
   success="$6"
   receipt=$(printf '%s' "$success" | sed -n 's/.*\\(omx_detached_[A-Za-z0-9-]*\\).*/\\1/p')
+  if [ -n "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" ] && case "$success" in *"@omx_instance_id"*) true;; *) false;; esac; then
+    owner=$(printf '%s' "$success" | sed -n "s/.*@omx_instance_id '\\([^']*\\)'.*/\\1/p")
+    [ -n "$owner" ] && printf '%s' "$owner" > /tmp/omx-test-detached-owner-id
+    if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ]; then printf foreign-owner > /tmp/omx-test-detached-owner-id; fi
+  fi
+  if [ -n "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" ] && case "$5" in *'@omx_instance_id,'*) true;; *) false;; esac; then
+    expected_owner=$(printf '%s' "$5" | sed -n 's/.*@omx_instance_id,\\([^}]*\\).*/\\1/p')
+    expected_session=$(printf '%s' "$5" | sed -n 's/.*session_name,\\([^}]*\\).*/\\1/p')
+    owner=$(cat /tmp/omx-test-detached-owner-id 2>/dev/null || printf '')
+    session=$(cat /tmp/omx-test-detached-session-name 2>/dev/null || printf '')
+    [ "$owner" = "$expected_owner" ] && [ "$session" = "$expected_session" ] || exit 0
+  fi
+  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'once' ] && [ ! -f "$0.detached-owner-visibility-race" ]; then
+    case "$success" in
+      *"set-option"*"history-limit"*) : > "$0.detached-owner-visibility-race"; exit 0 ;;
+    esac
+  fi
+  if [ "\${OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE:-}" = 'persistent' ] && case "$5" in *'@omx_instance_id'*) true;; *) false;; esac; then
+    exit 0
+  fi
   case "\${OMX_TEST_DETACHED_RECYCLE:-}" in
     split) case "$success" in *split-window*) exit 0;; esac ;;
     finalization) case "$*" in
@@ -1875,6 +1911,85 @@ exit 0
       assert.match(tmuxLog, /^tmux:__nested_hud_guard_denied__ %99 999 \$2 @2$/m);
       assert.doesNotMatch(tmuxLog, /run-shell -b ['"]run-shell -b /);
       assert.doesNotMatch(tmuxLog, /^tmux:resize-pane .*%99/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    }
+  });
+
+  it('retries the idempotent first owner-guarded mutation after a successful session tag', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-detached-owner-visibility-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (logPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${logPath}"
+case "$1" in
+  -V) printf 'tmux 3.4\n'; exit 0 ;;
+  has-session) exit 1 ;;
+  new-session) printf '%%12\n'; exit 0 ;;
+  split-window) printf '%%99\n'; exit 0 ;;
+  display-message) printf '0\n'; exit 0 ;;
+  show-options) printf 'off\n'; exit 0 ;;
+  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
+esac
+exit 0
+`,
+      );
+      const result = runOmx(wd, ['--madmax', '--tmux'], {
+        ...env,
+        OMX_LAUNCH_POLICY: 'direct',
+        OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE: 'once',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.equal(
+        (tmuxLog.match(/tmux:if-shell -F -t %12 .*set-option.*history-limit/g) || []).length,
+        3,
+        'the first session history mutation must retry once; the pane history mutation must remain separately guarded',
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    }
+  });
+
+  it('keeps rollback owner-guarded when post-tag owner visibility never becomes available', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-launch-detached-owner-denial-'));
+    try {
+      const { env, tmuxLogPath } = await createLaunchFixture(
+        wd,
+        (logPath) => `#!/bin/sh
+printf 'tmux:%s\n' "$*" >> "${logPath}"
+case "$1" in
+  -V) printf 'tmux 3.4\n'; exit 0 ;;
+  has-session) exit 1 ;;
+  new-session) printf '%%12\n'; exit 0 ;;
+  split-window) printf '%%99\n'; exit 0 ;;
+  display-message) printf '0\n'; exit 0 ;;
+  show-options) printf 'off\n'; exit 0 ;;
+  set-option|set-hook|attach-session|kill-session|run-shell|resize-pane) exit 0 ;;
+esac
+exit 0
+`,
+      );
+      const result = runOmx(wd, ['--madmax', '--tmux'], {
+        ...env,
+        OMX_LAUNCH_POLICY: 'direct',
+        OMX_TEST_DETACHED_OWNER_VISIBILITY_RACE: 'persistent',
+        TMUX: '',
+        TMUX_PANE: '',
+      });
+      if (shouldSkipForSpawnPermissions(result.error)) return;
+
+      assert.notEqual(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stderr, /detached leader authority blocked tmux mutation set-option history-limit/);
+      assert.match(result.stderr, /owner expected .* observed "foreign-owner"/);
+      const tmuxLog = await readFile(tmuxLogPath, 'utf-8');
+      assert.match(tmuxLog, /tmux:if-shell -F -t %12 .*kill-session/);
+      assert.doesNotMatch(tmuxLog, /^tmux:kill-session/m, 'rollback must not issue an unguarded kill-session mutation');
     } finally {
       await rm(wd, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
     }
