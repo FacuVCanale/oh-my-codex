@@ -1544,6 +1544,7 @@ function detachedLeaderAuthorityCondition(authority: DetachedLeaderAuthority, re
     "#{==:#{pane_dead},0}",
     `#{==:#{pane_id},${authority.paneId}}`,
     `#{==:#{pane_pid},${authority.panePid}}`,
+    `#{==:#{session_name},${authority.sessionName}}`,
     `#{==:#{session_id},${authority.sessionId}}`,
     `#{==:#{session_created},${authority.sessionCreated}}`,
     `#{==:#{window_id},${authority.windowId}}`,
@@ -1568,14 +1569,37 @@ function detachedAuthorityReceipt(): string {
   return `omx_detached_${randomUUID()}`;
 }
 
-function runDetachedLeaderMutation(authority: DetachedLeaderAuthority, args: string[], requireOwner = true): void {
-  const receipt = detachedAuthorityReceipt();
-  const success = `${args.map(quoteShellArg).join(" ")} ; display-message -p ${quoteShellArg(receipt)}`;
+function describeDetachedLeaderAuthorityMismatch(authority: DetachedLeaderAuthority): string {
   const output = execTmuxFileSync([
-    "if-shell", "-F", "-t", authority.paneId, detachedLeaderAuthorityCondition(authority, requireOwner),
-    success, "display-message -p ''",
+    "display-message", "-p", "-t", authority.paneId,
+    "#{pane_dead}\t#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}\t#{@omx_instance_id}",
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  if (output !== receipt) throw new Error("detached leader authority changed before tmux mutation");
+  const observed = output.split("\t");
+  if (observed.length !== 8) return "authority observation was malformed";
+  const expected = ["0", authority.paneId, String(authority.panePid), authority.sessionName, authority.sessionId, authority.sessionCreated, authority.windowId, authority.ownerId];
+  const labels = ["pane_dead", "pane_id", "pane_pid", "session_name", "session_id", "session_created", "window_id", "owner"];
+  const mismatches = observed.flatMap((value, index) => value === expected[index] ? [] : [`${labels[index]} expected ${JSON.stringify(expected[index])} observed ${JSON.stringify(value)}`]);
+  return mismatches.length > 0 ? mismatches.join(", ") : "authority condition was not observable";
+}
+
+function runDetachedLeaderMutation(
+  authority: DetachedLeaderAuthority,
+  args: string[],
+  requireOwner = true,
+  retryMissingReceipt = false,
+): void {
+  const attempts = retryMissingReceipt ? 2 : 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const receipt = detachedAuthorityReceipt();
+    const success = `${args.map(quoteShellArg).join(" ")} ; display-message -p ${quoteShellArg(receipt)}`;
+    const output = execTmuxFileSync([
+      "if-shell", "-F", "-t", authority.paneId, detachedLeaderAuthorityCondition(authority, requireOwner),
+      success, "display-message -p ''",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (output === receipt) return;
+  }
+  const mutation = args.length >= 4 && args[0] === "set-option" ? `${args[0]} ${args.at(-2)}` : args[0] ?? "unknown";
+  throw new Error(`detached leader authority blocked tmux mutation ${mutation}: ${describeDetachedLeaderAuthorityMismatch(authority)}`);
 }
 
 function detachedPreReportCleanupCondition(authority: DetachedLeaderAuthority): string {
@@ -3079,7 +3103,7 @@ export class DetachedLaunchSafetyError extends Error {
     readonly cause: unknown,
     readonly report: DetachedBootstrapReport,
   ) {
-    super(`detached launch safety failure during ${phase}${phase === "completion" && cause instanceof Error ? `: ${cause.message}` : ""}`);
+    super(`detached launch safety failure during ${phase}${cause instanceof Error ? `: ${describeDetachedLeaderFailure(cause)}` : ""}`);
   }
 }
 
@@ -3356,6 +3380,7 @@ function renderDetachedLaunchSafetyReport(error: DetachedLaunchSafetyError): str
   }));
   return JSON.stringify({
     phase: error.phase,
+    failure: describeDetachedLeaderFailure(error.cause),
     transitions: error.report.transitions,
     ...(establishmentCleanup ? { establishmentCleanup } : {}),
     rollback: {
@@ -6569,7 +6594,11 @@ async function runCodex(
             if (!authority) throw new Error("detached leader authority missing before tmux mutation");
             if (step.name === "tag-session") {
               runDetachedLeaderMutation(authority, step.args, false);
-              runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
+              // tmux can acknowledge the session tag before the first owner-format
+              // evaluation sees it. Retrying this idempotent first owner-guarded
+              // mutation once gives the server a command boundary without relaxing
+              // any part of the captured session, window, pane, PID, or owner fence.
+              runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)], true, true);
               runDetachedLeaderMutation(authority, ["set-option", "-pq", "-t", authority.paneId, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
               // #3266: the owned leader pane must close with its process so a normal
               // child exit destroys the session naturally even when the user's tmux
