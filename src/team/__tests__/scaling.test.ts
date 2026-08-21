@@ -55,6 +55,18 @@ async function initRepo(): Promise<string> {
   execFileSync('git', ['commit', '-m', 'init'], { cwd, stdio: 'ignore' });
   return cwd;
 }
+/* Deadline-based appearance wait: unlike a fixed attempt-count poll, the budget
+ * scales with wall-clock time, so CI-load delays before the artifact is written
+ * do not expire the wait prematurely (issue #3548). Fails loudly on timeout. */
+async function waitForFileToAppear(path: string, timeoutMs: number = 5_000, pollIntervalMs: number = 5): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${path} to appear`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
 
 function computeGitBlobSha1(content: string): string {
   const buffer = Buffer.from(content, 'utf-8');
@@ -3361,14 +3373,19 @@ describe('scaleDown', () => {
       const task = await createTask('claim-boundary', {
         subject: 'boundary task', description: 'must not be claimed by a removed worker', status: 'pending', owner: 'worker-2',
       }, cwd);
+      const boundaryMarker = join(cwd, 'claim-boundary-held');
       const down = scaleDown('claim-boundary', cwd, { workerNames: ['worker-2'], force: true }, {
         OMX_TEAM_SCALING_ENABLED: '1',
-        OMX_TEAM_SCALE_DOWN_BOUNDARY_HOLD_MS: '100',
+        OMX_TEAM_SCALE_DOWN_BOUNDARY_HOLD_MS: '250',
+        OMX_TEAM_SCALE_DOWN_POST_SNAPSHOT_MARKER: boundaryMarker,
       });
+      // The marker is written while the membership barrier and task claim locks
+      // are held and it persists, so a deadline wait on it cannot miss the
+      // boundary window under load. The former fixed 50x5ms poll watched the
+      // transient claim lock dir and expired before the boundary transaction
+      // even started under CI load (#3548).
+      await waitForFileToAppear(boundaryMarker);
       const lockPath = join(cwd, '.omx', 'state', 'team', 'claim-boundary', 'claims', `task-${task.id}.lock`);
-      for (let attempt = 0; attempt < 50 && !existsSync(lockPath); attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
       assert.equal(existsSync(lockPath), true);
       const claim = claimTask('claim-boundary', task.id, 'worker-2', task.version ?? 1, cwd);
       assert.deepEqual(await down, { ok: true, removedWorkers: ['worker-2'], newWorkerCount: 1 });
@@ -3376,6 +3393,14 @@ describe('scaleDown', () => {
       const reconciled = await readTask('claim-boundary', task.id, cwd);
       assert.equal(reconciled?.owner, undefined);
       assert.equal(reconciled?.claim, undefined);
+      // Negative control: with the reconciled (post-boundary) version the claim
+      // no longer conflicts on the version; it fails on worker removal instead.
+      // That proves the claim_conflict above required the serialized
+      // pre-boundary version rather than mere worker deletion.
+      assert.deepEqual(
+        await claimTask('claim-boundary', task.id, 'worker-2', reconciled?.version ?? 1, cwd),
+        { ok: false, error: 'worker_not_found' },
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -3394,10 +3419,7 @@ describe('scaleDown', () => {
         OMX_TEAM_SCALE_DOWN_BOUNDARY_HOLD_MS: '250',
         OMX_TEAM_SCALE_DOWN_POST_SNAPSHOT_MARKER: postSnapshotMarker,
       });
-      for (let attempt = 0; attempt < 50 && !existsSync(postSnapshotMarker); attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      assert.equal(existsSync(postSnapshotMarker), true);
+      await waitForFileToAppear(postSnapshotMarker);
       let createSettled = false;
       let claimSettled = false;
       const created = createTask('create-claim-boundary', {
@@ -3414,6 +3436,28 @@ describe('scaleDown', () => {
       assert.equal(task.owner, 'worker-2');
       assert.deepEqual((await readTeamConfig('create-claim-boundary', cwd))?.workers.map((worker) => worker.name), ['worker-1']);
       assert.equal((await readTask('create-claim-boundary', task.id, cwd))?.owner, 'worker-2');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+  it('deadline appearance wait fails loudly on timeout and tolerates late appearance', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-scale-down-wait-negative-control-'));
+    try {
+      // Negative control for the boundary synchronization: when the awaited
+      // artifact is never created the wait must reject at its deadline instead
+      // of silently falling through to a misleading assertion.
+      await assert.rejects(
+        () => waitForFileToAppear(join(cwd, 'never-created'), 60),
+        /timed out after 60ms waiting for .*never-created to appear/,
+      );
+      // The wait is deadline-based, not attempt-count-based: an artifact that
+      // appears after the former 250ms fixed budget still resolves the wait.
+      const lateMarker = join(cwd, 'late-marker');
+      const lateWait = waitForFileToAppear(lateMarker, 5_000);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await writeFile(lateMarker, 'held\n', 'utf8');
+      await lateWait;
+      assert.equal(existsSync(lateMarker), true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
