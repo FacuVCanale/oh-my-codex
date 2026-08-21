@@ -69,6 +69,16 @@ describe('formatSessionEnd', () => {
     assert.ok(result.includes('2m 5s'));
   });
 
+  it('should format a zero duration instead of reporting it as unknown', () => {
+    const result = formatSessionEnd({ ...basePayload, event: 'session-end', durationMs: 0 });
+    assert.ok(result.includes('**Duration:** 0s'));
+  });
+
+  it('should report invalid durations as unknown', () => {
+    const result = formatSessionEnd({ ...basePayload, event: 'session-end', durationMs: -1 });
+    assert.ok(result.includes('**Duration:** unknown'));
+  });
+
   it('should include agents count', () => {
     const result = formatSessionEnd({ ...basePayload, event: 'session-end', agentsSpawned: 5, agentsCompleted: 3 });
     assert.ok(result.includes('3/5 completed'));

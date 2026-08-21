@@ -52,6 +52,16 @@ describe('computeTemplateVariables', () => {
     assert.equal(vars.duration, '2m 5s');
   });
 
+  it('computes a zero duration as 0s', () => {
+    const vars = computeTemplateVariables(makePayload({ durationMs: 0 }));
+    assert.equal(vars.duration, '0s');
+  });
+
+  it('reports invalid durations as unknown', () => {
+    const vars = computeTemplateVariables(makePayload({ durationMs: Number.POSITIVE_INFINITY }));
+    assert.equal(vars.duration, 'unknown');
+  });
+
   it('computes iterationDisplay when both present', () => {
     const vars = computeTemplateVariables(makePayload({ iteration: 3, maxIterations: 10 }));
     assert.equal(vars.iterationDisplay, '3/10');

@@ -32,7 +32,7 @@ const KNOWN_VARIABLES = new Set<string>([
  * Mirrors formatDuration() in formatter.ts.
  */
 function formatDuration(ms?: number): string {
-  if (!ms) return "unknown";
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "unknown";
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
