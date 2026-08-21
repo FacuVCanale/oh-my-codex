@@ -25168,3 +25168,244 @@ describe("Stop transcript-backed recovery for a stale-dead selected pointer (iss
     }
   });
 });
+
+describe("issue #3550: fresh --madmax detached-pointer root identity", () => {
+  async function establishDetached3550Fixture(suffix: string): Promise<{
+    cwd: string;
+    stateDir: string;
+    pointerPath: string;
+  }> {
+    const cwd = await mkdtemp(join(tmpdir(), `omx-3550-${suffix}-`));
+    const stateDir = join(cwd, ".omx", "state");
+    const pointerPath = join(stateDir, "session.json");
+    const established = await establishLaunchSessionBinding(cwd, "omx-3550-launch");
+    assert.equal(established.kind, "committed-released");
+    const metadata = await updateDetachedSessionMetadata(established.binding, {
+      tmuxSessionName: "omx-3550-detached",
+      tmuxPaneId: "%3550",
+    });
+    assert.equal(metadata.kind, "committed-released");
+    const ownedPointer = JSON.parse(await readFile(pointerPath, "utf-8")) as Record<string, unknown>;
+    await writeFile(pointerPath, JSON.stringify({
+      ...ownedPointer,
+      owner_omx_session_id: "omx-3550-launch",
+    }), "utf-8");
+    return { cwd, stateDir, pointerPath };
+  }
+
+  it("rebinds the detached omx-launch pointer to the native root SessionStart and keeps the first root grounding PreToolUse unblocked", async () => {
+    const { cwd, stateDir, pointerPath } = await establishDetached3550Fixture("root-grounding");
+    try {
+      await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: "codex-root-3550" },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+
+      const sessionState = JSON.parse(await readFile(pointerPath, "utf-8")) as {
+        session_id?: string;
+        native_session_id?: string;
+        owner_omx_session_id?: string;
+      };
+      assert.equal(sessionState.session_id, "omx-3550-launch");
+      assert.equal(sessionState.native_session_id, "codex-root-3550");
+      assert.equal(sessionState.owner_omx_session_id, "omx-3550-launch");
+
+      // Ralph activates under the native Codex UUID while no subagent tracker
+      // leader exists, exactly as reported.
+      await mkdir(join(stateDir, "sessions", "codex-root-3550"), { recursive: true });
+      await writeJson(join(stateDir, "sessions", "codex-root-3550", "ralph-state.json"), {
+        active: true,
+        mode: "ralph",
+        current_phase: "starting",
+        session_id: "codex-root-3550",
+        owner_codex_session_id: "codex-root-3550",
+        workingDirectory: cwd,
+      });
+      assert.equal(existsSync(join(stateDir, "subagent-tracking.json")), false);
+
+      for (const payload of [
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "codex-root-3550",
+          tool_name: "Bash",
+          tool_input: { command: "git status --short --branch" },
+        },
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "codex-root-3550",
+          tool_name: "Read",
+          tool_input: { file_path: join(cwd, "README.md") },
+        },
+      ]) {
+        const result = await dispatchCodexNativeHook(payload, { cwd });
+        assert.equal(result.omxEventName, "pre-tool-use");
+        assert.equal(
+          JSON.stringify(result.outputJson ?? {}).includes("OWNER_CONFIRMATION_REQUIRED"),
+          false,
+          `first root grounding call must never be OWNER_CONFIRMATION_REQUIRED blocked: ${JSON.stringify(result.outputJson)}`,
+        );
+        // #3497 removed the Conductor PreToolUse hard gate; the ordinary
+        // grounding path is advisory and emits no block at all.
+        assert.equal((result.outputJson as { decision?: string } | null)?.decision, undefined);
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies the rebound root as main-root for hook-owned omx cancel while true-child provenance stays denied", async () => {
+    const { cwd, stateDir, pointerPath } = await establishDetached3550Fixture("cancel-authority");
+    try {
+      await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: "codex-root-3550" },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+      await mkdir(join(stateDir, "sessions", "omx-3550-launch"), { recursive: true });
+      await writeSessionSkillActiveState(stateDir, "omx-3550-launch", "ultragoal", "executing");
+      await writeJson(join(stateDir, "sessions", "omx-3550-launch", "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "executing",
+        session_id: "omx-3550-launch",
+        owner_codex_session_id: "codex-root-3550",
+        workingDirectory: cwd,
+      });
+
+      await withCleanAmbientNodeRuntimeEnvironment(async () => {
+        await withTrustedWorkspaceOmxCli(cwd, async (_omxCommand, trustedPath) => {
+          const inheritedPath = process.env.PATH;
+          process.env.PATH = trustedPath;
+          try {
+            const rootCancel = await dispatchCodexNativeHook(
+              {
+                hook_event_name: "PreToolUse",
+                cwd,
+                session_id: "codex-root-3550",
+                tool_name: "Bash",
+                tool_input: { command: "omx cancel --force" },
+              },
+              { cwd },
+            );
+            assert.equal(rootCancel.outputJson?.decision, "block");
+            assert.match(JSON.stringify(rootCancel.outputJson), /cancelled_exact_session/);
+          } finally {
+            if (inheritedPath === undefined) delete process.env.PATH;
+            else process.env.PATH = inheritedPath;
+          }
+        });
+      });
+
+      const cancelledLifecycle = JSON.parse(
+        await readFile(join(stateDir, "sessions", "omx-3550-launch", "ultragoal-state.json"), "utf-8"),
+      ) as { active?: boolean; current_phase?: string };
+      assert.equal(cancelledLifecycle.active, false);
+      assert.equal(cancelledLifecycle.current_phase, "cancelled");
+
+      // True-child negative control: subagent thread-spawn provenance can never
+      // borrow the rebound root's main-root authority.
+      await writeJson(join(stateDir, "sessions", "omx-3550-launch", "ultragoal-state.json"), {
+        active: true,
+        mode: "ultragoal",
+        current_phase: "executing",
+        session_id: "omx-3550-launch",
+        owner_codex_session_id: "codex-root-3550",
+        workingDirectory: cwd,
+      });
+      await writeSessionSkillActiveState(stateDir, "omx-3550-launch", "ultragoal", "executing");
+      const childCancel = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "codex-root-3550",
+          tool_name: "Bash",
+          tool_input: { command: "omx cancel --force" },
+          source: { subagent: { thread_spawn: {} } },
+        },
+        { cwd },
+      );
+      assert.equal(childCancel.outputJson?.decision, "block");
+      assert.match(JSON.stringify(childCancel.outputJson), /actor_authority/);
+      const preservedLifecycle = JSON.parse(
+        await readFile(join(stateDir, "sessions", "omx-3550-launch", "ultragoal-state.json"), "utf-8"),
+      ) as { active?: boolean };
+      assert.equal(preservedLifecycle.active, true);
+
+      // Stale/mismatched pointer negative control: a foreign live native id in
+      // the pointer must never authenticate this root's cancel.
+      const pointer = JSON.parse(await readFile(pointerPath, "utf-8")) as Record<string, unknown>;
+      await writeFile(pointerPath, JSON.stringify({ ...pointer, native_session_id: "codex-foreign-live-3550" }), "utf-8");
+      const foreignCancel = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "codex-root-3550",
+          tool_name: "Bash",
+          tool_input: { command: "omx cancel --force" },
+        },
+        { cwd },
+      );
+      assert.notEqual(
+        JSON.stringify(foreignCancel.outputJson ?? {}).includes("cancelled_exact_session"),
+        true,
+        "a payload session id absent from the pointer aliases must not cancel",
+      );
+
+      // Cleanup/idempotence control: with the lifecycle cancelled, a repeat
+      // direct cancel no longer claims exact-session authority and leaves the
+      // pointer untouched.
+      await writeJson(join(stateDir, "sessions", "omx-3550-launch", "ultragoal-state.json"), {
+        active: false,
+        mode: "ultragoal",
+        current_phase: "cancelled",
+        session_id: "omx-3550-launch",
+        workingDirectory: cwd,
+      });
+      const pointerBefore = await readFile(pointerPath, "utf-8");
+      const repeatCancel = await dispatchCodexNativeHook(
+        {
+          hook_event_name: "PreToolUse",
+          cwd,
+          session_id: "codex-root-3550",
+          tool_name: "Bash",
+          tool_input: { command: "omx cancel --force" },
+        },
+        { cwd },
+      );
+      assert.notEqual(
+        JSON.stringify(repeatCancel.outputJson ?? {}).includes("cancelled_exact_session"),
+        true,
+      );
+      assert.equal(await readFile(pointerPath, "utf-8"), pointerBefore);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps repeated native-root SessionStart reconciliation idempotent on the detached pointer", async () => {
+    const { cwd, pointerPath } = await establishDetached3550Fixture("idempotent");
+    try {
+      await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: "codex-root-3550" },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+      const first = await readFile(pointerPath, "utf-8");
+      await dispatchCodexNativeHook(
+        { hook_event_name: "SessionStart", cwd, session_id: "codex-root-3550" },
+        { cwd, sessionOwnerPid: process.pid },
+      );
+      const second = JSON.parse(await readFile(pointerPath, "utf-8")) as {
+        session_id?: string;
+        native_session_id?: string;
+        owner_omx_session_id?: string;
+      };
+      assert.equal(second.session_id, "omx-3550-launch");
+      assert.equal(second.native_session_id, "codex-root-3550");
+      assert.equal(second.owner_omx_session_id, "omx-3550-launch");
+      assert.ok(first.length > 0);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
