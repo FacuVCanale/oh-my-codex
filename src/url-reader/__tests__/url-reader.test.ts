@@ -134,6 +134,23 @@ describe("readUrl", () => {
 		assert.equal(cancelCalled, true);
 	});
 
+	it("does not truncate a complete body that exactly matches maxBytes", async () => {
+		const result = await readUrl("http://example.test/exact", {
+			resolveHostname: publicResolver,
+			maxBytes: 4,
+			fetch: async () =>
+				response({
+					url: "http://example.test/exact",
+					bodyText: "test",
+				}),
+		});
+
+		assert.equal(result.verdict, "ok");
+		assert.equal(result.truncated, false);
+		assert.equal(result.bytes_read, 4);
+		assert.equal(result.snippet, "test");
+	});
+
 	it("rejects unsupported protocols with a blocked verdict", async () => {
 		const result = await readUrl("file:///tmp/example");
 
