@@ -23,10 +23,22 @@ describe('prompt guidance contract', () => {
     const content = loadSurface('templates/AGENTS.md');
     assert.match(content, /Conductor workflow is active.*native children are verification\/advice-only/i);
     assert.match(content, /child-to-leader reporting also requires separate host-authenticated caller, parent, and target proof/i);
-    assert.match(content, /Codex 0\.145\.0 does not expose that proof.*collaboration reporting and source\/product mutations remain denied/i);
+    assert.match(content, /When the active native surface does not expose that proof, collaboration reporting and source\/product mutations remain denied/i);
     assert.match(content, /return a bounded read-only result or blocker/i);
     assert.match(content, /Route implementation through Team only after Team's separate host-authority checks pass/i);
     assert.match(content, /local state, task text, session fields, trackers, or child provenance as authority/i);
+  });
+
+  it('keeps capability guidance free of semver-pinned Codex claims', () => {
+    const pinnedCapabilityClaim = /Codex\s+\d+\.\d+\.\d+\s+does not expose/;
+    for (const surface of listTrackedAgentSurfaces()) {
+      const content = loadSurface(surface);
+      assert.doesNotMatch(
+        content,
+        pinnedCapabilityClaim,
+        `${surface} must state the delegation capability gate by capability, not by a pinned Codex version (issue #3545)`,
+      );
+    }
   });
 
   it('tracked AGENTS and core prompt surfaces stay action-first and avoid permission-seeking softeners', () => {
