@@ -1660,6 +1660,30 @@ export function cleanupDetachedHudPane(authority: DetachedHudAuthority, ownerId?
   throw new Error("detached HUD topology changed before teardown");
 }
 
+/**
+ * Remove the bootstrap HUD after a finalized pre-release leader failure.
+ *
+ * The outer launcher retained the original pane snapshot while creating the
+ * HUD. Re-discover the owner-tagged pane and require the immutable tmux
+ * identity fields to match before removing it. This keeps failure cleanup
+ * fail-closed when a pane was replaced or ownership cannot be proven.
+ */
+export function cleanupFinalizedDetachedFailureHud(
+  expected: DetachedHudAuthority | null,
+  sessionName: string,
+  ownerId: string,
+): boolean {
+  if (!expected) return false;
+  const discovered = discoverDetachedHudAuthority(sessionName, ownerId);
+  if (!discovered ||
+    discovered.paneId !== expected.paneId ||
+    discovered.panePid !== expected.panePid ||
+    discovered.sessionId !== expected.sessionId ||
+    discovered.windowId !== expected.windowId) return false;
+  cleanupDetachedHudPane(discovered, ownerId);
+  return true;
+}
+
 function tagDetachedHudPane(leaderAuthority: DetachedLeaderAuthority, authority: DetachedHudAuthority, ownerId: string): void {
   runDetachedHudMutation(leaderAuthority, authority, [
     "set-option", "-pq", "-t", authority.paneId, "@omx_hud_owner", ownerId,
@@ -6558,6 +6582,7 @@ async function runCodex(
     let detachedHudAuthority: DetachedHudAuthority | null = null;
     let detachedLeaderPid: number | null = null;
     let rollbackFromPreReportAuthority = false;
+    let rollbackFinalizedFailureHud = false;
 
     let attachStep: DetachedSessionTmuxStep | null = null;
 
@@ -6653,6 +6678,7 @@ async function runCodex(
               }
               if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.sessionName === sessionName && report.leaderPid && report.kind === "failed") {
                 detachedLeaderPid = report.leaderPid;
+                rollbackFinalizedFailureHud = report.finalized === true && detachedHudAuthority !== null;
                 return { kind: "failure", operation: "session-instructions", error: new Error(report.error || "detached leader setup failed") };
               }
               if (Date.now() >= readyDeadline) return { kind: "failure", operation: "session-instructions", error: new Error("detached leader readiness timed out") };
@@ -6746,6 +6772,14 @@ async function runCodex(
             await attempt("runtime-codex-home", () => cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup));
             await attempt("rollback", () => { rmSync(releaseMarkerPath, { force: true }); rmSync(`${releaseMarkerPath}.release`, { force: true }); rmSync(`${releaseMarkerPath}.abort`, { force: true }); });
             if (createdSession) {
+              if (rollbackFinalizedFailureHud) {
+                await attempt("session:kill-bootstrap-hud", () => {
+                  if (!cleanupFinalizedDetachedFailureHud(detachedHudAuthority, sessionName, sessionId)) {
+                    throw new Error("detached bootstrap HUD authority changed before failure cleanup");
+                  }
+                });
+                return;
+              }
               for (const step of buildDetachedSessionRollbackSteps(sessionName, null, null, null)) {
                 await attempt(`session:${step.name}`, () => {
                   if (!detachedLeaderAuthority) throw new Error("detached leader authority missing before rollback");

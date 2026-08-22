@@ -12,6 +12,7 @@ import {
   DETACHED_LEADER_READY_TIMEOUT_MS,
   cleanupDetachedPreReportSession,
   cleanupDetachedHudPane,
+  cleanupFinalizedDetachedFailureHud,
   decodeDetachedLeaderPayload,
   describeDetachedLeaderFailure,
   discoverDetachedHudAuthority,
@@ -347,6 +348,43 @@ describe('detached leader HUD teardown', () => {
       process.kill(Number(leaderPidRaw), 'SIGTERM');
       await poll('unrelated pane survives leader exit', () => fixture.sessionExists() ? true : undefined);
       assert.equal(fixture.run(['display-message', '-p', '-t', userPaneId, '#{pane_id}']), userPaneId);
+    });
+  });
+
+  it('removes only the matching bootstrap HUD after a finalized leader failure', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    await withTempTmuxSession(async (fixture) => {
+      const [hudPaneId, , sessionId, windowId] = fixture.run([
+        'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
+        '-t', fixture.sessionName, 'sleep 120',
+      ]).split('\t');
+      assert.ok(hudPaneId && sessionId && windowId);
+      const ownerId = 'finalized-failure-owner';
+      fixture.run(['set-option', '-pq', '-t', hudPaneId, '@omx_hud_owner', ownerId]);
+      const expected = discoverDetachedHudAuthority(fixture.sessionName, ownerId);
+      assert.ok(expected);
+      assert.equal(cleanupFinalizedDetachedFailureHud(expected, fixture.sessionName, ownerId), true);
+      await poll('bootstrap HUD removal', () => !paneExists(fixture, hudPaneId) ? true : undefined);
+    });
+  });
+
+  it('does not remove a mismatched bootstrap HUD during finalized failure cleanup', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    await withTempTmuxSession(async (fixture) => {
+      const [hudPaneId, , sessionId, windowId] = fixture.run([
+        'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
+        '-t', fixture.sessionName, 'sleep 120',
+      ]).split('\t');
+      assert.ok(hudPaneId && sessionId && windowId);
+      const ownerId = 'finalized-failure-mismatch';
+      fixture.run(['set-option', '-pq', '-t', hudPaneId, '@omx_hud_owner', ownerId]);
+      const expected = discoverDetachedHudAuthority(fixture.sessionName, ownerId);
+      assert.ok(expected);
+      assert.equal(
+        cleanupFinalizedDetachedFailureHud({ ...expected, panePid: expected.panePid + 1 }, fixture.sessionName, ownerId),
+        false,
+      );
+      assert.equal(paneExists(fixture, hudPaneId), true);
     });
   });
 
