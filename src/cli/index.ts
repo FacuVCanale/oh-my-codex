@@ -1500,8 +1500,9 @@ type DetachedLeaderAuthority = {
 type DetachedHudAuthority = {
   paneId: string;
   panePid: number;
+  sessionName: string;
   sessionId: string;
-  sessionCreated?: string;
+  sessionCreated: string;
   windowId: string;
   operationMarker: string;
 };
@@ -1553,14 +1554,21 @@ function detachedLeaderAuthorityCondition(authority: DetachedLeaderAuthority, re
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
 
-function detachedHudAuthorityCondition(authority: DetachedHudAuthority, requireMarker = true): string {
+function detachedHudAuthorityCondition(
+  authority: DetachedHudAuthority,
+  requireMarker = true,
+  ownerId?: string,
+): string {
   const conditions = [
     "#{==:#{pane_dead},0}",
     `#{==:#{pane_id},${authority.paneId}}`,
     `#{==:#{pane_pid},${authority.panePid}}`,
+    `#{==:#{session_name},${authority.sessionName}}`,
     `#{==:#{session_id},${authority.sessionId}}`,
+    `#{==:#{session_created},${authority.sessionCreated}}`,
     `#{==:#{window_id},${authority.windowId}}`,
     ...(requireMarker ? [`#{m:*OMX_DETACHED_HUD_OPERATION=${authority.operationMarker}*,#{pane_start_command}}`] : []),
+    ...(ownerId ? [`#{==:#{@omx_hud_owner},${ownerId}}`] : []),
   ];
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
@@ -1641,46 +1649,48 @@ function runDetachedHudMutation(
 }
 
 
-export function cleanupDetachedHudPane(authority: DetachedHudAuthority, ownerId?: string): void {
-  if (ownerId) {
-    execTmuxFileSync(["kill-pane", "-t", authority.paneId], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-  } else {
-    execTmuxFileSync([
-      "if-shell", "-F", "-t", authority.paneId, detachedHudAuthorityCondition(authority, false),
-      `kill-pane -t ${quoteShellArg(authority.paneId)}`, "",
-    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-  }
+function removeDetachedHudPaneIfAuthorized(authority: DetachedHudAuthority, ownerId?: string): boolean {
+  const receipt = detachedAuthorityReceipt();
+  const success = `kill-pane -t ${quoteShellArg(authority.paneId)} ; display-message -p ${quoteShellArg(receipt)}`;
+  const output = execTmuxFileSync([
+    "if-shell", "-F", "-t", authority.paneId, detachedHudAuthorityCondition(authority, true, ownerId),
+    success, "display-message -p ''",
+  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  return output === receipt;
+}
+
+function awaitDetachedHudPaneRemoval(paneId: string): void {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const panes = execTmuxFileSync(["list-panes", "-a", "-F", "#{pane_id}"], {
       encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     }).split("\n").map((value) => value.trim()).filter(Boolean);
-    if (!panes.includes(authority.paneId)) return;
+    if (!panes.includes(paneId)) return;
     blockMs(20);
   }
   throw new Error("detached HUD topology changed before teardown");
 }
 
+export function cleanupDetachedHudPane(authority: DetachedHudAuthority, ownerId?: string): void {
+  if (!removeDetachedHudPaneIfAuthorized(authority, ownerId)) {
+    throw new Error("detached HUD authority changed before teardown");
+  }
+  awaitDetachedHudPaneRemoval(authority.paneId);
+}
+
 /**
- * Remove the bootstrap HUD after a finalized pre-release leader failure.
+ * Remove the bootstrap HUD after an authenticated finalized leader result.
  *
- * The outer launcher retained the original pane snapshot while creating the
- * HUD. Re-discover the owner-tagged pane and require the immutable tmux
- * identity fields to match before removing it. This keeps failure cleanup
- * fail-closed when a pane was replaced or ownership cannot be proven.
+ * The outer launcher retained the original HUD proof while creating the pane.
+ * Revalidate that proof and its owner tag at the tmux mutation sink so failure
+ * cleanup stays fail-closed when a pane is replaced or taken over.
  */
-export function cleanupFinalizedDetachedFailureHud(
+export function cleanupFinalizedDetachedHud(
   expected: DetachedHudAuthority | null,
-  sessionName: string,
   ownerId: string,
 ): boolean {
   if (!expected) return false;
-  const discovered = discoverDetachedHudAuthority(sessionName, ownerId);
-  if (!discovered ||
-    discovered.paneId !== expected.paneId ||
-    discovered.panePid !== expected.panePid ||
-    discovered.sessionId !== expected.sessionId ||
-    discovered.windowId !== expected.windowId) return false;
-  cleanupDetachedHudPane(discovered, ownerId);
+  if (!removeDetachedHudPaneIfAuthorized(expected, ownerId)) return false;
+  awaitDetachedHudPaneRemoval(expected.paneId);
   return true;
 }
 
@@ -1688,22 +1698,6 @@ function tagDetachedHudPane(leaderAuthority: DetachedLeaderAuthority, authority:
   runDetachedHudMutation(leaderAuthority, authority, [
     "set-option", "-pq", "-t", authority.paneId, "@omx_hud_owner", ownerId,
   ], false);
-}
-
-
-export function discoverDetachedHudAuthority(sessionName: string, ownerId: string): DetachedHudAuthority | undefined {
-  const rows = execTmuxFileSync([
-    "list-panes", "-a", "-F",
-    "#{pane_id}\t#{pane_dead}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}\t#{@omx_hud_owner}",
-  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
-  const matches = rows.split("\n").map((line) => line.trim()).filter(Boolean).flatMap((line) => {
-    const [paneId, paneDead, panePidRaw, discoveredSessionName, sessionId, sessionCreated, windowId, owner] = line.split("\t");
-    const panePid = Number(panePidRaw);
-    if (paneDead !== "0" || discoveredSessionName !== sessionName || owner !== ownerId || !/^%\d+$/.test(paneId ?? "") || !/^\$\d+$/.test(sessionId ?? "") || !/^\d+$/.test(sessionCreated ?? "") || !/^@\d+$/.test(windowId ?? "") || !Number.isSafeInteger(panePid) || panePid <= 0) return [];
-    return [{ paneId: paneId!, panePid, sessionId: sessionId!, sessionCreated: sessionCreated!, windowId: windowId!, operationMarker: randomUUID() }];
-  });
-  if (matches.length > 1) throw new Error("multiple detached HUD ownership tags found");
-  return matches[0];
 }
 
 
@@ -1784,19 +1778,19 @@ function runDetachedLeaderSplit(authority: DetachedLeaderAuthority, args: string
   if (formatIndex < 0 || splitArgs[formatIndex + 1] !== "#{pane_id}") throw new Error("invalid detached HUD split receipt format");
   const commandIndex = splitArgs.length - 1;
   splitArgs[commandIndex] = `env OMX_DETACHED_HUD_OPERATION=${operationMarker} ${splitArgs[commandIndex]}`;
-  splitArgs[formatIndex + 1] = `#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}\t${receipt}`;
+  splitArgs[formatIndex + 1] = `#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}\t${receipt}`;
   const output = execTmuxFileSync([
     "if-shell", "-F", "-t", authority.paneId, detachedLeaderAuthorityCondition(authority),
     splitArgs.map(quoteShellArg).join(" "), "display-message -p ''",
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  const [paneId, panePid, sessionId, windowId, observedReceipt, ...extra] = output.split("\t");
-  if (!/^%[0-9]+$/.test(paneId) || !/^[1-9][0-9]*$/.test(panePid) || !/^\$[0-9]+$/.test(sessionId)
-    || !/^@[0-9]+$/.test(windowId) || observedReceipt !== receipt || extra.length !== 0) {
+  const [paneId, panePid, sessionName, sessionId, sessionCreated, windowId, observedReceipt, ...extra] = output.split("\t");
+  if (!/^%[0-9]+$/.test(paneId) || !/^[1-9][0-9]*$/.test(panePid) || !sessionName || !/^\$[0-9]+$/.test(sessionId)
+    || !/^\d+$/.test(sessionCreated) || !/^@[0-9]+$/.test(windowId) || observedReceipt !== receipt || extra.length !== 0) {
     throw new Error("detached leader authority changed before HUD split");
   }
   const parsedPid = Number(panePid);
   if (!Number.isSafeInteger(parsedPid) || parsedPid <= 0) throw new Error("malformed detached HUD authority");
-  return { paneId, panePid: parsedPid, sessionId, windowId, operationMarker };
+  return { paneId, panePid: parsedPid, sessionName, sessionId, sessionCreated, windowId, operationMarker };
 }
 
 function readTmuxEnvValueForTarget(targetPaneId: string): string | undefined {
@@ -3149,6 +3143,42 @@ export interface DetachedReleaseFailureResolution {
   kind?: "failed" | "terminal";
 }
 
+export interface DetachedFinalizationAuthority {
+  readonly nonce: string;
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly leaderPid: number;
+  readonly kind: "failed" | "terminal";
+}
+
+export function isExactDetachedFinalization(
+  finalization: DetachedFinalizationAuthority | undefined,
+  expected: {
+    nonce: string;
+    sessionId: string;
+    sessionName: string;
+    leaderPid: number | null;
+  },
+): boolean {
+  return finalization !== undefined && finalization.nonce === expected.nonce &&
+    finalization.sessionId === expected.sessionId && finalization.sessionName === expected.sessionName &&
+    finalization.leaderPid === expected.leaderPid;
+}
+
+function authenticatedDetachedFinalization(
+  resolution: DetachedReleaseFailureResolution | undefined,
+): DetachedFinalizationAuthority | undefined {
+  if (resolution?.acknowledged !== true || !resolution.nonce || !resolution.sessionId || !resolution.sessionName ||
+    typeof resolution.leaderPid !== "number" || !Number.isSafeInteger(resolution.leaderPid) || !resolution.kind) return undefined;
+  return {
+    nonce: resolution.nonce,
+    sessionId: resolution.sessionId,
+    sessionName: resolution.sessionName,
+    leaderPid: resolution.leaderPid,
+    kind: resolution.kind,
+  };
+}
+
 
 export class DetachedTransportUnavailable extends Error {
   readonly name = "DetachedTransportUnavailable";
@@ -3189,7 +3219,11 @@ export interface DetachedLaunchDependencies<Binding = unknown, InertSession = un
    */
   abortAndAwaitFinalization?(error: unknown): Promise<DetachedReleaseFailureResolution>;
   attachOrReturn(session: InertSession, shouldAttach: boolean): Promise<void>;
-  rollback(ownedRecord: DetachedActiveRecordOwnership | undefined, report: DetachedBootstrapReport): Promise<void>;
+  rollback(
+    ownedRecord: DetachedActiveRecordOwnership | undefined,
+    report: DetachedBootstrapReport,
+    finalization: DetachedFinalizationAuthority | undefined,
+  ): Promise<void>;
   diagnostic?(error: unknown): void;
 
 }
@@ -3207,6 +3241,7 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
   let released = false;
   let retainedAuthority = false;
   let rollbackAuthorized = false;
+  let finalization: DetachedFinalizationAuthority | undefined;
   try {
     transition("D1");
     binding = await deps.establish();
@@ -3257,10 +3292,8 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
         released = true;
         throw new AggregateError([releaseError, abortError], "detached release and abort publication both failed");
       }
-      rollbackAuthorized = resolution?.acknowledged === true && Boolean(
-        resolution.nonce && resolution.sessionId && resolution.sessionName &&
-        Number.isSafeInteger(resolution.leaderPid) && resolution.kind,
-      );
+      finalization = authenticatedDetachedFinalization(resolution);
+      rollbackAuthorized = finalization !== undefined;
       if (!rollbackAuthorized) released = true;
       throw releaseError;
     }
@@ -3272,12 +3305,8 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
     if (retainedAuthority && !rollbackAuthorized && !released) {
       try {
         const resolution = await deps.abortAndAwaitFinalization?.(error);
-        rollbackAuthorized = resolution?.rollbackAuthorized === true || (
-          resolution?.acknowledged === true && Boolean(
-            resolution.nonce && resolution.sessionId && resolution.sessionName &&
-            Number.isSafeInteger(resolution.leaderPid) && resolution.kind
-          )
-        );
+        finalization = authenticatedDetachedFinalization(resolution);
+        rollbackAuthorized = resolution?.rollbackAuthorized === true || finalization !== undefined;
         if (!rollbackAuthorized) released = true;
       } catch (abortError) {
         released = true;
@@ -3287,7 +3316,7 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
     if (!released) {
       try {
         report.rollback.attempted.push("rollback");
-        await deps.rollback(ownedRecord, report);
+        await deps.rollback(ownedRecord, report, finalization);
       } catch (rollbackError) {
         report.rollback.failures.push({ step: "rollback", status: "failed", code: detachedFailureCode(rollbackError) });
         deps.diagnostic?.(rollbackError);
@@ -6582,7 +6611,6 @@ async function runCodex(
     let detachedHudAuthority: DetachedHudAuthority | null = null;
     let detachedLeaderPid: number | null = null;
     let rollbackFromPreReportAuthority = false;
-    let rollbackFinalizedFailureHud = false;
 
     let attachStep: DetachedSessionTmuxStep | null = null;
 
@@ -6678,7 +6706,6 @@ async function runCodex(
               }
               if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.sessionName === sessionName && report.leaderPid && report.kind === "failed") {
                 detachedLeaderPid = report.leaderPid;
-                rollbackFinalizedFailureHud = report.finalized === true && detachedHudAuthority !== null;
                 return { kind: "failure", operation: "session-instructions", error: new Error(report.error || "detached leader setup failed") };
               }
               if (Date.now() >= readyDeadline) return { kind: "failure", operation: "session-instructions", error: new Error("detached leader readiness timed out") };
@@ -6763,7 +6790,7 @@ async function runCodex(
             return { acknowledged: false };
           },
           attachOrReturn: async () => { if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" }); },
-          rollback: async (_ownedRecord, report) => {
+          rollback: async (_ownedRecord, report, finalization) => {
             const attempt = async (step: DetachedRollbackStep, operation: () => Promise<void> | void): Promise<void> => {
               report.rollback.attempted.push(step);
               try { await operation(); } catch (error) { report.rollback.failures.push({ step, status: "failed", code: detachedFailureCode(error) }); }
@@ -6772,12 +6799,19 @@ async function runCodex(
             await attempt("runtime-codex-home", () => cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup));
             await attempt("rollback", () => { rmSync(releaseMarkerPath, { force: true }); rmSync(`${releaseMarkerPath}.release`, { force: true }); rmSync(`${releaseMarkerPath}.abort`, { force: true }); });
             if (createdSession) {
-              if (rollbackFinalizedFailureHud) {
-                await attempt("session:kill-bootstrap-hud", () => {
-                  if (!cleanupFinalizedDetachedFailureHud(detachedHudAuthority, sessionName, sessionId)) {
-                    throw new Error("detached bootstrap HUD authority changed before failure cleanup");
-                  }
-                });
+              if (isExactDetachedFinalization(finalization, {
+                nonce: detachedLaunchNonce,
+                sessionId,
+                sessionName,
+                leaderPid: detachedLeaderPid,
+              })) {
+                if (detachedHudAuthority) {
+                  await attempt("session:kill-bootstrap-hud", () => {
+                    if (!cleanupFinalizedDetachedHud(detachedHudAuthority, sessionId)) {
+                      throw new Error("detached bootstrap HUD authority changed before finalized cleanup");
+                    }
+                  });
+                }
                 return;
               }
               for (const step of buildDetachedSessionRollbackSteps(sessionName, null, null, null)) {
@@ -7017,10 +7051,12 @@ function parseDetachedHudAuthorityProof(value: unknown): DetachedHudAuthority | 
   const proof = value as Record<string, unknown>;
   if (typeof proof.paneId !== "string" || !/^%[0-9]+$/.test(proof.paneId)) return undefined;
   if (typeof proof.panePid !== "number" || !Number.isSafeInteger(proof.panePid) || proof.panePid <= 0) return undefined;
+  if (typeof proof.sessionName !== "string" || proof.sessionName.length === 0 || proof.sessionName.includes("\t")) return undefined;
   if (typeof proof.sessionId !== "string" || !/^\$[0-9]+$/.test(proof.sessionId)) return undefined;
+  if (typeof proof.sessionCreated !== "string" || !/^\d+$/.test(proof.sessionCreated)) return undefined;
   if (typeof proof.windowId !== "string" || !/^@[0-9]+$/.test(proof.windowId)) return undefined;
   if (typeof proof.operationMarker !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(proof.operationMarker)) return undefined;
-  return { paneId: proof.paneId, panePid: proof.panePid, sessionId: proof.sessionId, windowId: proof.windowId, operationMarker: proof.operationMarker };
+  return { paneId: proof.paneId, panePid: proof.panePid, sessionName: proof.sessionName, sessionId: proof.sessionId, sessionCreated: proof.sessionCreated, windowId: proof.windowId, operationMarker: proof.operationMarker };
 }
 
 function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLeaderPayload, hudProof: DetachedHudAuthority | undefined): void {
@@ -7031,11 +7067,9 @@ function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLea
   // session is deliberately preserved, which intentionally keeps that session (and any
   // attached client) alive; natural closure and shell return happen only when no other
   // panes remain.
-  const discovered = discoverDetachedHudAuthority(payload.sessionName, payload.sessionId);
-  const proof = discovered ?? hudProof;
-  if (!proof) return;
+  if (!hudProof) return;
   try {
-    cleanupDetachedHudPane(proof, discovered ? payload.sessionId : undefined);
+    cleanupDetachedHudPane(hudProof, payload.sessionId);
     execTmuxFileSync(["kill-pane", "-t", leaderPaneId], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
   } catch (error) {
     traceDetachedLeaderPhase(`hud-teardown-error:${describeDetachedLeaderFailure(error)}`);

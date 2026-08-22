@@ -12,10 +12,9 @@ import {
   DETACHED_LEADER_READY_TIMEOUT_MS,
   cleanupDetachedPreReportSession,
   cleanupDetachedHudPane,
-  cleanupFinalizedDetachedFailureHud,
+  cleanupFinalizedDetachedHud,
   decodeDetachedLeaderPayload,
   describeDetachedLeaderFailure,
-  discoverDetachedHudAuthority,
   publishDetachedReleaseMarker,
   parseDetachedLeaderPaneIdByPid,
   isDetachedReadyReportAuthorized,
@@ -23,6 +22,7 @@ import {
   resolveDetachedAttachExitStatus,
 } from '../index.js';
 import { isRealTmuxAvailable, tmuxSessionExists, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
+import type { TempTmuxSessionFixture } from '../../team/__tests__/tmux-test-fixture.js';
 
 const TEST_TIMEOUT_MS = 45_000;
 const POLL_INTERVAL_MS = 50;
@@ -42,7 +42,9 @@ interface DetachedLeaderReport {
 interface DetachedHudAuthority {
   paneId: string;
   panePid: number;
+  sessionName: string;
   sessionId: string;
+  sessionCreated: string;
   windowId: string;
   operationMarker: string;
 }
@@ -81,6 +83,19 @@ async function readReportWhen(path: string, predicate: (report: DetachedLeaderRe
 
 function paneExists(fixture: { run: (args: string[]) => string }, paneId: string): boolean {
   return fixture.run(['list-panes', '-a', '-F', '#{pane_id}']).split('\n').includes(paneId);
+}
+
+function createOwnedHud(fixture: TempTmuxSessionFixture, ownerId: string): DetachedHudAuthority {
+  const operationMarker = randomUUID();
+  const [paneId, panePidRaw, sessionName, sessionId, sessionCreated, windowId] = fixture.run([
+    'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}',
+    '-t', fixture.sessionName, `env OMX_DETACHED_HUD_OPERATION=${operationMarker} sleep 120`,
+  ]).split('\t');
+  const panePid = Number(panePidRaw);
+  assert.ok(paneId && sessionName && sessionId && sessionCreated && windowId);
+  assert.equal(Number.isSafeInteger(panePid) && panePid > 0, true);
+  fixture.run(['set-option', '-pq', '-t', paneId, '@omx_hud_owner', ownerId]);
+  return { paneId, panePid, sessionName, sessionId, sessionCreated, windowId, operationMarker };
 }
 
 function assertProcessDead(pid: number): void {
@@ -172,8 +187,8 @@ async function startDetachedLeader(
   const splitArgs = [...splitHud.args];
   splitArgs[splitArgs.length - 1] = `env OMX_DETACHED_HUD_OPERATION=${operationMarker} ${splitArgs.at(-1)}`;
   const hudPaneId = fixture.run(splitArgs);
-  const [paneId, panePidRaw, hudSessionId, windowId] = fixture.run([
-    'display-message', '-p', '-t', hudPaneId, '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
+  const [paneId, panePidRaw, hudSessionName, hudSessionId, sessionCreated, windowId] = fixture.run([
+    'display-message', '-p', '-t', hudPaneId, '#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}',
   ]).split('\t');
   const panePid = Number(panePidRaw);
   assert.equal(paneId, hudPaneId);
@@ -185,7 +200,7 @@ async function startDetachedLeader(
   assert.equal(ready.sessionId, sessionId);
   assert.equal(ready.sessionName, sessionName);
   assert.equal(Number.isSafeInteger(ready.leaderPid) && ready.leaderPid > 0, true);
-  const hud = { paneId, panePid, sessionId: hudSessionId, windowId, operationMarker };
+  const hud = { paneId, panePid, sessionName: hudSessionName, sessionId: hudSessionId, sessionCreated, windowId, operationMarker };
   publishDetachedReleaseMarker(releaseMarkerPath, nonce, sessionId, sessionName, ready.leaderPid, hud);
 
   return { releaseMarkerPath, leaderPaneId, hud };
@@ -309,17 +324,10 @@ describe('detached leader HUD teardown', () => {
       const [leaderPaneId, leaderPidRaw] = fixture.run([
         'display-message', '-p', '-t', fixture.sessionName, '#{pane_id}\t#{pane_pid}',
       ]).split('\t');
-      const [paneId, panePidRaw, sessionId, windowId] = fixture.run([
-        'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
-        '-t', fixture.sessionName, 'sleep 120',
-      ]).split('\t');
-      if (!leaderPaneId || !paneId || !sessionId || !windowId) throw new Error('invalid HUD teardown fixture');
-      fixture.run(['set-option', '-pq', '-t', paneId, '@omx_hud_owner', 'owner-zero']);
-      const discovered = discoverDetachedHudAuthority(fixture.sessionName, 'owner-zero');
-      assert.equal(discovered?.paneId, paneId);
-      assert.equal(discovered?.panePid, Number(panePidRaw));
-      cleanupDetachedHudPane({ paneId, panePid: Number(panePidRaw), sessionId, windowId, operationMarker: randomUUID() }, 'owner-zero');
-      await poll('proven HUD pane removal', () => !fixture.run(['list-panes', '-a', '-F', '#{pane_id}']).split('\n').includes(paneId) ? true : undefined);
+      const hud = createOwnedHud(fixture, 'owner-zero');
+      if (!leaderPaneId) throw new Error('invalid HUD teardown fixture');
+      cleanupDetachedHudPane(hud, 'owner-zero');
+      await poll('proven HUD pane removal', () => !fixture.run(['list-panes', '-a', '-F', '#{pane_id}']).split('\n').includes(hud.paneId) ? true : undefined);
       process.kill(Number(leaderPidRaw), 'SIGTERM');
       await poll('last-pane session destruction', () => !fixture.sessionExists() ? true : undefined);
     });
@@ -328,17 +336,10 @@ describe('detached leader HUD teardown', () => {
       const [, leaderPidRaw] = fixture.run([
         'display-message', '-p', '-t', fixture.sessionName, '#{pane_id}\t#{pane_pid}',
       ]).split('\t');
-      const [paneId, panePidRaw, sessionId, windowId] = fixture.run([
-        'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
-        '-t', fixture.sessionName, 'sleep 120',
-      ]).split('\t');
       const userPaneId = fixture.run([
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
       ]);
-      if (!paneId || !sessionId || !windowId) throw new Error('invalid unrelated-pane fixture');
-      fixture.run(['set-option', '-pq', '-t', paneId, '@omx_hud_owner', 'owner-user-pane']);
-      assert.equal(discoverDetachedHudAuthority(fixture.sessionName, 'owner-user-pane')?.paneId, paneId);
-      const staleHudProof = { paneId, panePid: Number(panePidRaw), sessionId, windowId, operationMarker: randomUUID() };
+      const staleHudProof = createOwnedHud(fixture, 'owner-user-pane');
       cleanupDetachedHudPane(staleHudProof, 'owner-user-pane');
       const replacementPaneId = fixture.run([
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
@@ -354,38 +355,33 @@ describe('detached leader HUD teardown', () => {
   it('removes only the matching bootstrap HUD after a finalized leader failure', async (t) => {
     if (!skipUnlessTmux(t)) return;
     await withTempTmuxSession(async (fixture) => {
-      const [hudPaneId, , sessionId, windowId] = fixture.run([
-        'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
-        '-t', fixture.sessionName, 'sleep 120',
-      ]).split('\t');
-      assert.ok(hudPaneId && sessionId && windowId);
       const ownerId = 'finalized-failure-owner';
-      fixture.run(['set-option', '-pq', '-t', hudPaneId, '@omx_hud_owner', ownerId]);
-      const expected = discoverDetachedHudAuthority(fixture.sessionName, ownerId);
-      assert.ok(expected);
-      assert.equal(cleanupFinalizedDetachedFailureHud(expected, fixture.sessionName, ownerId), true);
-      await poll('bootstrap HUD removal', () => !paneExists(fixture, hudPaneId) ? true : undefined);
+      const expected = createOwnedHud(fixture, ownerId);
+      assert.equal(cleanupFinalizedDetachedHud(expected, ownerId), true);
+      await poll('bootstrap HUD removal', () => !paneExists(fixture, expected.paneId) ? true : undefined);
     });
   });
 
-  it('does not remove a mismatched bootstrap HUD during finalized failure cleanup', async (t) => {
+  it('preserves a bootstrap HUD when its proof or owner changes before finalized failure cleanup', async (t) => {
     if (!skipUnlessTmux(t)) return;
-    await withTempTmuxSession(async (fixture) => {
-      const [hudPaneId, , sessionId, windowId] = fixture.run([
-        'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}',
-        '-t', fixture.sessionName, 'sleep 120',
-      ]).split('\t');
-      assert.ok(hudPaneId && sessionId && windowId);
-      const ownerId = 'finalized-failure-mismatch';
-      fixture.run(['set-option', '-pq', '-t', hudPaneId, '@omx_hud_owner', ownerId]);
-      const expected = discoverDetachedHudAuthority(fixture.sessionName, ownerId);
-      assert.ok(expected);
-      assert.equal(
-        cleanupFinalizedDetachedFailureHud({ ...expected, panePid: expected.panePid + 1 }, fixture.sessionName, ownerId),
-        false,
-      );
-      assert.equal(paneExists(fixture, hudPaneId), true);
-    });
+    const mutations: Array<readonly [string, (fixture: TempTmuxSessionFixture, proof: DetachedHudAuthority) => DetachedHudAuthority]> = [
+      ['owner', (fixture, proof) => {
+        fixture.run(['set-option', '-pq', '-t', proof.paneId, '@omx_hud_owner', 'foreign-owner']);
+        return proof;
+      }],
+      ['pane PID', (_fixture, proof) => ({ ...proof, panePid: proof.panePid + 1 })],
+      ['session creation', (_fixture, proof) => ({ ...proof, sessionCreated: `${Number(proof.sessionCreated) + 1}` })],
+      ['window topology', (_fixture, proof) => ({ ...proof, windowId: '@999999' })],
+      ['operation marker', (_fixture, proof) => ({ ...proof, operationMarker: randomUUID() })],
+    ];
+    for (const [name, mutate] of mutations) {
+      await withTempTmuxSession(async (fixture) => {
+        const ownerId = `finalized-failure-${name}`;
+        const expected = createOwnedHud(fixture, ownerId);
+        assert.equal(cleanupFinalizedDetachedHud(mutate(fixture, expected), ownerId), false, name);
+        assert.equal(paneExists(fixture, expected.paneId), true, name);
+      });
+    }
   });
 
 
@@ -529,7 +525,7 @@ describe('detached leader HUD teardown', () => {
   it('publishes an optional HUD authority proof exactly', () => {
     const wd = mkdtempSync(join(tmpdir(), 'omx-detached-release-marker-'));
     const path = join(wd, 'marker.release');
-    const hud = { paneId: '%1', panePid: 123, sessionId: '$1', windowId: '@1', operationMarker: 'operation' };
+    const hud = { paneId: '%1', panePid: 123, sessionName: 'session', sessionId: '$1', sessionCreated: '1', windowId: '@1', operationMarker: 'operation' };
     try {
       publishDetachedReleaseMarker(path, 'n', 's', 'sn', 456, hud);
       assert.deepEqual(JSON.parse(readFileSync(`${path}.release`, 'utf-8')), {

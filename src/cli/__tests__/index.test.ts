@@ -55,6 +55,7 @@ import {
   buildMadmaxDetachedLaunchContextKey,
   withMadmaxDetachedContextLock,
   executeDetachedLaunchStateMachine,
+  isExactDetachedFinalization,
   type DetachedLaunchDependencies,
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
@@ -525,6 +526,77 @@ describe("detached launch state machine", () => {
       assert.equal(events.includes("D10"), false);
     });
   }
+
+  for (const failure of ["D3", "D4", "D5", "D6", "D7", "D9"] as const) {
+    it(`passes authenticated finalized failure authority to rollback when ${failure} fails`, async () => {
+      const events: string[] = [];
+      const deps = createDependencies(events, failure);
+      let finalization: unknown;
+      deps.rollback = async (_ownedRecord, _report, observedFinalization) => {
+        events.push("rollback");
+        finalization = observedFinalization;
+      };
+      await assert.rejects(executeDetachedLaunchStateMachine(
+        { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+        deps,
+      ));
+      assert.deepEqual(finalization, {
+        nonce: "nonce",
+        sessionId: "session",
+        sessionName: "session-name",
+        leaderPid: 123,
+        kind: "failed",
+      });
+      assert.equal(events.includes("rollback"), true);
+    });
+
+    it(`preserves the leader and does not roll back when ${failure} finalization is malformed`, async () => {
+      const events: string[] = [];
+      const deps = createDependencies(events, failure);
+      deps.abortAndAwaitFinalization = async () => ({
+        acknowledged: true,
+        nonce: "nonce",
+        sessionName: "session-name",
+        leaderPid: 123,
+        kind: "failed",
+      });
+      await assert.rejects(executeDetachedLaunchStateMachine(
+        { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+        deps,
+      ));
+      assert.equal(events.includes("rollback"), false);
+    });
+  }
+
+  it("routes an exact D9 terminal finalization to HUD-only cleanup instead of session rollback", async () => {
+    const events: string[] = [];
+    const deps = createDependencies(events, "D9");
+    deps.abortAndAwaitFinalization = async () => ({
+      acknowledged: true,
+      nonce: "nonce",
+      sessionId: "session",
+      sessionName: "session-name",
+      leaderPid: 123,
+      kind: "terminal",
+    });
+    let finalization: Parameters<typeof deps.rollback>[2];
+    deps.rollback = async (_ownedRecord, _report, observedFinalization) => {
+      events.push("hud-only-cleanup");
+      finalization = observedFinalization;
+    };
+    await assert.rejects(executeDetachedLaunchStateMachine(
+      { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+      deps,
+    ));
+    assert.equal(isExactDetachedFinalization(finalization, {
+      nonce: "nonce",
+      sessionId: "session",
+      sessionName: "session-name",
+      leaderPid: 123,
+    }), true);
+    assert.equal(finalization?.kind, "terminal");
+    assert.deepEqual(events.slice(-2), ["D9", "hud-only-cleanup"]);
+  });
 
   it("finalizes and closes exactly once before D2 rollback without transport effects", async () => {
     const events: string[] = [];
@@ -4829,7 +4901,9 @@ exit 0
     const hud = {
       paneId: "%77",
       panePid: 7700,
+      sessionName: "omx-detached",
       sessionId: "$1",
+      sessionCreated: "1700000000",
       windowId: "@1",
       operationMarker: "operation-1",
     };
