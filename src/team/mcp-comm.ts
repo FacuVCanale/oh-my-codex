@@ -101,10 +101,9 @@ async function markImmediateDispatchFailure(params: {
   teamName: string;
   request: TeamDispatchRequest;
   reason: string;
-  messageId?: string;
   cwd: string;
 }): Promise<void> {
-  const { teamName, request, reason, messageId, cwd } = params;
+  const { teamName, request, reason, cwd } = params;
   if (request.transport_preference === 'hook_preferred_with_fallback') return;
 
   const current = await readDispatchRequest(teamName, request.request_id, cwd);
@@ -335,7 +334,6 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
       teamName: params.teamName,
       request: queued.request,
       reason: outcome.reason,
-      messageId: message.message_id,
       cwd: params.cwd,
     });
   }
@@ -435,7 +433,6 @@ export async function queueBroadcastMailboxMessage(params: QueueBroadcastParams)
         teamName: params.teamName,
         request: queued.request,
         reason: outcome.reason,
-        messageId: message.message_id,
         cwd: params.cwd,
       });
     }
