@@ -1635,7 +1635,9 @@ OMX_LORE_COMMIT_GUARD = "truee"
 			assert.match(
 				res.stdout,
 				new RegExp(
-					`\\[!!\\] Native hooks: plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher in ${cacheDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} do not match the packaged plugin; setup-owned hooks\\.json is intentionally absent at .*\\.codex[\\/]+hooks\\.json; run "omx setup --plugin" to refresh the plugin cache`,
+					"\\[!!\\] Native hooks: plugin-scoped hooks are enabled, but cached launcher in " +
+						cacheDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+						" is incompatible \\(.*pinned launcher target does not exist.*codex plugin remove oh-my-codex@oh-my-codex-local --json.*\\); setup-owned hooks\\.json is intentionally absent at .*\\.codex[\\/]+hooks\\.json; run `codex plugin remove oh-my-codex@oh-my-codex-local --json` then rerun `omx setup --plugin`",
 				),
 			);
 			assert.doesNotMatch(res.stdout, /plugin cache native hook coverage smoke passed/);

@@ -1387,10 +1387,18 @@ describe("omx setup install mode behavior", () => {
 					const launcher = JSON.parse(
 						await readFile(join(cacheDir, "hooks", "omx-command.json"), "utf-8"),
 					) as { command?: string; argsPrefix?: string[] };
+					// Immutable snapshot is preserved in place; setup must not report current when launcher is dead/provenance-incompatible
 					assert.equal(launcher.command, "/stale/node");
 					assert.deepEqual(launcher.argsPrefix, ["/stale/omx.js"]);
 					assert.doesNotMatch(output, /Invalidated .* stale Codex plugin discovery cache/);
-					assert.match(output, /Local Codex plugin cache already exposes packaged OMX skills/);
+					assert.doesNotMatch(output, /Local Codex plugin cache already exposes packaged OMX skills/);
+					assert.match(output, /incompatible launcher provenance/);
+					assert.match(output, /codex plugin remove oh-my-codex@oh-my-codex-local --json/);
+					const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
+					assert.ok(packagedMarketplace);
+					const materialized = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
+					assert.equal(materialized.status, "stale-launcher");
+					assert.ok(materialized.reason);
 				});
 			});
 		} finally {

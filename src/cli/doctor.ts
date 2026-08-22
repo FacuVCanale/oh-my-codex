@@ -88,6 +88,7 @@ import {
 	OMX_LOCAL_PLUGIN_CONFIG_KEY,
 	discoverOmxPluginCacheDirs,
 	expectedPackagedOmxSkillNames,
+	getPinnedLauncherIncompatibilityReason,
 	packagedOmxPluginVersion,
 	pluginHookCacheMatchesPackaged,
 	readOmxPluginCacheState,
@@ -2425,6 +2426,17 @@ async function checkPluginScopedNativeHooks(
 
 	for (const expectedPath of [expectedHooksPath, expectedHookLauncherPath, expectedPinnedLauncherPath]) {
 		if (!existsSync(expectedPath)) {
+			if (expectedPath === expectedPinnedLauncherPath) {
+				const launcherIncompat = await getPinnedLauncherIncompatibilityReason(expectedCacheDir, packagedMarketplace);
+				if (launcherIncompat) {
+					return {
+						name: "Native hooks",
+						status: "warn",
+						message:
+							`plugin-scoped hooks are enabled, but cached launcher in ${expectedCacheDir} is incompatible (${launcherIncompat.reason}); ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\``,
+					};
+				}
+			}
 			return {
 				name: "Native hooks",
 				status: "warn",
@@ -2435,6 +2447,15 @@ async function checkPluginScopedNativeHooks(
 	}
 
 	if (!(await pluginHookCacheMatchesPackaged(expectedCacheDir, packagedMarketplace))) {
+		const launcherIncompat = await getPinnedLauncherIncompatibilityReason(expectedCacheDir, packagedMarketplace);
+		if (launcherIncompat) {
+			return {
+				name: "Native hooks",
+				status: "warn",
+				message:
+					`plugin-scoped hooks are enabled, but cached launcher in ${expectedCacheDir} is incompatible (${launcherIncompat.reason}); ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\``,
+			};
+		}
 		return {
 			name: "Native hooks",
 			status: "warn",
