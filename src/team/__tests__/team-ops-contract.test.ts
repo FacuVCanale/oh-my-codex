@@ -42,6 +42,7 @@ const EXPECTED_STATE_RE_EXPORTS = {
   teamTransitionDispatchRequest: 'transitionDispatchRequest',
   teamMarkDispatchRequestNotified: 'markDispatchRequestNotified',
   teamMarkDispatchRequestDelivered: 'markDispatchRequestDelivered',
+  teamMarkDispatchRequestFailed: 'markDispatchRequestFailed',
   teamRemoveDispatchRequestsForWorkers: 'removeDispatchRequestsForWorkers',
   teamAppendEvent: 'appendTeamEvent',
   teamReadTaskApproval: 'readTaskApproval',

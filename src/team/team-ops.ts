@@ -95,6 +95,7 @@ export { readDispatchRequest as teamReadDispatchRequest } from './state.js';
 export { transitionDispatchRequest as teamTransitionDispatchRequest } from './state.js';
 export { markDispatchRequestNotified as teamMarkDispatchRequestNotified } from './state.js';
 export { markDispatchRequestDelivered as teamMarkDispatchRequestDelivered } from './state.js';
+export { markDispatchRequestFailed as teamMarkDispatchRequestFailed } from './state.js';
 export { removeDispatchRequestsForWorkers as teamRemoveDispatchRequestsForWorkers } from './state.js';
 
 // === Events ===

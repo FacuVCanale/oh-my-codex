@@ -28,6 +28,7 @@ import {
   transitionDispatchRequest as transitionDispatchRequestImpl,
   markDispatchRequestNotified as markDispatchRequestNotifiedImpl,
   markDispatchRequestDelivered as markDispatchRequestDeliveredImpl,
+  markDispatchRequestFailed as markDispatchRequestFailedImpl,
   normalizeBridgeDispatchRecord,
   normalizeDispatchRequest as normalizeDispatchRequestImpl,
 } from './state/dispatch.js';
@@ -2303,6 +2304,22 @@ export async function markDispatchRequestDelivered(
   cwd: string,
 ): Promise<TeamDispatchRequest | null> {
   return await markDispatchRequestDeliveredImpl(requestId, patch, {
+    teamName,
+    cwd,
+    validateWorkerName,
+    withDispatchLock,
+    readDispatchRequests,
+    writeDispatchRequests,
+  });
+}
+
+export async function markDispatchRequestFailed(
+  teamName: string,
+  requestId: string,
+  reason: string,
+  cwd: string,
+): Promise<void> {
+  await markDispatchRequestFailedImpl(requestId, reason, {
     teamName,
     cwd,
     validateWorkerName,

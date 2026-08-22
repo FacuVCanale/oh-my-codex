@@ -7,6 +7,7 @@ import {
   teamReadDispatchRequest as readDispatchRequest,
   teamTransitionDispatchRequest as transitionDispatchRequest,
   teamMarkDispatchRequestNotified as markDispatchRequestNotified,
+  teamMarkDispatchRequestFailed as markDispatchRequestFailed,
   type TeamDispatchRequest,
   type TeamDispatchRequestInput,
 } from './team-ops.js';
@@ -100,27 +101,16 @@ async function markImmediateDispatchFailure(params: {
   teamName: string;
   request: TeamDispatchRequest;
   reason: string;
-  messageId?: string;
   cwd: string;
 }): Promise<void> {
-  const { teamName, request, reason, messageId, cwd } = params;
+  const { teamName, request, reason, cwd } = params;
   if (request.transport_preference === 'hook_preferred_with_fallback') return;
 
   const current = await readDispatchRequest(teamName, request.request_id, cwd);
   if (!current) return;
   if (current.status === 'failed' || current.status === 'notified' || current.status === 'delivered') return;
 
-  await transitionDispatchRequest(
-    teamName,
-    request.request_id,
-    current.status,
-    'failed',
-    {
-      message_id: messageId ?? current.message_id,
-      last_reason: reason,
-    },
-    cwd,
-  ).catch(() => {});
+  await markDispatchRequestFailed(teamName, request.request_id, reason, cwd);
 }
 
 async function markLeaderPaneMissingDeferred(params: {
@@ -344,7 +334,6 @@ export async function queueDirectMailboxMessage(params: QueueDirectMessageParams
       teamName: params.teamName,
       request: queued.request,
       reason: outcome.reason,
-      messageId: message.message_id,
       cwd: params.cwd,
     });
   }
@@ -444,7 +433,6 @@ export async function queueBroadcastMailboxMessage(params: QueueBroadcastParams)
         teamName: params.teamName,
         request: queued.request,
         reason: outcome.reason,
-        messageId: message.message_id,
         cwd: params.cwd,
       });
     }
