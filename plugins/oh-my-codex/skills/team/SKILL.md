@@ -15,6 +15,8 @@ Use only for an explicit `$team` request or `omx team ...` launch that benefits 
 - Require `tmux -V`, a leader session with `$TMUX`, and the intended `omx` executable. In Codex App/plain non-tmux sessions, explain the runtime boundary instead of pretending Team is available.
 - Before launch, ground the task in a recent `.omx/context/{slug}-*.md`; create a concise snapshot when none exists. Include target, evidence, constraints, unknowns, and likely touchpoints.
 - Do not launch nested Team runs. Pick worker roles deliberately; use `OMX_TEAM_WORKER_CLI=codex|claude|auto` or `OMX_TEAM_WORKER_CLI_MAP=...` only when needed.
+- Per-agent reasoning is set by `agentReasoning`; accepted values are `low`, `medium`, `high`, `xhigh`, and `max`. `max` is passed unchanged and remains capability-dependent. `ultra` is unsupported and is not an alias for `max`.
+- Invalid configured values use the built-in role-default fallback. An explicit raw `-c model_reasoning_effort=...` is opaque and wins. When both sources are present, explicit raw reasoning wins over inherited Team reasoning and environment reasoning. Do not downgrade or retry `max` as `xhigh`; built-in role defaults remain unchanged.
 
 ## Operational steps
 
