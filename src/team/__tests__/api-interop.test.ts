@@ -666,6 +666,7 @@ describe('executeTeamApiOperation: mailbox-mark-delivered', () => {
       if (!firstAck.ok) throw new Error('expected first acknowledgement to succeed');
       assert.equal(firstAck.data.dispatch_updated, false);
       assert.equal((await readDispatchRequest('mark-dlv-coalesced', wake.request.request_id, cwd))?.status, 'pending');
+      assert.equal((await readDispatchRequest('mark-dlv-coalesced', alternateWake.request.request_id, cwd))?.status, 'pending');
 
       const finalAck = await executeTeamApiOperation('mailbox-mark-delivered', {
         team_name: 'mark-dlv-coalesced', worker: 'worker-2', message_id: secondId,

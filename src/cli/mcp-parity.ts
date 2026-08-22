@@ -10,9 +10,12 @@ type ToolHandlerResult = {
   isError?: boolean;
 };
 
-type ToolHandler = (request: {
-  params: { name: string; arguments?: Record<string, unknown> };
-}) => Promise<ToolHandlerResult>;
+type ToolHandler = (
+  request: {
+    params: { name: string; arguments?: Record<string, unknown> };
+  },
+  options?: Record<string, unknown>,
+) => Promise<ToolHandlerResult>;
 
 interface McpCliDescriptor {
   commandName: string;
@@ -20,6 +23,7 @@ interface McpCliDescriptor {
   tools: ToolSchema[];
   aliases?: Record<string, string>;
   handle: ToolHandler;
+  handleOptions?: Record<string, unknown>;
 }
 
 interface ParsedMcpCliArgs {
@@ -147,12 +151,15 @@ async function executeDescriptorCommand(
     );
   }
 
-  const result = await descriptor.handle({
-    params: {
-      name: toolName,
-      arguments: parsed.input,
+  const result = await descriptor.handle(
+    {
+      params: {
+        name: toolName,
+        arguments: parsed.input,
+      },
     },
-  });
+    descriptor.handleOptions,
+  );
   const payload = extractPayload(result);
   return result.isError
     ? { ok: false, error: payload }
@@ -182,14 +189,17 @@ async function runDescriptorCommand(
 }
 
 async function loadStateDescriptor(): Promise<McpCliDescriptor> {
-  const { buildStateServerTools, handleStateToolCall } = await importWithAutoStartDisabled(
+  const { buildStateServerTools, buildStateServerWriterTools, handleStateToolCall } = await importWithAutoStartDisabled(
     "OMX_STATE_SERVER_DISABLE_AUTO_START",
     async () => await import("../mcp/state-server.js"),
   );
   return {
     commandName: "state",
     title: "JSON CLI surface for OMX state operations.",
-    tools: buildStateServerTools().map(({ name, description }) => ({ name, description })),
+    tools: [
+      ...buildStateServerTools().map(({ name, description }) => ({ name, description })),
+      ...buildStateServerWriterTools().map(({ name, description }) => ({ name, description })),
+    ],
     aliases: {
       read: "state_read",
       write: "state_write",
@@ -198,6 +208,7 @@ async function loadStateDescriptor(): Promise<McpCliDescriptor> {
       "get-status": "state_get_status",
     },
     handle: handleStateToolCall,
+    handleOptions: { allowWriterTools: true },
   };
 }
 

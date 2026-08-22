@@ -1520,7 +1520,11 @@ process.stdin.on('end', () => {
     assert.deepEqual(actualSkillNames, expectedSkillNames);
     assert.ok(actualSkillNames.includes('worker'), 'internal setup-installed worker skill should be mirrored');
     assert.ok(actualSkillNames.includes('performance-goal'), 'performance-goal should be available through setup/plugin skill delivery');
-    assert.ok(actualSkillNames.includes('autoresearch-goal'), 'autoresearch-goal should be available through setup/plugin skill delivery');
+    assert.equal(actualSkillNames.includes('autoresearch-goal'), false, 'autoresearch-goal is a sunset stub; should not be mirrored');
+    assert.equal(actualSkillNames.includes('autopilot'), true, 'autopilot is canonical and should be mirrored');
+    assert.equal(actualSkillNames.includes('ralph'), false, 'ralph is a sunset stub; should not be mirrored');
+    assert.equal(actualSkillNames.includes('ultrawork'), false, 'ultrawork is a sunset stub; should not be mirrored');
+    assert.equal(actualSkillNames.includes('pipeline'), false, 'pipeline is a sunset stub; should not be mirrored');
     assert.ok(actualSkillNames.includes('ultragoal'), 'ultragoal should remain available through setup/plugin skill delivery');
     assert.equal(actualSkillNames.includes('ecomode'), false, 'deprecated skills should not be mirrored');
     assert.equal(actualSkillNames.includes('swarm'), false, 'deprecated skills should not be mirrored');
@@ -1556,7 +1560,7 @@ process.stdin.on('end', () => {
       'docs/troubleshooting.md',
       'docs/hooks-extension.md',
       'skills/doctor/SKILL.md',
-      'skills/help/SKILL.md',
+      'skills/omx-setup/SKILL.md',
       'plugins/oh-my-codex/skills/doctor/SKILL.md',
       'plugins/oh-my-codex/skills/omx-setup/SKILL.md',
     ];

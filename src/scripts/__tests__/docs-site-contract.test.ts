@@ -41,7 +41,7 @@ describe('public docs site contract', () => {
     assert.match(content, /Research and Planning Boundaries/);
     assert.match(content, /\$best-practice-research[\s\S]*ordinary pre-planning wrapper/);
     assert.match(content, /\$autoresearch[\s\S]*bounded validator-gated research deliverable/);
-    assert.match(content, /\$autoresearch-goal[\s\S]*Codex goal-mode version/);
-    assert.match(content, /Autoresearch findings gathered before planning should feed into <code>\$ralplan<\/code> as evidence/);
+    assert.match(content, /Removed in OMX 0.21.*autoresearch-goal/i);
+    assert.match(content, /Autoresearch findings gathered before planning should feed into <code>\$plan<\/code> as evidence/);
   });
 });

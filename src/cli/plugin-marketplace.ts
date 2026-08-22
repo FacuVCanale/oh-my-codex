@@ -1,6 +1,7 @@
 import { existsSync } from "fs";
-import { cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "fs/promises";
-import { join, resolve } from "path";
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "path";
+import { tmpdir } from "node:os";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
 
@@ -133,6 +134,88 @@ export function omxPluginCacheBase(codexHomeDir: string): string {
 		OMX_LOCAL_MARKETPLACE_NAME,
 		OMX_PLUGIN_NAME,
 	);
+}
+
+function isMissingPathError(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/**
+ * Only the namespace OMX owns below the Codex home is required to be free of symlinks; a symlinked
+ * `plugins/` (or any component under the home) can redirect writes and is refused. Everything above
+ * the home belongs to the platform or the user — macOS resolves TMPDIR through `/var -> /private/var`,
+ * and symlinked home directories are ordinary — so those components are canonicalized, not rejected.
+ */
+async function ensureManagedCacheNamespace(
+	cacheBase: string,
+	codexHomeDir: string,
+): Promise<void> {
+	const managedNamespace = relative(resolve(codexHomeDir), resolve(cacheBase));
+	if (!managedNamespace || managedNamespace.startsWith("..") || isAbsolute(managedNamespace)) {
+		throw new Error(
+			`Refusing to mutate an OMX plugin cache outside the Codex home: ${resolve(cacheBase)}`,
+		);
+	}
+	await mkdir(codexHomeDir, { recursive: true });
+	let current = await realpath(codexHomeDir);
+	for (const component of managedNamespace.split(sep).filter(Boolean)) {
+		current = join(current, component);
+		try {
+			const stats = await lstat(current);
+			if (!stats.isDirectory() || stats.isSymbolicLink()) {
+				throw new Error(
+					`Refusing to mutate OMX plugin cache through a non-directory namespace component: ${current}`,
+				);
+			}
+		} catch (error) {
+			if (!isMissingPathError(error)) throw error;
+			await mkdir(current);
+			const stats = await lstat(current);
+			if (!stats.isDirectory() || stats.isSymbolicLink()) {
+				throw new Error(
+					`Refusing to mutate OMX plugin cache through a non-directory namespace component: ${current}`,
+				);
+			}
+		}
+	}
+}
+
+async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "directory" | "foreign"> {
+		try {
+			const stats = await lstat(cacheDir);
+			if (!stats.isDirectory() || stats.isSymbolicLink()) {
+				throw new Error(`Refusing to mutate non-directory OMX plugin cache root: ${cacheDir}`);
+			}
+			const manifest = await readPluginManifest(join(cacheDir, ".codex-plugin", "plugin.json"));
+			return manifest?.name === OMX_PLUGIN_NAME ? "directory" : "foreign";
+		} catch (error) {
+			if (isMissingPathError(error)) return "missing";
+			throw error;
+		}
+}
+
+async function stageCompletePluginSnapshot(
+	stagingParent: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+	version: string,
+	teamMode: SetupTeamMode | undefined,
+): Promise<string> {
+	const snapshotDir = join(stagingParent, "snapshot");
+	await cp(packagedMarketplace.pluginRoot, snapshotDir, { recursive: true });
+	await applyTeamModeToPluginCache(snapshotDir, teamMode);
+	await writePinnedHookLauncher(snapshotDir, packagedMarketplace);
+	const manifest = await readPluginManifest(join(snapshotDir, ".codex-plugin", "plugin.json"));
+	if (
+		manifest?.name !== OMX_PLUGIN_NAME ||
+		manifest.version !== version ||
+		manifest.skills !== "./skills/" ||
+		manifest.hooks !== "./hooks/hooks.json" ||
+		!(await pathIsDirectory(join(snapshotDir, "hooks"))) ||
+		!(await pathIsDirectory(join(snapshotDir, "skills")))
+	) {
+		throw new Error(`Packaged OMX plugin snapshot is incomplete or has invalid provenance: ${snapshotDir}`);
+	}
+	return snapshotDir;
 }
 
 export async function discoverOmxPluginCacheDirs(
@@ -317,56 +400,6 @@ async function pathIsDirectory(path: string): Promise<boolean> {
 	}
 }
 
-async function copyFileAtomically(sourcePath: string, destinationPath: string): Promise<void> {
-	const tempPath = `${destinationPath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-	try {
-		await cp(sourcePath, tempPath, { force: true });
-		if (await pathIsDirectory(destinationPath)) {
-			await rm(destinationPath, { recursive: true, force: true });
-		}
-		await rename(tempPath, destinationPath);
-	} catch (error) {
-		await rm(tempPath, { recursive: true, force: true });
-		throw error;
-	}
-}
-
-interface OverlayDirectoryOptions {
-	onDestinationRootReady?: (destinationDir: string) => void | Promise<void>;
-}
-
-async function overlayDirectoryKeepingRootPresent(sourceDir: string, destinationDir: string, options: OverlayDirectoryOptions = {}): Promise<void> {
-	await mkdir(destinationDir, { recursive: true });
-	await options.onDestinationRootReady?.(destinationDir);
-	const sourceEntries = await readdir(sourceDir, { withFileTypes: true });
-	const sourceNames = new Set(sourceEntries.map((entry) => entry.name));
-
-	for (const entry of sourceEntries) {
-		const sourcePath = join(sourceDir, entry.name);
-		const destinationPath = join(destinationDir, entry.name);
-		if (entry.isDirectory()) {
-			if (existsSync(destinationPath) && !(await pathIsDirectory(destinationPath))) {
-				await rm(destinationPath, { recursive: true, force: true });
-			}
-			await overlayDirectoryKeepingRootPresent(sourcePath, destinationPath);
-		} else if (entry.isFile()) {
-			await copyFileAtomically(sourcePath, destinationPath);
-		}
-	}
-
-	let destinationEntries;
-	try {
-		destinationEntries = await readdir(destinationDir, { withFileTypes: true });
-	} catch {
-		return;
-	}
-	await Promise.all(
-		destinationEntries
-			.filter((entry) => !sourceNames.has(entry.name))
-			.map((entry) => rm(join(destinationDir, entry.name), { recursive: true, force: true })),
-	);
-}
-
 async function applyTeamModeToPluginCache(
 	cacheDir: string,
 	teamMode: SetupTeamMode | undefined,
@@ -381,6 +414,38 @@ export interface OmxPluginCacheMaterializeResult {
 	status: "unavailable" | "unchanged" | "materialized";
 	cacheDir?: string;
 	version?: string;
+	retiredDirs?: string[];
+}
+
+async function retireUnpinnedManagedSnapshots(
+	cacheBase: string,
+	currentVersion: string,
+): Promise<string[]> {
+	let entries;
+	try {
+		entries = await readdir(cacheBase, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const managed: Array<{ path: string; version: string; mtimeMs: number }> = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.name === currentVersion) continue;
+		const path = join(cacheBase, entry.name);
+		const state = await readOmxPluginCacheState(path);
+		if (state?.manifestVersion !== entry.name) continue;
+		if (existsSync(join(path, ".omx-live-pin"))) continue;
+		managed.push({ path, version: entry.name, mtimeMs: (await lstat(path)).mtimeMs });
+	}
+	managed.sort((left, right) =>
+		right.version.localeCompare(left.version, undefined, { numeric: true }) ||
+		right.mtimeMs - left.mtimeMs,
+	);
+	const retired: string[] = [];
+	for (const candidate of managed.slice(1)) {
+		await rm(candidate.path, { recursive: true, force: true });
+		retired.push(candidate.path);
+	}
+	return retired;
 }
 
 export async function materializePackagedOmxPluginCache(
@@ -393,25 +458,44 @@ export async function materializePackagedOmxPluginCache(
 	if (!version) return { status: "unavailable" };
 	const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
 	if (await hasExpectedOmxPluginCache(codexHomeDir, packagedMarketplace, options)) {
-		return { status: "unchanged", cacheDir, version };
+		return {
+			status: "unchanged",
+			cacheDir,
+			version,
+			retiredDirs: options.dryRun
+				? []
+				: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+		};
 	}
 	if (!options.dryRun) {
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
-		await mkdir(cacheBase, { recursive: true });
-		const tempDir = join(cacheBase, `.materializing-${version}-${process.pid}-${Date.now()}`);
-		await rm(tempDir, { recursive: true, force: true });
-		await cp(packagedMarketplace.pluginRoot, tempDir, { recursive: true });
-		await applyTeamModeToPluginCache(tempDir, options.teamMode);
-		await writePinnedHookLauncher(tempDir, packagedMarketplace);
+		await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
+		const rootState = await inspectCacheRoot(cacheDir);
+		if (rootState === "foreign") {
+			return { status: "unavailable", cacheDir, version };
+		}
+		const tempDir = await mkdtemp(join(tmpdir(), `omx-plugin-${version}-`));
 		try {
-			await overlayDirectoryKeepingRootPresent(tempDir, cacheDir, {
-				onDestinationRootReady: options.onCacheDirPrepared,
-			});
+			const snapshotDir = await stageCompletePluginSnapshot(
+				tempDir,
+				packagedMarketplace,
+				version,
+				options.teamMode,
+			);
+			if (rootState === "directory") return { status: "unchanged", cacheDir, version };
+			await rename(snapshotDir, cacheDir);
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
 	}
-	return { status: "materialized", cacheDir, version };
+	return {
+		status: "materialized",
+		cacheDir,
+		version,
+		retiredDirs: options.dryRun
+			? []
+			: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+	};
 }
 
 function marketplaceTableHeaderPattern(): RegExp {

@@ -449,11 +449,15 @@ async function readBoundedBody(
 	let truncated = false;
 
 	try {
-		while (bytesRead < maxBytes) {
+		while (true) {
 			const { done, value } = await reader.read();
 			if (done) break;
 			if (!value || value.byteLength === 0) continue;
 			const remaining = maxBytes - bytesRead;
+			if (remaining === 0) {
+				truncated = true;
+				break;
+			}
 			if (value.byteLength > remaining) {
 				chunks.push(value.slice(0, remaining));
 				bytesRead += remaining;
@@ -463,8 +467,6 @@ async function readBoundedBody(
 			chunks.push(value);
 			bytesRead += value.byteLength;
 		}
-
-		if (bytesRead >= maxBytes) truncated = true;
 	} finally {
 		if (truncated) {
 			await reader.cancel().catch(() => undefined);

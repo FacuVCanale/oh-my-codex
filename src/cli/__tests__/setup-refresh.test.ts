@@ -146,7 +146,6 @@ describe("omx setup refresh summary and dry-run behavior", () => {
 
       for (const skillName of [
         "performance-goal",
-        "autoresearch-goal",
         "ultragoal",
       ]) {
         const skillPath = join(wd, ".codex", "skills", skillName, "SKILL.md");
@@ -175,9 +174,7 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       });
 
       for (const skillName of [
-        "autopilot",
-        "ralplan",
-        "ralph",
+        "plan",
         "ultragoal",
         "code-review",
         "ultraqa",
@@ -204,8 +201,8 @@ describe("omx setup refresh summary and dry-run behavior", () => {
       assert.doesNotMatch(agents, /<team_(?:compositions|pipeline|model_resolution)>/);
       assert.doesNotMatch(agents, /\bTeam mode\b/);
       assert.doesNotMatch(agents, /\bteam-executor\b/);
-      assert.match(agents, /\$ralph/);
-      assert.match(agents, /autopilot/);
+      assert.match(agents, /\$ultragoal/);
+      assert.match(agents, /understand -> execute -> verify -> report/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

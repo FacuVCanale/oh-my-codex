@@ -24,6 +24,7 @@ import {
   writeUserInstallStamp,
 } from '../update.js';
 import {
+  isWorkingTreeInstall,
   resolveBunGlobalBin,
   resolvePackageManagerOwnership,
   type PackageManagerOwnership,
@@ -216,6 +217,47 @@ describe('maybeCheckAndPromptUpdate', () => {
       });
     }
   }
+
+  it('stays silent and stamps the cadence for an unowned working-tree build', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-worktree-check-'));
+    const statePath = join(cwd, '.omx', 'state', 'update-check.json');
+    const originalMode = process.env.OMX_AUTO_UPDATE;
+    const originalLog = console.log;
+    const logs: string[] = [];
+    let latestCalls = 0;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+    delete process.env.OMX_AUTO_UPDATE;
+
+    try {
+      await withInteractiveTty(async () => {
+        await maybeCheckAndPromptUpdate(cwd, {
+          getCurrentVersion: async () => '0.14.0',
+          fetchLatestVersion: async () => {
+            latestCalls += 1;
+            return '0.14.1';
+          },
+          isWorkingTreeInstall: () => true,
+          resolvePackageManagerOwnership: async () => null,
+          askYesNo: async () => {
+            throw new Error('an unowned build must never prompt for an update');
+          },
+        });
+      });
+
+      assert.deepEqual(logs, []);
+      assert.equal(latestCalls, 0);
+      const state = JSON.parse(await readFile(statePath, 'utf-8')) as { last_checked_at?: string };
+      assert.ok(state.last_checked_at, 'the cadence must be stamped so the skip is not re-probed each launch');
+    } finally {
+      if (typeof originalMode === 'string') {
+        process.env.OMX_AUTO_UPDATE = originalMode;
+      }
+      console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 
   it('schedules a deferred update after a successful startup prompt', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'omx-update-'));
@@ -630,6 +672,7 @@ describe('frozen package-manager update ownership', () => {
     const result = await runImmediateUpdate('/tmp/omx-unowned-update', {
       getCurrentVersion: async () => '0.14.0',
       fetchLatestVersion: async () => '0.14.1',
+      isWorkingTreeInstall: () => false,
       resolvePackageManagerOwnership: async () => null,
       runSetupRefresh: async () => ({ ok: true, stderr: '' }),
     });
@@ -1092,6 +1135,37 @@ describe('runImmediateUpdate failure diagnostics', () => {
       assert.match(logs.join('\n'), /Update failed while running the selected npm transaction \(npm install -g oh-my-codex@latest\)/);
       assert.match(logs.join('\n'), /npm stderr: EPERM: file is locked/);
       assert.match(logs.join('\n'), /ownership-safe recovery command: omx update/);
+    } finally {
+      console.log = originalLog;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an explicit update on an unowned working-tree build instead of demanding a reinstall', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'omx-worktree-update-'));
+    const originalLog = console.log;
+    const logs: string[] = [];
+    let latestCalls = 0;
+
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '));
+    };
+
+    try {
+      const result = await runImmediateUpdate(cwd, {
+        getCurrentVersion: async () => '0.14.0',
+        fetchLatestVersion: async () => {
+          latestCalls += 1;
+          return '0.14.1';
+        },
+        isWorkingTreeInstall: () => true,
+        resolvePackageManagerOwnership: async () => null,
+      });
+
+      assert.equal(result.status, 'skipped');
+      assert.equal(latestCalls, 0);
+      assert.match(logs.join('\n'), /runs from a working tree/);
+      assert.doesNotMatch(logs.join('\n'), /Reinstall OMX globally/);
     } finally {
       console.log = originalLog;
       await rm(cwd, { recursive: true, force: true });
@@ -1703,6 +1777,19 @@ describe('package-manager ownership', () => {
       environment: { OMX_UPDATE_TEST: '1' },
     };
   }
+
+  it('classifies only package roots outside node_modules as working-tree builds', () => {
+    const realpath = (path: string): string => (path === '/opt/homebrew/lib/node_modules/oh-my-codex'
+      ? '/Users/dev/Workspace/oh-my-codex'
+      : path);
+    assert.equal(isWorkingTreeInstall('/opt/homebrew/lib/node_modules/oh-my-codex', 'darwin', realpath), true);
+    assert.equal(isWorkingTreeInstall('/opt/homebrew/lib/node_modules/oh-my-codex', 'darwin', (path) => path), false);
+    assert.equal(isWorkingTreeInstall('/root/.bun/install/global/node_modules/oh-my-codex', 'darwin', (path) => path), false);
+    assert.equal(isWorkingTreeInstall('C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\oh-my-codex', 'win32', (path) => path), false);
+    assert.equal(isWorkingTreeInstall('/Users/dev/Workspace/oh-my-codex', 'darwin', () => {
+      throw new Error('unresolvable');
+    }), false);
+  });
 
   it('selects a validated npm owner from isolated roots', async () => {
     assert.deepEqual(await resolvePackageManagerOwnership(ownershipDependencies('npm', {

@@ -1,9 +1,8 @@
 import { existsSync } from 'fs';
-import { mkdir, readFile, writeFile } from 'fs/promises';
+import { mkdir, readFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import { getStatePath, type BeforeWritableCommit } from '../mcp/state-paths.js';
 import {
-  buildWorkflowTransitionError,
   evaluateWorkflowTransition,
   isTrackedWorkflowMode,
   TRACKED_WORKFLOW_MODES,
@@ -20,10 +19,7 @@ import {
 import { applyRunOutcomeContract } from '../runtime/run-outcome.js';
 import { normalizeTerminalWorkflowState } from './terminal-normalization.js';
 import { clearDeepInterviewQuestionObligation } from '../question/deep-interview.js';
-import {
-  buildAutopilotDeepInterviewRalplanGateError,
-  canAdvanceAutopilotDeepInterviewToRalplan,
-} from '../autopilot/deep-interview-gate.js';
+import { writeStateFile } from './operations.js';
 
 interface TransitionStateLike {
   active?: unknown;
@@ -138,17 +134,6 @@ async function completeSourceModeState(
       throwOnParseError: true,
     });
     if (!existing || existing.active !== true) continue;
-    if (sourceMode === 'deep-interview' && destinationMode === 'ralplan') {
-      const gate = await canAdvanceAutopilotDeepInterviewToRalplan({
-        cwd,
-        sessionId,
-        baseStateDir,
-        deepInterviewState: existing,
-      });
-      if (!gate.allowed) {
-        throw new Error(buildAutopilotDeepInterviewRalplanGateError(gate));
-      }
-    }
 
     const nextCandidate: TransitionStateLike = {
       ...existing,
@@ -179,19 +164,10 @@ async function completeSourceModeState(
     await mkdir(dirname(candidatePath), { recursive: true });
     const payload = JSON.stringify(nextState, null, 2);
     await beforeCommit?.({ site: 'transition.source-mode-detail', kind: 'write', path: candidatePath });
-    await writeFile(candidatePath, payload);
+    await writeStateFile(candidatePath, payload);
     completedPaths.push(candidatePath);
   }
 
-  if (sourceMode === 'deep-interview' && destinationMode === 'ralplan' && completedPaths.length === 0) {
-    const gate = await canAdvanceAutopilotDeepInterviewToRalplan({
-      cwd,
-      sessionId,
-      baseStateDir,
-      deepInterviewState: null,
-    });
-    throw new Error(buildAutopilotDeepInterviewRalplanGateError(gate));
-  }
 
   await syncCanonicalSkillStateForMode({
     cwd,
@@ -246,7 +222,6 @@ export async function reconcileWorkflowTransition(
   } = {},
 ): Promise<ReconciledWorkflowTransition> {
   const {
-    action = 'activate',
     sessionId,
     nowIso = new Date().toISOString(),
     source = 'workflow-transition',
@@ -258,15 +233,7 @@ export async function reconcileWorkflowTransition(
   const currentModes = options.currentModes
     ? [...options.currentModes].filter(isTrackedWorkflowMode)
     : await visibleTrackedModes(cwd, sessionId, baseStateDir);
-  if (currentModes.includes('ralplan') && requestedMode !== 'ralplan') {
-    throw new Error(`Cannot transition ralplan -> ${requestedMode}: documented_host_consensus_receipt_unavailable. Official host consensus receipt verifier is unavailable.`);
-  }
   const decision = evaluateWorkflowTransition(currentModes, requestedMode);
-
-  if (!decision.allowed) {
-    throw new Error(buildWorkflowTransitionError(currentModes, requestedMode, action));
-  }
-
   const completedPaths: string[] = [];
   for (const sourceMode of decision.autoCompleteModes) {
     completedPaths.push(...await completeSourceModeState(

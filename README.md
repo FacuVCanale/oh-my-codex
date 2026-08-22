@@ -37,7 +37,7 @@ OMX is a workflow layer for [OpenAI Codex CLI](https://github.com/openai/codex).
 It keeps Codex as the execution engine and makes it easier to:
 - start a stronger Codex session by default
 - run one consistent workflow from clarification to completion
-- invoke the canonical default workflow with `$deep-interview`, `$ralplan`, and `$ultragoal`
+- invoke the canonical workflow with `$plan`, `$ultragoal`, `$team`, `$code-review`, and `$ultraqa` — each independently, no fixed chain
 - keep project guidance, plans, logs, and state in `.omx/`
 
 ## Core Maintainers
@@ -114,18 +114,17 @@ Then work normally inside Codex:
 
 $deep-interview "clarify the authentication change"
 $ralplan "approve the auth plan and review tradeoffs"
-$prometheus-strict "stress-test the plan before durable execution"
 $ultragoal "turn the approved plan into durable Codex goals"
 ```
 
 That is the main path.
 Before you treat the runtime as ready, run the quick-start smoke test below: `omx doctor` verifies the install shape, while `omx exec` proves the active Codex runtime can actually authenticate and complete a model call from the current environment.
-Start OMX strongly, clarify first when needed, approve the plan, optionally use `$prometheus-strict` for interview-driven plan hardening on high-risk work, then use `$ultragoal` as the default durable completion wrapper. Use `$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work; use `$ralph` when you intentionally want a single-owner completion loop instead of a durable multi-goal run.
+Start OMX strongly, clarify first when needed, approve the plan, then use `$ultragoal` as the default durable completion wrapper. Use `$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work; use `$ralph` when you intentionally want a single-owner completion loop instead of a durable multi-goal run.
 
 ## What OMX is for
 
 Use OMX if you already like Codex and want a better day-to-day runtime around it:
-- a standard workflow built around `$deep-interview` -> `$ralplan` -> `$ultragoal`, with `$prometheus-strict` available when plans need stricter interview/critique/synthesis before execution and optional `.omx/plans/prometheus-strict/` artifacts
+- a standard workflow built around `$deep-interview` -> `$ralplan` -> `$ultragoal`
 - research boundaries: use `$best-practice-research` for ordinary pre-planning official/upstream evidence, `$autoresearch` for bounded validator-gated research artifacts, `$autoresearch-goal` for goal-mode research missions, and feed any research findings into `$ralplan` for architecture synthesis
 - durable multi-goal handoffs with `$ultragoal` and `.omx/ultragoal` artifacts as the default completion path after planning
 - specialist roles and supporting skills when the task needs them
@@ -275,15 +274,15 @@ Then try the canonical workflow:
 # Copy/pasteable durable-goal example:
 /goal Ship the checkout bug fix with a durable objective, checkpoints for reproduction, implementation, regression tests, and final verification.
 
-$ralplan "approve the checkout bug-fix plan and review tradeoffs"
-$ultrawork "execute the approved checkout fix with checkpoint evidence"
+$plan "approve the checkout bug-fix plan and review tradeoffs"
+$ultragoal "execute the approved checkout fix with checkpoint evidence"
 ```
 
-Use `$team` when an active Ultragoal story needs coordinated parallel work, or `$ralph` when one persistent owner should keep pushing to completion without a multi-goal ledger.
+Use `$team` when an active Ultragoal story needs coordinated parallel work.
 
 ### `/goal` and skill selection
 
-Start a normal strong session with `omx --madmax --xhigh` (or add `--worktree=<task>` in a git repo). Inside that session, pick the execution spine that matches the work: `$autopilot` for the full supervised planning-to-execution loop, `$ultrawork` when you want durable checkpointed execution, or `$ralph` when one persistent owner should keep pushing to completion. Use `/goal` when the task itself needs a durable objective/checkpoint structure that Codex should keep reconciling across turns.
+Start a normal strong session with `omx --madmax --xhigh` (or add `--worktree=<task>` in a git repo). Inside that session, execute directly or use `$ultragoal` for durable multi-goal runs, `$team` for coordinated parallel work, or `$plan` when the task needs explicit planning first. Use `/goal` when the task itself needs a durable objective/checkpoint structure that Codex should keep reconciling across turns.
 
 Add only 2-5 relevant skills by default. More skills are allowed when the task scope justifies them, but loading a large catalog is usually a context-budget and attention-quality problem, not a hard parser/runtime blocker. Treat it as a concrete runtime blocker only when a command actually errors.
 
@@ -316,26 +315,27 @@ Most users should think of OMX as **better task routing + better workflow + bett
 5. Launch with a named worktree from a git repo, for example `omx --worktree=feat/task --madmax --xhigh`; if you run concurrent `--madmax` sessions, use distinct named worktrees such as `--worktree=feature/auth`
 6. Use `$deep-interview "..."` when the request or boundaries are still unclear
 7. Use `$ralplan "..."` to approve the plan and review tradeoffs
-8. Use `$ultragoal`, `$ultrawork`, `$autopilot`, or `$ralph` when the task needs an execution spine; add `/goal` when durable objective/checkpoint structure should be explicit
+8. Use `$ultragoal` or `$team` when the task needs durable or parallel execution; add `/goal` when durable objective/checkpoint structure should be explicit
 
 ## Recommended workflow
 
-1. `$deep-interview` — clarify scope when the request or boundaries are still vague.
-2. `$ralplan` — turn that clarified scope into an approved architecture and implementation plan.
-3. `$ultragoal` — make the approved plan durable as sequential Codex goals with `.omx/ultragoal` ledger checkpoints.
+`$autopilot` is the first-class canonical orchestrator for the staged workflow `$deep-interview -> $ralplan -> $ultragoal`. The chain is its defining default, while each stage remains independently invocable when earlier input contracts are already satisfied.
 
-`$ralplan` stops at planning artifacts and a durable consensus handoff. Code changes require an explicit execution lane (`$ultragoal`, `$team`, or an intentional `$ralph` fallback); ralplan does not implement directly.
+1. `$deep-interview` — iterative Socratic ambiguity clearance, resumable state, and execution-ready requirements artifacts.
+2. `$ralplan` — architecture, feasibility, and consensus planning over the deep-interview artifact.
+3. `$ultragoal` — durable multi-goal execution with `.omx/ultragoal` ledger checkpoints.
+4. `$team` — coordinated parallel execution when a story benefits from multiple lanes.
 
-Inside an Ultragoal story, use `$team` only when that story benefits from coordinated parallel execution. Use `$ralph` as an intentional alternate completion loop when you do not need a durable multi-goal ledger.
+`$deep-interview` is an independent requirements stage, not an alias for `$plan --interview`, and never implements directly. Planning skills stop at planning artifacts; code changes require an explicit execution lane (`$ultragoal` or `$team`).
+
+Inside an Ultragoal story, use `$team` only when that story benefits from coordinated parallel execution.
 
 ## Common in-session surfaces
 
 | Surface | Use it for |
 | --- | --- |
-| `$deep-interview "..."` | clarifying intent, boundaries, and non-goals |
-| `$ralplan "..."` | approving the implementation plan and tradeoffs |
+| `$plan "..."` | optional planning and clarification (`--interview` mode) |
 | `$ultragoal "..."` | durable multi-goal completion after the approved plan |
-| `$ralph "..."` | persistent completion and verification loops |
 | `$team "..."` | coordinated parallel execution when the work is big enough |
 | `/skills` | browsing installed skills and supporting helpers |
 | `/goal ...` | durable objective/checkpoint structure for tasks that must reconcile progress across turns |

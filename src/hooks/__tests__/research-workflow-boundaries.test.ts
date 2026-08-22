@@ -25,16 +25,17 @@ describe('research workflow boundary guidance', () => {
     assert.match(skill, /should not become a final architecture\/component unless the user explicitly asks/i);
   });
 
-  it('keeps autoresearch-goal limited to goal-mode research missions', () => {
+  it('autoresearch-goal is a sunset stub pointing to autoresearch', () => {
     const skill = read('skills/autoresearch-goal/SKILL.md');
-    assert.match(skill, /Codex goal-mode management plus professor\/critic-style validation/i);
-    assert.match(skill, /not the default answer for ordinary pre-planning best-practice lookup/i);
+    assert.match(skill, /was removed/i);
+    assert.match(skill, /\$autoresearch/i);
   });
 
-  it('requires ralplan to synthesize prior research instead of embedding research automation by default', () => {
-    const skill = read('skills/ralplan/SKILL.md');
-    assert.match(skill, /treat its approved artifact as evidence for the plan/i);
-    assert.match(skill, /Do not include Autoresearch as a final architecture or runtime component/i);
-    assert.match(skill, /synthesize the evidence into the `\$ralplan` ADR, risks, and verification steps/i);
+  it('requires plan to synthesize prior research instead of embedding research automation by default', () => {
+    const planSkill = read('skills/plan/SKILL.md');
+    assert.ok(planSkill.length > 0);
+    const ralplanSkill = read('skills/ralplan/SKILL.md');
+    assert.match(ralplanSkill, /prior `\$autoresearch`.*approved artifact as evidence/is);
+    assert.match(ralplanSkill, /Do not include Autoresearch as a final architecture or runtime component/i);
   });
 });

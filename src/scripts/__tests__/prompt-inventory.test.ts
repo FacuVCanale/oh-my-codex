@@ -3,7 +3,13 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { buildPromptInventory, listPromptSurfacePaths, renderPromptInventoryMarkdown } from '../prompt-inventory.js';
+import {
+  buildPromptInventory,
+  checkPromptInvariantDuplicates,
+  listPromptSurfacePaths,
+  renderPromptInventoryMarkdown,
+  runPromptInventoryCli,
+} from '../prompt-inventory.js';
 
 describe('prompt inventory', () => {
   it('counts prompt surfaces, absolute directives, markers, and duplicate fragments', async () => {
@@ -58,6 +64,61 @@ describe('prompt inventory', () => {
       assert.equal(report.duplicateFragmentFamilies[0]?.count, 3);
       assert.match(renderPromptInventoryMarkdown(report), /# Prompt Inventory/);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks only explicit durable invariant phrases and reports skill duplicates', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-prompt-invariant-check-'));
+    const statePhrase = 'compatibility discovery is read-only';
+    try {
+      await mkdir(join(root, 'skills', 'one'), { recursive: true });
+      await mkdir(join(root, 'skills', 'two'), { recursive: true });
+      await mkdir(join(root, 'skills', 'generic'), { recursive: true });
+      await mkdir(join(root, 'templates'), { recursive: true });
+      await writeFile(join(root, 'templates', 'AGENTS.md'), `# SSOT\n${statePhrase}\n`);
+      await writeFile(join(root, 'skills', 'one', 'SKILL.md'), `---\nname: one\n---\n${statePhrase}\n`);
+      await writeFile(join(root, 'skills', 'two', 'SKILL.md'), `---\nname: two\n---\n${statePhrase}\n`);
+      await writeFile(join(root, 'skills', 'generic', 'SKILL.md'), 'This skill discusses state and team behavior without durable invariant wording.\n');
+
+      const report = checkPromptInvariantDuplicates(root);
+      assert.equal(report.ok, false);
+      assert.deepEqual(report.checkedPaths, [
+        'skills/generic/SKILL.md',
+        'skills/one/SKILL.md',
+        'skills/two/SKILL.md',
+      ]);
+      assert.deepEqual(report.duplicates, [{
+        ruleId: 'state-ownership',
+        phrase: statePhrase,
+        paths: ['skills/one/SKILL.md', 'skills/two/SKILL.md'],
+      }]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes clean checks, ignores the authorized SSOT, and returns actionable CLI status', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'omx-prompt-invariant-clean-'));
+    const output: string[] = [];
+    const originalLog = console.log;
+    try {
+      await mkdir(join(root, 'skills', 'one'), { recursive: true });
+      await mkdir(join(root, 'skills', 'two'), { recursive: true });
+      await mkdir(join(root, 'templates'), { recursive: true });
+      await writeFile(join(root, 'templates', 'AGENTS.md'), 'Hooks own normal skill activation\n');
+      await writeFile(join(root, 'skills', 'one', 'SKILL.md'), 'This skill says state must remain scoped.\n');
+      await writeFile(join(root, 'skills', 'two', 'SKILL.md'), 'This skill says state must remain scoped too.\n');
+      console.log = (...args: unknown[]) => output.push(args.join(' '));
+
+      const report = checkPromptInvariantDuplicates(root);
+      assert.equal(report.ok, true);
+      assert.deepEqual(report.duplicates, []);
+      assert.equal(runPromptInventoryCli(['--check', '--root', root], root), 0);
+      assert.match(output.join('\n'), /prompt invariant check ok/);
+      assert.equal(runPromptInventoryCli(['--check', '--root'], root), 1);
+    } finally {
+      console.log = originalLog;
       await rm(root, { recursive: true, force: true });
     }
   });

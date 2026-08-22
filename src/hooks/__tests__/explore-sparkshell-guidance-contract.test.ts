@@ -41,34 +41,40 @@ describe('explore + sparkshell guidance contract', () => {
   });
 
   it('keeps execution and planning surfaces explicit about deprecated explore routing', () => {
-    for (const surface of [
-      'prompts/planner.md',
-      'prompts/executor.md',
-      'prompts/sisyphus-lite.md',
-      'skills/deep-interview/SKILL.md',
-      'skills/plan/SKILL.md',
-      'skills/ralplan/SKILL.md',
-      'skills/ralph/SKILL.md',
-    ]) {
-      expectPatterns(surface, [
-        /`omx explore` is deprecated/i,
-        /normal repository inspection|normal Codex repository inspection/i,
-        /omx sparkshell/i,
-      ]);
+    // Slim role cards keep their role contract without repeating repository-routing prose.
+    for (const surface of ['prompts/planner.md', 'prompts/executor.md']) {
+      const content = loadSurface(surface);
+      assert.doesNotMatch(content, /omx explore --prompt/i, `${surface} must not invoke the removed explore command`);
+      assert.doesNotMatch(content, /USE_OMX_EXPLORE_CMD/i, `${surface} must not carry the removed explore override`);
     }
+
+    expectPatterns('skills/plan/SKILL.md', [
+      /omx explore.*deprecated/i,
+      /normal repository inspection/i,
+      /omx sparkshell/i,
+    ]);
+    assert.match(loadSurface('skills/ralph/SKILL.md'), /was removed/i);
+    assert.match(loadSurface('skills/ralph/SKILL.md'), /\$ultragoal/i);
+    const deepInterview = loadSurface('skills/deep-interview/SKILL.md');
+    assert.match(deepInterview, /omx explore.*deprecated/i);
+    assert.match(deepInterview, /normal repository inspection/i);
+    assert.match(deepInterview, /omx sparkshell/i);
+    assert.match(deepInterview, /Socratic deep interview/i);
+
+    const ralplan = loadSurface('skills/ralplan/SKILL.md');
+    assert.match(ralplan, /omx explore.*deprecated/i);
+    assert.match(ralplan, /normal repository inspection/i);
+    assert.match(ralplan, /omx sparkshell/i);
   });
 
-  it('keeps sparkshell guidance explicit opt-in and preserves raw qa or tmux evidence', () => {
+  it('keeps QA evidence raw while Team remains a slim runtime card', () => {
     expectPatterns('prompts/qa-tester.md', [
       /optional operator aid/i,
       /does not replace raw `tmux capture-pane` evidence/i,
       /explicit opt-?in/i,
     ]);
 
-    expectPatterns('skills/team/SKILL.md', [
-      /omx sparkshell --tmux-pane/i,
-      /explicit opt-?in/i,
-      /raw `tmux capture-pane` evidence/i,
-    ]);
+    const teamSkill = loadSurface('skills/team/SKILL.md');
+    assert.match(teamSkill, /tmux|Team state/i);
   });
 });

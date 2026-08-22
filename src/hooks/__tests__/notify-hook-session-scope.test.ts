@@ -252,7 +252,7 @@ describe('notify-hook session-scoped iteration updates', () => {
         type: 'agent-turn-complete',
         thread_id: 'th-fork',
         turn_id: 'tu-fork',
-        input_messages: ['$ralph continue'],
+        input_messages: ['$ultragoal continue'],
         last_assistant_message: 'ok',
       })], {
         cwd: join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'),
@@ -271,8 +271,8 @@ describe('notify-hook session-scoped iteration updates', () => {
       assert.equal(existsSync(join(forkDir, 'notify-hook-state.json')), true);
       const forkSkillState = JSON.parse(await readFile(join(forkDir, 'skill-active-state.json'), 'utf8'));
       assert.equal(forkSkillState.owner_codex_session_id, nativeSessionId);
-      const forkRalphState = JSON.parse(await readFile(join(forkDir, 'ralph-state.json'), 'utf8'));
-      assert.equal(forkRalphState.owner_codex_session_id, nativeSessionId);
+      const forkWorkflowState = JSON.parse(await readFile(join(forkDir, 'ultragoal-state.json'), 'utf8'));
+      assert.equal(forkWorkflowState.owner_codex_session_id, nativeSessionId);
 
       const second = runNotifyHook({
         cwd: wd,
@@ -284,8 +284,8 @@ describe('notify-hook session-scoped iteration updates', () => {
         last_assistant_message: 'continuing',
       }, { OMX_SESSION_ID: forkSessionId });
       assert.equal(second.status, 0, second.stderr || second.stdout);
-      const forkRalphAfterSecond = JSON.parse(await readFile(join(forkDir, 'ralph-state.json'), 'utf8'));
-      assert.equal(forkRalphAfterSecond.owner_codex_session_id, nativeSessionId);
+      const forkWorkflowAfterSecond = JSON.parse(await readFile(join(forkDir, 'ultragoal-state.json'), 'utf8'));
+      assert.equal(forkWorkflowAfterSecond.owner_codex_session_id, nativeSessionId);
       assert.equal(existsSync(join(stateDir, 'sessions', canonicalSessionId, 'hud-state.json')), false);
       assert.equal(existsSync(join(stateDir, 'sessions', canonicalSessionId, 'notify-hook-state.json')), false);
     } finally {

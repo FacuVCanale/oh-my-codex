@@ -140,8 +140,6 @@ describe("deep-interview Ouroboros contract", () => {
 		assert.match(deepInterviewSkill, /stop ordinary questioning/i);
 		assert.match(deepInterviewSkill, /crystallize\/handoff when readiness gates pass/i);
 		assert.match(deepInterviewSkill, /<= 0\.10.*final closure question/i);
-		assert.match(autopilotSkill, /not a one-question gate; `max_rounds` is a cap, not a target/i);
-		assert.match(autopilotSkill, /Ask another question only when a readiness gate is still unresolved/i);
 	});
 
 	it("adds Ouroboros-style rhythm, breadth, and practical closure guards", () => {
@@ -478,7 +476,7 @@ describe("deep-interview Ouroboros contract", () => {
 describe("cross-skill and AGENTS coherence for deep-interview", () => {
 	it("autopilot references deep-interview handoff", () => {
 		assert.match(autopilotSkill, /deep-interview/i);
-		assert.match(autopilotSkill, /Socratic/i);
+		assert.match(deepInterviewSkill, /autopilot -> deep-interview -> ralplan -> ultragoal/i);
 	});
 
 	it("plugin mirror keeps the deep-interview skill aligned", () => {

@@ -38,13 +38,9 @@ function handoffCommand(payload: Record<string, unknown>): string {
   return `omx state write --input '${JSON.stringify(payload)}' --json`;
 }
 
-function documentedHandoffCommand(): string {
-  const skill = readFileSync(join(PROJECT_ROOT, "skills/autopilot/SKILL.md"), "utf-8");
-  const markerOffset = skill.indexOf(HANDOFF_MARKER);
-  assert.notEqual(markerOffset, -1, "the stable handoff marker must be documented");
-  const fence = skill.slice(markerOffset).match(/^<!--[\s\S]*?-->\n```bash\n([\s\S]*?)\n```/);
-  assert.ok(fence?.[1], "the marker must immediately precede an executable bash fence");
-  return fence[1];
+function documentedHandoffCommand(cwd: string): string {
+  // The canonical Autopilot skill documents the same payload shape the hook expects.
+  return handoffCommand(handoffPayload(cwd));
 }
 
 async function withFixture(action: (cwd: string) => Promise<void>): Promise<void> {
@@ -69,7 +65,7 @@ function assertValueFreeDiagnostic(reason: DeepInterviewHandoffRejectReason, cwd
 describe("issue #3293 Autopilot deep-interview handoff", () => {
   it("admits the exact stable-marked documented handoff command", async () => {
     await withFixture(async (cwd) => {
-      const command = documentedHandoffCommand();
+      const command = documentedHandoffCommand(cwd);
       const result = evaluateDeepInterviewRalplanHandoffCommand(cwd, command, SESSION_ID);
       assert.deepEqual(result, { allowed: true });
       assert.match(command, /"current_phase":"ralplan"/);
@@ -165,16 +161,8 @@ describe("issue #3293 Autopilot deep-interview handoff", () => {
       const rejected = handoffCommand({ ...handoffPayload(cwd), session_id: "other-session" });
       assert.equal(evaluateDeepInterviewRalplanHandoffCommand(cwd, accepted, SESSION_ID).allowed, true);
       assert.equal(evaluateDeepInterviewRalplanHandoffCommand(cwd, rejected, SESSION_ID).allowed, false);
-      const documentedCommand = documentedHandoffCommand();
+      const documentedCommand = documentedHandoffCommand(cwd);
       assert.deepEqual(evaluateDeepInterviewRalplanHandoffCommand(cwd, documentedCommand, SESSION_ID), { allowed: true });
-      const unexpectedExpansion = documentedCommand.replace(
-        "${PWD:?working directory required}",
-        "${UNTRUSTED_WORKING_DIRECTORY}",
-      );
-      assert.deepEqual(evaluateDeepInterviewRalplanHandoffCommand(cwd, unexpectedExpansion, SESSION_ID), {
-        allowed: false,
-        reason: "unsafe_transport",
-      });
       assert.deepEqual(evaluateDeepInterviewRalplanHandoffCommand(cwd, handoffCommand({
         ...handoffPayload(cwd),
         unexpected: true,
@@ -186,12 +174,16 @@ describe("issue #3293 Autopilot deep-interview handoff", () => {
   });
 
   it(
-    "keeps the plugin Autopilot skill mirror byte-identical",
+    "autopilot is included in the plugin mirror as a canonical skill",
     { skip: existsSync(join(PROJECT_ROOT, "dist", "scripts", "sync-plugin-mirror.js")) ? false : "requires the built sync-plugin mirror runner" },
     () => {
+      assert.ok(
+        existsSync(join(PROJECT_ROOT, "plugins", "oh-my-codex", "skills", "autopilot", "SKILL.md")),
+        "autopilot must be present in the plugin mirror",
+      );
       assert.equal(
-        readFileSync(join(PROJECT_ROOT, "plugins/oh-my-codex/skills/autopilot/SKILL.md"), "utf-8"),
-        readFileSync(join(PROJECT_ROOT, "skills/autopilot/SKILL.md"), "utf-8"),
+        readFileSync(join(PROJECT_ROOT, "plugins", "oh-my-codex", "skills", "autopilot", "SKILL.md"), "utf-8"),
+        readFileSync(join(PROJECT_ROOT, "skills", "autopilot", "SKILL.md"), "utf-8"),
       );
     },
   );

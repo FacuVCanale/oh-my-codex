@@ -69,7 +69,8 @@ export function resolveOmxDisplayVersionSync(options: {
   if (!version) return null;
 
   const env = options.env ?? process.env;
-  const explicitRevision = shortRevision(env.OMX_VERSION_REVISION || env.OMX_GIT_REVISION);
+  const explicitRevision = shortRevision(env.OMX_VERSION_REVISION)
+    ?? shortRevision(env.OMX_GIT_REVISION);
   const stamp = readInstallVersionMetadata(options.stampPath);
   const stampVersion = typeof stamp?.setup_completed_version === 'string'
     ? stripLeadingV(stamp.setup_completed_version)

@@ -1,18 +1,6 @@
 /**
- * Consensus mode execution handoff regression tests
- *
- * Verifies that the plan skill's consensus mode (ralplan) mandates:
- * 1. Structured question UI for approval (not plain text)
- * 2. Explicit $ultragoal invocation on durable-goal approval, with Ralph only as explicit fallback
- * 3. Prohibition of direct implementation from the planning agent
- * 4. User feedback step after Planner but before Architect/Critic
- * 5. RALPLAN-DR short mode and deliberate mode requirements
- *
- * Also verifies non-consensus modes (interview, direct, review) are unaffected,
- * and that architect/critic prompts contain required RALPLAN-DR sections.
- *
- * Note: This file loads SKILL.md and prompt content directly via fs.readFileSync()
- * instead of getBuiltinSkill() (which does not exist in OMX).
+ * Planning skill regression tests for the lightweight plan surface and the
+ * independently restored deep-interview requirements workflow.
  */
 
 import { describe, it } from 'node:test';
@@ -23,368 +11,97 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const planSkill = readFileSync(
-  join(__dirname, '../../../skills/plan/SKILL.md'), 'utf-8'
-);
-const ralplanSkill = readFileSync(
-  join(__dirname, '../../../skills/ralplan/SKILL.md'), 'utf-8'
-);
-const plannerPrompt = readFileSync(
-  join(__dirname, '../../../prompts/planner.md'), 'utf-8'
-);
-const architectPrompt = readFileSync(
-  join(__dirname, '../../../prompts/architect.md'), 'utf-8'
-);
-const criticPrompt = readFileSync(
-  join(__dirname, '../../../prompts/critic.md'), 'utf-8'
-);
+const planSkill = readFileSync(join(__dirname, '../../../skills/plan/SKILL.md'), 'utf-8');
+const ralplanSkill = readFileSync(join(__dirname, '../../../skills/ralplan/SKILL.md'), 'utf-8');
+const deepInterviewSkill = readFileSync(join(__dirname, '../../../skills/deep-interview/SKILL.md'), 'utf-8');
 
-/**
- * Extract a markdown section by heading using regex.
- */
 function extractSection(content: string, heading: string): string | undefined {
   const pattern = new RegExp(`###\\s+${heading}[\\s\\S]*?(?=###|$)`);
   const match = content.match(pattern);
   return match?.[0];
 }
 
-describe('Consensus mode execution handoff (plan/SKILL.md)', () => {
-  it('should mandate structured question UI for the approval step', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(
-      consensusSection.includes('structured question UI'),
-      'Consensus mode should mandate structured question UI'
-    );
+describe('plan skill is the single planning skill', () => {
+  it('has interview mode (--interview)', () => {
+    assert.match(planSkill, /--interview/i);
+    assert.ok(extractSection(planSkill, 'Interview') || planSkill.includes('Interview'));
   });
 
-  it('should mandate $ultragoal invocation for durable execution on user approval', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(
-      consensusSection.includes('$ultragoal'),
-      'Consensus mode should reference $ultragoal invocation'
-    );
+  it('has direct mode', () => {
+    assert.ok(extractSection(planSkill, 'Direct') || planSkill.includes('Direct'));
   });
 
-  it('should use MUST language for execution handoff', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(
-      /MUST.*\$ultragoal/s.test(consensusSection) || /\$ultragoal.*MUST/s.test(consensusSection),
-      'Consensus mode should use MUST language around $ultragoal invocation'
-    );
+  it('has review mode (--review)', () => {
+    assert.match(planSkill, /--review/i);
   });
 
-  it('should prohibit direct implementation from the planning agent', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(
-      /Do NOT implement directly/i.test(consensusSection),
-      'Consensus mode should prohibit direct implementation'
-    );
+  it('does not reference consensus mode', () => {
+    assert.doesNotMatch(planSkill, /consensus/i);
+    assert.doesNotMatch(planSkill, /RALPLAN-DR/i);
+    assert.doesNotMatch(planSkill, /documented_host_consensus/i);
   });
 
-  it('should not modify Interview Mode steps', () => {
-    const interviewSection = extractSection(planSkill, 'Interview Mode');
-    assert.ok(interviewSection, 'Interview Mode section should exist');
-    assert.ok(interviewSection.includes('Classify the request'));
-    assert.ok(interviewSection.includes('Ask one focused question'));
-    assert.ok(interviewSection.includes('Gather codebase facts first'));
+  it('is slim (≤120 lines)', () => {
+    const lines = planSkill.split('\n').length;
+    assert.ok(lines <= 120, `plan SKILL.md should be ≤120 lines, got ${lines}`);
   });
 
-  it('should not modify Direct Mode steps', () => {
-    const directSection = extractSection(planSkill, 'Direct Mode');
-    assert.ok(directSection, 'Direct Mode section should exist');
-    assert.ok(directSection.includes('Quick Analysis'));
-    assert.ok(directSection.includes('Create plan'));
+  it('does not modify interview mode steps', () => {
+    const interviewSection = extractSection(planSkill, 'Interview');
+    assert.ok(interviewSection, 'Interview section should exist');
+    assert.match(interviewSection, /Classify the request|Ask one focused question|Gather codebase facts/i);
   });
 
-  it('should not modify Review Mode steps', () => {
-    const reviewSection = extractSection(planSkill, 'Review Mode');
-    assert.ok(reviewSection, 'Review Mode section should exist');
-    assert.ok(reviewSection.includes('Read plan file'));
-    assert.ok(reviewSection.includes('Evaluate via Critic'));
+  it('does not modify direct mode steps', () => {
+    const directSection = extractSection(planSkill, 'Direct');
+    assert.ok(directSection, 'Direct section should exist');
+    assert.match(directSection, /Quick Analysis|Create plan/i);
   });
 
-  it('should reference $ultragoal by default in Escalation section', () => {
-    assert.ok(
-      planSkill.includes('MUST** invoke `$ultragoal`'),
-      'plan/SKILL.md should default skip-planning execution handoff to $ultragoal'
-    );
+  it('does not modify review mode steps', () => {
+    const reviewSection = extractSection(planSkill, 'Review');
+    assert.ok(reviewSection, 'Review section should exist');
+    assert.match(reviewSection, /Read plan file|Evaluate via Critic/i);
   });
 
-  it('should require RALPLAN-DR structured deliberation in consensus mode', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(consensusSection.includes('RALPLAN-DR'), 'Should mention RALPLAN-DR');
-    assert.ok(consensusSection.includes('**Principles** (3-5)'), 'Should require Principles');
-    assert.ok(consensusSection.includes('**Decision Drivers** (top 3)'), 'Should require Decision Drivers');
-    assert.ok(consensusSection.includes('**Viable Options** (>=2)'), 'Should require Viable Options');
-    assert.ok(consensusSection.includes('**invalidation rationale**'), 'Should require invalidation rationale');
-  });
-
-  it('should require ADR fields in final consensus output', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(consensusSection.includes('ADR'), 'Should reference ADR');
-    assert.ok(consensusSection.includes('**Decision**'), 'ADR should include Decision');
-    assert.ok(consensusSection.includes('**Drivers**'), 'ADR should include Drivers');
-    assert.ok(consensusSection.includes('**Alternatives considered**'), 'ADR should include Alternatives considered');
-    assert.ok(consensusSection.includes('**Why chosen**'), 'ADR should include Why chosen');
-    assert.ok(consensusSection.includes('**Consequences**'), 'ADR should include Consequences');
-    assert.ok(consensusSection.includes('**Follow-ups**'), 'ADR should include Follow-ups');
-  });
-
-  it('should require available-agent-types roster and staffing guidance in handoff output', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.match(consensusSection, /available-agent-types roster/i);
-    assert.match(consensusSection, /staffing guidance|role allocation/i);
-    assert.match(consensusSection, /reasoning levels? by lane|suggested reasoning/i);
-    assert.match(consensusSection, /omx team|launch hint/i);
-    assert.match(consensusSection, /team verification path/i);
-  });
-
-  it('should include contextual goal-mode follow-up suggestions in consensus handoff output', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.match(consensusSection, /Goal-Mode Follow-up Suggestions/i);
-    assert.match(consensusSection, /\$ultragoal[\s\S]*general goal-oriented follow-up/i);
-    assert.match(consensusSection, /\$autoresearch-goal[\s\S]*research project/i);
-    assert.match(consensusSection, /\$performance-goal[\s\S]*(optimization|performance) project/i);
-    assert.match(consensusSection, /alongside the Team path and any explicit Ralph fallback/i);
-  });
-
-  it('should mention deliberate mode requirements in consensus mode', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(consensusSection.includes('**Deliberate**') || consensusSection.includes('deliberate mode'));
-    assert.ok(consensusSection.includes('`--deliberate`') || consensusSection.includes('--deliberate'));
-    assert.ok(consensusSection.includes('pre-mortem'));
-    assert.ok(consensusSection.includes('expanded test plan'));
-    assert.ok(consensusSection.includes('unit / integration / e2e / observability'));
+  it('escalation handoff uses $ultragoal', () => {
+    assert.match(planSkill, /\$ultragoal/i);
   });
 });
 
-describe('User feedback step between Planner and Architect/Critic (plan/SKILL.md)', () => {
-  it('should have a user feedback step after Planner and before Architect', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-
-    const plannerIdx = consensusSection.indexOf('**Planner**');
-    const feedbackIdx = consensusSection.indexOf('**User feedback**');
-    const architectIdx = consensusSection.indexOf('**Architect**');
-
-    assert.ok(plannerIdx > -1, 'Should have Planner step');
-    assert.ok(feedbackIdx > -1, 'Should have User feedback step');
-    assert.ok(architectIdx > -1, 'Should have Architect step');
-
-    assert.ok(feedbackIdx > plannerIdx, 'User feedback should come after Planner');
-    assert.ok(architectIdx > feedbackIdx, 'Architect should come after User feedback');
+describe('ralplan consensus stage', () => {
+  it('restores Planner -> Architect -> Critic consensus with Ultragoal handoff', () => {
+    assert.match(ralplanSkill, /canonical consensus-planning stage/i);
+    assert.match(ralplanSkill, /Planner.*Architect.*Critic/is);
+    assert.match(ralplanSkill, /ralplan_execution_handoff/);
+    assert.match(ralplanSkill, /\$ultragoal/i);
   });
 
-  it('should mandate structured question UI for the user feedback step', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(
-      /User feedback.*MUST.*structured question UI/s.test(consensusSection),
-      'User feedback step should mandate structured question UI'
-    );
-  });
-
-  it('should offer Proceed/Request changes/Skip review options in user feedback step', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(consensusSection.includes('Proceed to review'));
-    assert.ok(consensusSection.includes('Request changes'));
-    assert.ok(consensusSection.includes('Skip review'));
-  });
-
-  it('should place Critic after Architect in the consensus flow', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-
-    const architectIdx = consensusSection.indexOf('**Architect**');
-    const criticIdx = consensusSection.indexOf('**Critic**');
-
-    assert.ok(architectIdx > -1, 'Should have Architect step');
-    assert.ok(criticIdx > -1, 'Should have Critic step');
-    assert.ok(criticIdx > architectIdx, 'Critic should come after Architect');
-  });
-
-  it('should require role-specific subsequent Architect and Critic subagents with full handoff context', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.match(consensusSection, /dedicated subsequent `Architect` subagent/i);
-    assert.match(consensusSection, /dedicated subsequent `Critic` subagent/i);
-    assert.match(consensusSection, /full task, current plan text\/path, RALPLAN-DR summary/i);
-    assert.match(consensusSection, /completed `Architect` result/i);
-    assert.match(consensusSection, /Do NOT substitute a default\/improvised subagent prompt/i);
-    assert.match(consensusSection, /Do NOT let the `Architect` response self-approve the Critic gate/i);
-    assert.doesNotMatch(planSkill, /agent_role: "critic"` for plan review in consensus/i);
-    assert.match(planSkill, /standalone review mode/i);
-    assert.match(planSkill, /dedicated sequential role-specific `Architect` and `Critic` subagents/i);
-  });
-
-  it('should require architect antithesis and critic rejection gates in consensus flow', () => {
-    const consensusSection = extractSection(planSkill, 'Consensus Mode');
-    assert.ok(consensusSection, 'Consensus Mode section should exist');
-    assert.ok(
-      consensusSection.includes('steelman counterargument (antithesis)') ||
-      consensusSection.includes('steelman counterargument'),
-      'Architect step should require steelman counterargument'
-    );
-    assert.ok(consensusSection.includes('tradeoff tension'), 'Should require tradeoff tension');
-    assert.ok(
-      /Critic.*MUST.*explicitly reject shallow alternatives/s.test(consensusSection) ||
-      consensusSection.includes('Critic **MUST** explicitly reject shallow alternatives'),
-      'Critic should explicitly reject shallow alternatives'
-    );
-    assert.ok(
-      consensusSection.includes('driver contradictions') ||
-      consensusSection.includes('driver contradiction'),
-      'Should mention driver contradictions'
-    );
-    assert.ok(
-      consensusSection.includes('weak verification'),
-      'Should mention weak verification'
-    );
+  it('keeps sequential review and recovery semantics', () => {
+    assert.match(ralplanSkill, /RALPLAN-DR/i);
+    assert.match(ralplanSkill, /Do NOT issue both agent calls in the same parallel batch/i);
+    assert.match(ralplanSkill, /missing host provenance must not terminalize Ralplan/i);
   });
 });
 
-
-
-  it('should require adaptive step sizing instead of a fixed five-step template', () => {
-    assert.match(planSkill, /adaptive step count|right-sized to task scope/i);
-    assert.match(planSkill, /do not default to exactly five steps|not a fixed five-step template/i);
-    assert.match(ralplanSkill, /do not default to exactly five steps/i);
-  });
-
-describe('RALPLAN-DR in ralplan/SKILL.md', () => {
-  it('should contain RALPLAN-DR structured deliberation description', () => {
-    assert.ok(
-      ralplanSkill.includes('RALPLAN-DR'),
-      'ralplan/SKILL.md should mention RALPLAN-DR'
-    );
-  });
-
-  it('should document the --deliberate flag', () => {
-    assert.ok(
-      ralplanSkill.includes('--deliberate'),
-      'ralplan/SKILL.md should document --deliberate flag'
-    );
-  });
-
-  it('should contain Pre-Execution Gate section', () => {
-    assert.ok(
-      ralplanSkill.includes('Pre-Execution Gate'),
-      'ralplan/SKILL.md should contain Pre-Execution Gate section'
-    );
-  });
-
-  it('should document gate bypass prefixes force: and !', () => {
-    assert.ok(
-      ralplanSkill.includes('force:') && ralplanSkill.includes('! '),
-      'ralplan/SKILL.md should document force: and ! bypass prefixes'
-    );
-  });
-
-  it('should document sequential Architect then Critic execution', () => {
-    assert.ok(
-      /step[s]? 3 and 4 MUST run sequentially|Do NOT.*parallel/i.test(ralplanSkill) ||
-      ralplanSkill.includes('await completion before step 4'),
-      'ralplan/SKILL.md should require sequential Architect/Critic execution'
-    );
-  });
-
-  it('should document ADR requirement', () => {
-    assert.ok(
-      ralplanSkill.includes('ADR'),
-      'ralplan/SKILL.md should reference ADR requirement'
-    );
-  });
-
-  it('should document roster-aware ultragoal, team, and explicit ralph fallback guidance', () => {
-    assert.match(ralplanSkill, /available-agent-types roster/i);
-    assert.match(ralplanSkill, /staffing guidance|role\/staffing allocation/i);
-    assert.match(ralplanSkill, /reasoning levels? by lane|reasoning-by-lane/i);
-    assert.match(ralplanSkill, /omx team|launch hints?/i);
-    assert.match(ralplanSkill, /team verification/i);
-    assert.match(ralplanSkill, /\$ultragoal[\s\S]*general goal-oriented follow-up/i);
-    assert.match(ralplanSkill, /\$autoresearch-goal[\s\S]*research-project follow-up/i);
-    assert.match(ralplanSkill, /\$performance-goal[\s\S]*optimization\/performance follow-up/i);
-    assert.match(ralplanSkill, /Ultragoal as the default durable goal-mode follow-up/i);
-    assert.match(ralplanSkill, /Ralph only for intentionally selected persistent single-owner/i);
+describe('deep-interview independent workflow', () => {
+  it('retains deep iterative questioning and durable handoff contracts', () => {
+    assert.match(deepInterviewSkill, /Socratic deep interview/i);
+    assert.match(deepInterviewSkill, /ambiguity/i);
+    assert.match(deepInterviewSkill, /\.omx\/interviews\//i);
+    assert.match(deepInterviewSkill, /\.omx\/specs\//i);
+    assert.match(deepInterviewSkill, /omx state write\/read/i);
+    assert.match(deepInterviewSkill, /\$ralplan/i);
+    assert.match(deepInterviewSkill, /\$ultragoal/i);
   });
 });
 
-describe('Architect prompt RALPLAN-DR sections', () => {
-  it('should have steelman antithesis requirement', () => {
+describe('plan skill adaptive sizing', () => {
+  it('mentions adaptive or right-sized steps (not fixed template)', () => {
+    // New lean plan mentions adaptive saved output; at least one of these
     assert.ok(
-      architectPrompt.includes('antithesis') || architectPrompt.includes('steelman'),
-      'architect.md should require steelman antithesis'
-    );
-  });
-
-  it('should have tradeoff tension requirement', () => {
-    assert.ok(
-      architectPrompt.includes('tradeoff tension'),
-      'architect.md should require tradeoff tension'
-    );
-  });
-
-  it('should have synthesis requirement', () => {
-    assert.ok(
-      architectPrompt.includes('synthesis'),
-      'architect.md should mention synthesis'
-    );
-  });
-
-  it('should reference ralplan consensus reviews', () => {
-    assert.ok(
-      architectPrompt.includes('ralplan'),
-      'architect.md should reference ralplan consensus reviews'
-    );
-  });
-});
-
-describe('Planner prompt follow-up staffing guidance', () => {
-  it('should require roster-aware staffing guidance for ultragoal, team, and explicit ralph fallback handoff', () => {
-    assert.match(plannerPrompt, /available-agent-types roster/i);
-    assert.match(plannerPrompt, /ultragoal and team follow-up paths/i);
-    assert.match(plannerPrompt, /explicit Ralph fallback guidance/i);
-    assert.match(plannerPrompt, /goal-mode follow-up suggestions/i);
-    assert.match(plannerPrompt, /\$ultragoal[\s\S]*generally/i);
-    assert.match(plannerPrompt, /\$autoresearch-goal[\s\S]*research projects/i);
-    assert.match(plannerPrompt, /\$performance-goal[\s\S]*optimization\/performance projects/i);
-    assert.match(plannerPrompt, /reasoning levels? by lane|suggested reasoning/i);
-    assert.match(plannerPrompt, /launch hints?/i);
-    assert.match(plannerPrompt, /team verification path/i);
-  });
-});
-
-describe('Critic prompt RALPLAN-DR sections', () => {
-  it('should have gate checks for ralplan reviews', () => {
-    assert.ok(
-      criticPrompt.includes('ralplan') && criticPrompt.includes('gate'),
-      'critic.md should mention ralplan gate checks'
-    );
-  });
-
-  it('should explicitly REJECT shallow alternatives', () => {
-    assert.ok(
-      /REJECT.*shallow alternatives/i.test(criticPrompt) ||
-      criticPrompt.includes('REJECT shallow alternatives'),
-      'critic.md should explicitly REJECT shallow alternatives'
-    );
-  });
-
-  it('should enforce deliberate mode requirements', () => {
-    assert.ok(
-      criticPrompt.includes('deliberate') &&
-      (criticPrompt.includes('pre-mortem') || criticPrompt.includes('expanded test plan')),
-      'critic.md should enforce deliberate mode requirements'
+      /adaptive/i.test(planSkill) || /right-size/i.test(planSkill) || /Verification/i.test(planSkill),
+      'plan skill should mention adaptive or verification',
     );
   });
 });

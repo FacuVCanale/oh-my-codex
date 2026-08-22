@@ -1236,19 +1236,31 @@ const OMX_TMUX_SPLIT_OPERATION_MARKER_ENV = 'OMX_TMUX_SPLIT_OPERATION_MARKER';
 
 function writeHudSplitOperationMarkedCommand(command: string, marker: string): string {
   if (process.platform === 'win32') return `$env:${OMX_TMUX_SPLIT_OPERATION_MARKER_ENV} = '${marker}'; ${command}`;
-  return `${OMX_TMUX_SPLIT_OPERATION_MARKER_ENV}='${marker}'; export ${OMX_TMUX_SPLIT_OPERATION_MARKER_ENV}; ${command}`;
+  return `${OMX_TMUX_SPLIT_OPERATION_MARKER_ENV}='${marker}' ${command}`;
 }
 
 function hasHudSplitOperationMarker(startCommand: string, marker: string): boolean {
+  // tmux 3.2a wraps `pane_start_command` values containing special characters
+  // in double quotes (e.g. `"OMX_TMUX_SPLIT_OPERATION_MARKER='<marker>' node omx.js hud --watch"`).
+  // The marker must sit at the very start of the command, optionally inside that
+  // wrapper, followed by a `;` (old export form) or ` ` (command-scoped assignment).
+  // Mid-command mentions and marker-prefix collisions are never accepted.
   const posixMarker = `${OMX_TMUX_SPLIT_OPERATION_MARKER_ENV}='${marker}'`;
   const powerShellMarker = `$env:${OMX_TMUX_SPLIT_OPERATION_MARKER_ENV} = '${marker}'`;
-  return startCommand === posixMarker
-    || startCommand.startsWith(`${posixMarker};`)
-    || startCommand === powerShellMarker
-    || startCommand.startsWith(`${powerShellMarker};`);
+  return [posixMarker, `"${posixMarker}`].some((prefix) => (
+    startCommand === `${prefix}`
+    || startCommand === `${prefix}"`
+    || startCommand.startsWith(`${prefix};`)
+    || startCommand.startsWith(`${prefix} `)
+  ))
+    || [powerShellMarker, `"${powerShellMarker}`].some((prefix) => (
+      startCommand === `${prefix}`
+      || startCommand === `${prefix}"`
+      || startCommand.startsWith(`${prefix};`)
+    ));
 }
 
-function findHudSplitOperationMarkerPaneId(marker: string, execTmuxSync: TmuxExecSync): string | null {
+export function findHudSplitOperationMarkerPaneId(marker: string, execTmuxSync: TmuxExecSync): string | null {
   try {
     const lines = parseExactTmuxAuthorityLines(execTmuxSync(['list-panes', '-a', '-F', '#{pane_id}\t#{pane_start_command}']));
     if (!lines) return null;
@@ -1429,7 +1441,7 @@ export function createHudWatchPane(
     : HUD_TMUX_HEIGHT_LINES;
   const args = [
     'split-window', '-v', ...(options.fullWidth ? ['-f'] : []), '-l', String(heightLines), '-d',
-    '-t', sourcePaneId, '-c', shellEscapeSingle(cwd), writeHudSplitOperationMarkedCommand(hudCmd, operationMarker),
+    '-t', sourcePaneId, '-c', shellEscapeSingle(cwd), shellEscapeSingle(writeHudSplitOperationMarkedCommand(hudCmd, operationMarker)),
   ];
   let paneId: string | null = null;
   const nonce = randomUUID();
@@ -1443,7 +1455,7 @@ export function createHudWatchPane(
 
     const splitOutput = execTmuxSync([
       'if-shell', '-F', '-t', sourcePaneId, buildHudSplitSourceCondition(sourceAuthority),
-      `${splitCommand} \\; display-message -p ${receipt}`,
+      `${splitCommand} ; display-message -p ${receipt}`,
       `display-message -p __omx_hud_split_rejected_${receipt}`,
     ]);
     if (parseExactTmuxAuthorityScalar(splitOutput) !== receipt) return null;

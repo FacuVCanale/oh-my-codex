@@ -752,6 +752,63 @@ describe('omx setup AGENTS refresh behavior', () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it('refreshes a stale semver-pinned capability sentence through the owner path and stays idempotent', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));
+    const restoreTty = setMockTty(false);
+    const home = join(wd, 'home');
+    const restoreHome = setMockHome(home);
+    const template = readFileSync(join(process.cwd(), 'templates', 'AGENTS.md'), 'utf-8');
+    const pinnedCapabilityClaim = /Codex \d+\.\d+\.\d+ does not expose/;
+    const capabilityWording =
+      /When the active native surface does not expose that proof, collaboration reporting and source\/product mutations remain denied/;
+    try {
+      await mkdir(join(wd, '.omx', 'state'), { recursive: true });
+
+      // Published v0.20.5 generated output carried the version-pinned sentence (issue #3545).
+      const staleGenerated = addGeneratedAgentsMarker(template).replace(
+        'When the active native surface does not expose that proof',
+        'Codex 0.145.0 does not expose that proof',
+      );
+      const existing = [
+        '# Team Instructions',
+        '',
+        'Keep this custom guidance.',
+        '',
+        OMX_MANAGED_AGENTS_START_MARKER,
+        staleGenerated.trimEnd(),
+        OMX_MANAGED_AGENTS_END_MARKER,
+        '',
+      ].join('\n');
+      await writeFile(join(wd, 'AGENTS.md'), existing);
+      assert.match(existing, pinnedCapabilityClaim);
+
+      const output = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+      const agentsContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+
+      assert.match(output, /Merged OMX-managed AGENTS\.md sections into project root\./);
+      assert.match(agentsContent, capabilityWording);
+      assert.doesNotMatch(agentsContent, pinnedCapabilityClaim);
+      assert.match(agentsContent, /Keep this custom guidance\./);
+      assert.equal(countOccurrences(agentsContent, OMX_MANAGED_AGENTS_START_MARKER), 1);
+
+      const secondOutput = await runSetupWithCapturedLogs(wd, {
+        scope: 'project',
+        mergeAgents: true,
+      });
+      const secondContent = await readFile(join(wd, 'AGENTS.md'), 'utf-8');
+
+      assert.equal(secondContent, agentsContent);
+      assert.match(secondOutput, /AGENTS\.md already up to date in project root\./);
+      assert.doesNotMatch(secondContent, pinnedCapabilityClaim);
+    } finally {
+      restoreHome();
+      restoreTty();
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 
   it('refreshes the managed model table inside an explicit merged AGENTS.md block', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-setup-agents-'));

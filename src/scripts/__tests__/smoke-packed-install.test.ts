@@ -13,7 +13,6 @@ import {
   assertInstalledReasoningRuntimeContract,
   assertInstalledRootReasoningHelp,
   assertInstalledRootReasoningRejection,
-  assertInstalledTeamSkillContract,
   assertPackedInstallFileMetadata,
   assertPackedRegressionWorkflowState,
   buildNativeHookSmokePayload,
@@ -1191,30 +1190,24 @@ test('packed install smoke covers directive activation and terminal false-activa
   ]);
 });
 
-test('packed regression workflow expectations distinguish active activation from receipt-unavailable Autopilot termination', () => {
+test('packed regression workflow expectations require active Autopilot and Ralplan activation', () => {
   assert.doesNotThrow(() => assertPackedRegressionWorkflowState(
     { name: 'active-ralplan', expectedSkill: 'ralplan' },
     { active: true, skill: 'ralplan' },
   ));
   assert.doesNotThrow(() => assertPackedRegressionWorkflowState(
-    { name: 'failed-autopilot', expectedSkill: 'autopilot' },
-    {
-      active: false,
-      skill: 'autopilot',
-      phase: 'failed',
-      error: 'documented_host_consensus_receipt_unavailable',
-      active_skills: [],
-    },
+    { name: 'active-autopilot', expectedSkill: 'autopilot' },
+    { active: true, skill: 'autopilot', phase: 'deep-interview', active_skills: [{ skill: 'autopilot' }] },
   ));
   assert.throws(() => assertPackedRegressionWorkflowState(
-    { name: 'stale-active-autopilot', expectedSkill: 'autopilot' },
-    { active: true, skill: 'autopilot', phase: 'running', active_skills: [{ skill: 'autopilot' }] },
+    { name: 'failed-autopilot', expectedSkill: 'autopilot' },
+    { active: false, skill: 'autopilot', phase: 'failed', active_skills: [] },
   ), /persisted unexpected workflow state/);
 });
 
-test('packed regression Stop expectations release terminal receipt-unavailable Autopilot state', () => {
+test('packed regression Stop expectations keep active Autopilot continuation enabled', () => {
   assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'ralplan', expectedStopBlock: true }), true);
-  assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'autopilot', expectedStopBlock: true }), false);
+  assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'autopilot', expectedStopBlock: true }), true);
 });
 
 test('packed regression environment clears inherited Team routing state', () => {
@@ -1451,14 +1444,30 @@ test('packed install removes same-user native-anchor authentication', async () =
   const hookSource = await readFile(join(process.cwd(), 'src/scripts/codex-native-hook.ts'), 'utf8');
   const cliSource = await readFile(join(process.cwd(), 'src/cli/index.ts'), 'utf8');
   assert.doesNotMatch(hookSource, /isVerifiedPluginLauncherClaim|classifyNativeTranscriptProvenance|signNativeLeaderAttestation|native-anchor-auth/);
-  assert.match(hookSource, /unsupported_documented_leader_proof/);
+  assert.match(hookSource, /#3497|advisory-only|sanitizeNativeHookOutput|capability-warnings/);
+  assert.doesNotMatch(hookSource, /if \(denial\) return \{ hookEventName, omxEventName, skillState: null, outputJson: denial \}/);
   assert.match(cliSource, /execWithOverlay[\s\S]+OMX_CODEX_LAUNCH_ID[\s\S]+buildHudRuntimeEnv\(\{ sessionId/);
 });
 
-test('packed install contract requires canonical/plugin Team skill parity and text', async () => {
-  const canonical = await readFile(join(process.cwd(), 'skills/team/SKILL.md'));
-  const pluginMirror = await readFile(join(process.cwd(), 'plugins/oh-my-codex/skills/team/SKILL.md'));
-  assert.doesNotThrow(() => assertInstalledTeamSkillContract(canonical, pluginMirror));
+test('packed install contract requires canonical/plugin Ultragoal skill parity and operational anchors', async () => {
+  const canonical = await readFile(join(process.cwd(), 'skills/ultragoal/SKILL.md'), 'utf8');
+  const pluginMirror = await readFile(join(process.cwd(), 'plugins/oh-my-codex/skills/ultragoal/SKILL.md'), 'utf8');
+
+  assert.equal(canonical, pluginMirror, 'canonical and plugin Ultragoal skills must be byte-identical');
+  assert.ok(canonical.split(/\r?\n/).length <= 120, 'installed Ultragoal skill must remain a concise task card');
+  for (const anchor of [
+    '.omx/ultragoal/goals.json',
+    '.omx/ultragoal/ledger.jsonl',
+    'get_goal',
+    'checkpoint',
+    '--codex-goal-json',
+    'omx ultragoal steer',
+    'add_subgoal',
+    'Optional Team bridge',
+    'fresh `get_goal` snapshot',
+  ]) {
+    assert.match(canonical, new RegExp(anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
 });
 
 test('packed install plugin assertions enforce the packaged plugin contract', async () => {

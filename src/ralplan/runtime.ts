@@ -1,4 +1,11 @@
-import { cancelMode, readModeState, startMode, updateModeState } from '../modes/base.js';
+import {
+  readModeState,
+  readModeStateForExplicitSession,
+  startMode,
+  updateAutopilotPipelineState,
+  updateModeState,
+} from '../modes/base.js';
+import { requirePersistedHandoffCarrier } from '../state/handoff-carrier.js';
 import { readSubagentTrackingState, recordSubagentTurnForSession } from '../subagents/tracker.js';
 
 export const RALPLAN_ACTIVE_PHASES = [
@@ -212,13 +219,13 @@ function reviewBlocker(
   criticReview: RalplanReviewResult | undefined,
   requireNativeSubagents: boolean,
   nativeEvidenceComplete = true,
-): string {
+): string | null {
   if (architectReview?.verdict !== 'approve') return 'architect_review_missing_or_not_approved';
   if (criticReview?.verdict !== 'approve') return 'critic_review_missing_or_not_approved';
   if (!isApprovingReviewPair(architectReview, criticReview, requireNativeSubagents) || !nativeEvidenceComplete) {
     return 'native_subagent_consensus_evidence_missing';
   }
-  return 'documented_host_consensus_receipt_unavailable';
+  return null;
 }
 
 async function hasCompletedNativeReviewEvidence(
@@ -235,19 +242,28 @@ async function hasCompletedNativeReviewEvidence(
 function buildRalplanConsensusGate(
   architectReviews: RalplanReviewResult[],
   criticReviews: RalplanReviewResult[],
-  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean } = {},
+  options: { cwd?: string; sessionId?: string; requireNativeSubagents?: boolean; nativeEvidenceComplete?: boolean; iteration?: number } = {},
 ): RalplanConsensusGate {
   const latestArchitect = architectReviews.at(-1);
   const latestCritic = criticReviews.at(-1);
+  // P1-3: stamp the authoritative global Ralplan loop iteration as
+  // review_cycle on both role reviews. Never derive from per-role array
+  // lengths, which diverge on Architect revision/retry.
+  const authoritativeCycle = typeof options.iteration === 'number' ? options.iteration : 1;
+  // P1-2: stamp authoritative sequence_index (architect=1, critic=2) from
+  // the trusted runtime, so external executors that omit it still produce
+  // correctly ordered persisted artifacts. Forged/reordered persisted
+  // artifacts are caught by the gate validator.
   const ralplanArchitectReview = latestArchitect
-    ? { ...latestArchitect, agent_role: 'architect' as const, iteration: architectReviews.length }
+    ? { ...latestArchitect, agent_role: 'architect' as const, session_id: options.sessionId, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 1 }
     : null;
   const ralplanCriticReview = latestCritic
-    ? { ...latestCritic, agent_role: 'critic' as const, iteration: criticReviews.length }
+    ? { ...latestCritic, agent_role: 'critic' as const, session_id: options.sessionId, iteration: authoritativeCycle, review_cycle: authoritativeCycle, sequence_index: 2 }
     : null;
+  const blockedReason = reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete);
   return {
     required: true,
-    complete: false,
+    complete: blockedReason === null,
     sequence: ['architect-review', 'critic-review'],
     planning_artifacts_are_not_consensus: true,
     required_review_roles: ['architect', 'critic'],
@@ -255,7 +271,7 @@ function buildRalplanConsensusGate(
     ralplan_critic_review: ralplanCriticReview,
     architect_review: ralplanArchitectReview,
     critic_review: ralplanCriticReview,
-    blocked_reason: reviewBlocker(latestArchitect, latestCritic, options.requireNativeSubagents === true, options.nativeEvidenceComplete),
+    blocked_reason: blockedReason,
   };
 }
 
@@ -340,8 +356,9 @@ function assertRoleLaneReuse(
 async function updateRalplanState(
   cwd: string,
   updates: RalplanModeUpdates,
+  sessionId?: string,
 ): Promise<void> {
-  await updateModeState('ralplan', updates, cwd);
+  await updateModeState('ralplan', updates, cwd, sessionId);
 }
 
 export async function runRalplanConsensus(
@@ -354,6 +371,7 @@ export async function runRalplanConsensus(
     cwd,
     sessionId: options.sessionId,
     requireNativeSubagents: options.requireNativeSubagents,
+    get iteration() { return iteration; },
   };
   const drafts: RalplanDraftResult[] = [];
   const architectReviews: RalplanReviewResult[] = [];
@@ -362,12 +380,14 @@ export async function runRalplanConsensus(
   let latestPlanPath: string | undefined;
   let iteration = 1;
 
-  const existing = await readModeState('ralplan', cwd);
+  const existing = options.sessionId
+    ? await readModeStateForExplicitSession('ralplan', options.sessionId, cwd)
+    : await readModeState('ralplan', cwd);
   if (existing?.active) {
     throw new Error('ralplan_active_mode_exists');
   }
 
-  await startMode('ralplan', options.task, maxIterations, cwd);
+  await startMode('ralplan', options.task, maxIterations, cwd, options.sessionId);
 
   try {
     while (iteration <= maxIterations) {
@@ -391,7 +411,7 @@ export async function runRalplanConsensus(
         planning_complete: false,
         ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
-      });
+      }, options.sessionId);
       const draft = await executor.draft(iterationContext);
       drafts.push(draft);
       if (draft.artifacts) Object.assign(aggregatedArtifacts, draft.artifacts);
@@ -413,7 +433,7 @@ export async function runRalplanConsensus(
         latest_draft_summary: draft.summary,
         ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
-      });
+      }, options.sessionId);
       const architectReview = normalizeReviewForLane(await executor.architectReview({
         ...iterationContext,
         draft,
@@ -439,7 +459,7 @@ export async function runRalplanConsensus(
           latest_architect_summary: architectReview.summary,
           ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
-        });
+        }, options.sessionId);
 
         if (iteration >= maxIterations) {
           const error = `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
@@ -456,7 +476,7 @@ export async function runRalplanConsensus(
             review_history: reviewHistory,
             status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without Architect approval; continue from the best current artifact or ask the user how to proceed.`,
             error,
-          });
+          }, options.sessionId);
           return {
             status: 'failed',
             iteration,
@@ -483,7 +503,7 @@ export async function runRalplanConsensus(
         latest_architect_summary: architectReview.summary,
         ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
         review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
-      });
+      }, options.sessionId);
       const criticReview = normalizeReviewForLane(await executor.criticReview({
         ...iterationContext,
         draft,
@@ -513,14 +533,85 @@ export async function runRalplanConsensus(
         latest_critic_summary: criticReview.summary,
         ralplan_consensus_gate: consensusGate,
         review_history: reviewHistory,
-      });
+      }, options.sessionId);
 
+      if (consensusGate.complete) {
+        // Architect→Critic lifecycle consensus is complete; planning is done and
+        // execution may proceed without any host consensus receipt.
+        const completedAt = new Date().toISOString();
+        const autopilotParent = options.sessionId
+          ? await readModeStateForExplicitSession('autopilot', options.sessionId, cwd)
+          : null;
+        const supervisedAutopilot = options.selectedExecutionLane === 'ultragoal'
+          && autopilotParent?.active === true
+          && autopilotParent.current_phase === 'ralplan';
+        const executionHandoff = {
+          authorized: true,
+          reason: 'Sequential Architect and Critic approval completed the execution-ready Ralplan stage.',
+          authorized_at: completedAt,
+          session_id: options.sessionId,
+          review_cycle: iteration,
+          source: supervisedAutopilot ? 'autopilot' : 'user',
+        };
+        await updateRalplanState(cwd, {
+          active: false,
+          iteration,
+          current_phase: 'complete',
+          completed_at: completedAt,
+          planning_complete: true,
+          latest_plan_path: latestPlanPath,
+          latest_critic_verdict: criticReview.verdict,
+          latest_critic_summary: criticReview.summary,
+          ralplan_consensus_gate: consensusGate,
+          ralplan_execution_handoff: executionHandoff,
+          review_history: reviewHistory,
+          status_message: 'Status: complete — Architect and Critic consensus is complete; proceed to execution.',
+        }, options.sessionId);
 
-      if (consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable' || iteration >= maxIterations) {
-        const hostReceiptUnavailable = consensusGate.blocked_reason === 'documented_host_consensus_receipt_unavailable';
-        const error = hostReceiptUnavailable
-          ? 'documented_host_consensus_receipt_unavailable'
-          : `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
+        if (supervisedAutopilot && options.sessionId && autopilotParent) {
+            // Never spread a corrupt persisted carrier into a fresh object: that laundered a stored
+            // array into a valid-looking record and defeated the writer-side guard. A corrupt parent
+            // carrier fails closed here instead.
+            // Both representations, because the gate reads either one.
+            const parentNested = autopilotParent.state;
+            const nestedCarrier = parentNested && typeof parentNested === 'object' && !Array.isArray(parentNested)
+              ? (parentNested as Record<string, unknown>).handoff_artifacts
+              : undefined;
+            requirePersistedHandoffCarrier(nestedCarrier, 'parent state.handoff_artifacts carrier');
+            const existingHandoffs = requirePersistedHandoffCarrier(
+              autopilotParent.handoff_artifacts,
+              'parent handoff_artifacts carrier',
+            );
+            await updateAutopilotPipelineState({
+              active: true,
+              current_phase: 'ultragoal',
+              handoff_artifacts: {
+                ...existingHandoffs,
+                ralplan: {
+                  plan_path: latestPlanPath,
+                  artifacts: aggregatedArtifacts,
+                },
+              },
+              ralplan_consensus_gate: consensusGate,
+              ralplan_execution_handoff: executionHandoff,
+            }, cwd, options.sessionId);
+        }
+        return {
+          status: 'completed',
+          iteration,
+          phase: 'complete',
+            planningComplete: true,
+          drafts,
+          architectReviews,
+          criticReviews,
+          ralplanConsensusGate: consensusGate,
+          latestPlanPath,
+          artifacts: aggregatedArtifacts,
+        };
+      }
+
+      if (iteration >= maxIterations) {
+        const error = `ralplan_consensus_not_reached_after_${maxIterations}_iterations`;
         await updateRalplanState(cwd, {
           active: false,
           iteration,
@@ -532,11 +623,9 @@ export async function runRalplanConsensus(
           latest_critic_summary: criticReview.summary,
           ralplan_consensus_gate: consensusGate,
           review_history: reviewHistory,
-          status_message: hostReceiptUnavailable
-            ? 'Status: failed — Architect and Critic lifecycle evidence cannot authorize a release without an official host consensus receipt verifier.'
-            : `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
+          status_message: `Status: paused_for_review — ralplan reached the ${maxIterations}-iteration review limit without approval; continue from the best current artifact or ask the user how to proceed.`,
           error,
-        });
+        }, options.sessionId);
         return {
           status: 'failed',
           iteration,
@@ -567,7 +656,7 @@ export async function runRalplanConsensus(
       review_history: buildReviewHistory(drafts, architectReviews, criticReviews),
       status_message: 'Status: failed — ralplan encountered an error and cannot continue without inspecting the failure.',
       error: message,
-    });
+    }, options.sessionId);
     return {
       status: 'failed',
       iteration,
@@ -593,7 +682,7 @@ export async function runRalplanConsensus(
     ralplan_consensus_gate: buildRalplanConsensusGate(architectReviews, criticReviews, gateOptions),
     status_message: 'Status: failed — ralplan reached an unexpected runtime state.',
     error: unreachableError,
-  });
+  }, options.sessionId);
   return {
     status: 'failed',
     iteration,
@@ -609,6 +698,15 @@ export async function runRalplanConsensus(
   };
 }
 
-export async function cancelRalplanConsensus(cwd?: string): Promise<void> {
-  await cancelMode('ralplan', cwd);
+export async function cancelRalplanConsensus(cwd?: string, sessionId?: string): Promise<void> {
+  const state = sessionId
+    ? await readModeStateForExplicitSession('ralplan', sessionId, cwd)
+    : await readModeState('ralplan', cwd);
+  if (state?.active) {
+    await updateModeState('ralplan', {
+      active: false,
+      current_phase: 'cancelled',
+      completed_at: new Date().toISOString(),
+    }, cwd, sessionId);
+  }
 }

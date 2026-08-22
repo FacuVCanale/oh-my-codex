@@ -11,78 +11,102 @@ function loadDoc(path: string): string {
   return readFileSync(join(repoRoot, path), 'utf-8');
 }
 
+function assertSlimUltragoalCard(doc: string): void {
+  assert.ok(doc.split(/\r?\n/).length <= 120, 'Ultragoal skill cards must stay concise');
+  assert.match(doc, /AGENTS\.md#durable-runtime-invariants-canonical-ssot/);
+  assert.match(doc, /Durable artifacts are `\.omx\/ultragoal\/brief\.md`, `\.omx\/ultragoal\/goals\.json`, and `\.omx\/ultragoal\/ledger\.jsonl`/);
+  assert.match(doc, /aggregate Codex goal mode by default/i);
+  assert.match(doc, /get_goal/);
+  assert.match(doc, /create_goal/);
+  assert.match(doc, /update_goal/);
+  assert.match(doc, /Do not call (?:Codex )?`\/goal clear` from shell or this skill/i);
+  assert.match(doc, /checkpoint/);
+  assert.match(doc, /--codex-goal-json/);
+  assert.match(doc, /For intermediate aggregate stories, keep the Codex goal active and checkpoint/i);
+  assert.match(doc, /final story[\s\S]{0,220}fresh complete snapshot/i);
+  assert.match(doc, /omx ultragoal steer/);
+  for (const kind of [
+    'add_subgoal',
+    'split_subgoal',
+    'reorder_pending',
+    'revise_pending_wording',
+    'annotate_ledger',
+    'mark_blocked_superseded',
+  ]) {
+    assert.match(doc, new RegExp(kind));
+  }
+  assert.match(doc, /ordinary prose does not mutate/i);
+  assert.match(doc, /Optional Team bridge/);
+  assert.match(doc, /separate Team command/);
+  assert.match(doc, /leader records the Ultragoal checkpoint with a fresh `get_goal` snapshot/i);
+}
+
 describe('ultragoal docs contract', () => {
-  it('documents aggregate Codex goal mode as the default contract', () => {
+  it('documents aggregate goal ownership and the Codex state boundary', () => {
     const doc = loadDoc('docs/ultragoal.md');
 
     assert.match(doc, /default to \*\*aggregate Codex goal mode\*\*/i);
     assert.match(doc, /Codex gets one objective for the whole ultragoal run/i);
-    assert.match(doc, /G001\/G002 story state/i);
+    assert.match(doc, /\.omx\/ultragoal\/goals\.json/);
+    assert.match(doc, /\.omx\/ultragoal\/ledger\.jsonl/);
+    assert.match(doc, /get_goal/);
+    assert.match(doc, /create_goal/);
+    assert.match(doc, /update_goal/);
     assert.match(doc, /does \*\*not\*\* call Codex `\/goal clear`/i);
     assert.match(doc, /manual(?:ly)? run `\/goal clear`/i);
-    assert.match(doc, /multiple sequential ultragoal runs/i);
-    assert.match(doc, /Intermediate aggregate story checkpoints require a matching `active` Codex snapshot/i);
-    assert.match(doc, /Final aggregate story checkpoints require a matching `complete` Codex snapshot/i);
+
+    const ssot = loadDoc('templates/AGENTS.md');
+    assert.match(ssot, /Durable Runtime Invariants \(canonical SSOT\)/);
+    assert.match(ssot, /Ultragoal ownership/);
+    assert.match(ssot, /leader-owned plan/);
+    assert.match(ssot, /fresh `get_goal` snapshot/);
   });
 
-  it('documents sequential same-thread runs and /goal clear limitations in mirrored skill guidance', () => {
+  it('keeps the source and plugin Ultragoal cards concise and semantically aligned', () => {
     const docs = [
       loadDoc('skills/ultragoal/SKILL.md'),
       loadDoc('plugins/oh-my-codex/skills/ultragoal/SKILL.md'),
     ];
 
-    for (const doc of docs) {
-      assert.match(doc, /does not call Codex `\/goal clear`/i);
-      assert.match(doc, /does not invoke `\/goal clear` or hidden `thread\/goal\/clear`/i);
-      assert.match(doc, /only provides `get_goal`, `create_goal`, and `update_goal`/i);
-      assert.match(doc, /multiple sequential ultragoal runs/i);
-      assert.doesNotMatch(doc, /fresh (?:Codex )?(?:thread|session)s?/i);
-    }
+    assert.equal(docs[0], docs[1], 'plugin Ultragoal card must mirror the canonical source');
+    for (const doc of docs) assertSlimUltragoalCard(doc);
   });
 
   it('documents the completed legacy Codex-goal blocked checkpoint workaround', () => {
     const doc = loadDoc('docs/ultragoal.md');
 
-    assert.match(doc, /checkpoint --goal-id G001-example --status blocked/);
+    assert.match(doc, /checkpoint --goal-id\s+\S+\s+--status blocked/);
     assert.match(doc, /`goal_blocked`/);
     assert.match(doc, /no Codex goal-tool reset\/new-goal surface/i);
     assert.match(doc, /Codex goal context/i);
-    assert.doesNotMatch(doc, /fresh (?:Codex )?(?:thread|session)s?/i);
     assert.match(doc, /same branch\/worktree/i);
     assert.match(doc, /Active or incomplete wrong Codex goals remain strict mismatch errors/i);
     assert.match(doc, /must not be used to bypass active-goal mismatch protection/i);
     assert.match(doc, /matching native Codex `blocked`|matching native Codex blocked|truthfully `blocked`/i);
   });
 
-  it('documents the mandatory final cleanup and review gate', () => {
+  it('keeps the final completion gate operational without copying long prose into the card', () => {
     const docs = [
-      loadDoc('docs/ultragoal.md'),
       loadDoc('skills/ultragoal/SKILL.md'),
       loadDoc('plugins/oh-my-codex/skills/ultragoal/SKILL.md'),
     ];
-
     for (const doc of docs) {
-      assert.match(doc, /Mandatory final cleanup and review gate/);
+      assert.match(doc, /Final gate and exit evidence/);
+      assert.match(doc, /targeted story verification/);
       assert.match(doc, /ai-slop-cleaner/);
-      assert.match(doc, /passed\/no-op report/);
-      assert.match(doc, /post-cleaner verification/i);
       assert.match(doc, /\$code-review/);
-      assert.match(doc, /independent review path/i);
-      assert.match(doc, /codeReview\.independentReview/);
-      assert.match(doc, /architectureInvariantGate/);
-      assert.match(doc, /architecture-invariant audit/i);
-      assert.match(doc, /implementation, test, and (?:independent )?review evidence/i);
-      assert.match(doc, /code-reviewer/);
-      assert.match(doc, /architect/);
-      assert.match(doc, /same-lane\/self-review/i);
       assert.match(doc, /record-review-blockers/);
-      assert.match(doc, /review_blocked/);
       assert.match(doc, /quality-gate-json/);
-      assert.match(doc, /APPROVE/);
-      assert.match(doc, /CLEAR/);
-      assert.doesNotMatch(doc, /not_applicable/);
-      assert.doesNotMatch(doc, /On the final story only, call `update_goal/);
     }
+
+    const reference = loadDoc('docs/ultragoal.md');
+    assert.match(reference, /Mandatory final cleanup and review gate/);
+    assert.match(reference, /post-cleaner verification/i);
+    assert.match(reference, /codeReview\.independentReview/);
+    assert.match(reference, /architectureInvariantGate/);
+    assert.match(reference, /APPROVE/);
+    assert.match(reference, /CLEAR/);
+    assert.doesNotMatch(reference, /not_applicable/);
   });
 
   it('documents bounded dynamic steering without easier-completion mutations', () => {
@@ -93,8 +117,19 @@ describe('ultragoal docs contract', () => {
     ];
     const nativeHooksDoc = loadDoc('docs/codex-native-hooks.md');
 
-    for (const doc of docs) {
-      assert.match(doc, /Dynamic steering/);
+    const reference = docs[0];
+    assert.match(reference, /Dynamic steering/);
+    assert.match(reference, /constraints stay fixed|original brief constraints/i);
+    assert.match(reference, /broad natural-language requests[\s\S]{0,80}rejected/i);
+    assert.match(reference, /steering_accepted|structured steering audit events/i);
+    assert.match(reference, /hard-delete goals/);
+    assert.match(reference, /auto-complete work/);
+    assert.match(reference, /silently mutate/i);
+    assert.match(reference, /UserPromptSubmit/);
+    assert.match(reference, /OMX_ULTRAGOAL_STEER/);
+
+    for (const doc of docs.slice(1)) {
+      assert.match(doc, /(?:Dynamic|Explicit) steering/);
       assert.match(doc, /omx ultragoal steer/);
       assert.match(doc, /add_subgoal/);
       assert.match(doc, /split_subgoal/);
@@ -102,15 +137,8 @@ describe('ultragoal docs contract', () => {
       assert.match(doc, /revise_pending_wording/);
       assert.match(doc, /annotate_ledger/);
       assert.match(doc, /mark_blocked_superseded/);
-      assert.match(doc, /aggregate (Codex )?objective|aggregate objective/i);
-      assert.match(doc, /constraints stay fixed|original brief constraints/i);
-      assert.match(doc, /broad natural-language requests[\s\S]{0,80}rejected/i);
-      assert.match(doc, /steering_accepted|structured steering audit events/i);
-      assert.match(doc, /hard-delete goals/);
-      assert.match(doc, /auto-complete work/);
-      assert.match(doc, /silently mutate/i);
-      assert.match(doc, /UserPromptSubmit/);
-      assert.match(doc, /OMX_ULTRAGOAL_STEER/);
+      assert.match(doc, /ordinary prose does not mutate/i);
+      assert.match(doc, /structured directives dedupe/i);
     }
 
     assert.match(nativeHooksDoc, /UserPromptSubmit: bounded ultragoal steering/);
@@ -119,17 +147,20 @@ describe('ultragoal docs contract', () => {
     assert.match(nativeHooksDoc, /keyword routing still takes precedence/i);
   });
 
-  it('documents deep-interview to ralplan to ultragoal as the README default workflow', () => {
+  it('documents Autopilot as the restored canonical README orchestrator', () => {
     const readme = loadDoc('README.md');
 
-    assert.match(readme, /canonical default workflow with `\$deep-interview`, `\$ralplan`, and `\$ultragoal`/);
-    assert.match(readme, /standard workflow built around `\$deep-interview` -> `\$ralplan` -> `\$ultragoal`/);
-    assert.match(readme, /\$deep-interview "clarify the authentication change"[\s\S]*\$ralplan "approve the auth plan and review tradeoffs"[\s\S]*\$ultragoal "turn the approved plan into durable Codex goals"/);
-    assert.match(readme, /Use `\$team` inside that execution path only when a specific Ultragoal story needs coordinated parallel work/);
-    assert.match(readme, /Use `\$ralph` as an intentional alternate completion loop/);
+    assert.match(readme, /`\$autopilot` is the first-class canonical orchestrator/);
+    assert.match(readme, /`\$deep-interview -> \$ralplan -> \$ultragoal`/);
+    assert.match(readme, /defining default/);
+    assert.match(readme, /each stage remains independently invocable when earlier input contracts are already satisfied/);
+    assert.match(readme, /`\$deep-interview` — iterative Socratic ambiguity clearance/);
+    assert.match(readme, /not an alias for `\$plan --interview`/);
+    assert.match(readme, /`\$ultragoal` — durable multi-goal execution/);
+    assert.match(readme, /Inside an Ultragoal story, use `\$team` only when that story benefits from coordinated parallel execution/);
   });
 
-  it('documents Team as the parallel execution engine while leader owns Ultragoal checkpointing', () => {
+  it('documents Team as the parallel execution engine while the leader owns checkpoints', () => {
     const docs = [
       loadDoc('docs/ultragoal.md'),
       loadDoc('skills/ultragoal/SKILL.md'),
@@ -137,16 +168,17 @@ describe('ultragoal docs contract', () => {
     ];
 
     for (const doc of docs) {
-      assert.match(doc, /use ultragoal and team together/i);
-      assert.match(doc, /Team is the parallel execution engine/i);
-      assert.match(doc, /leader checkpoints Ultragoal from Team evidence/i);
-      assert.match(doc, /\.omx\/ultragoal\/goals\.json/);
-      assert.match(doc, /\.omx\/ultragoal\/ledger\.jsonl/);
+      assert.match(doc, /Team is the parallel execution engine|separate Team command/i);
+      assert.match(doc, /leader checkpoints Ultragoal from Team evidence|leader records the Ultragoal checkpoint/i);
       assert.match(doc, /fresh `get_goal` snapshot/i);
       assert.match(doc, /--codex-goal-json/);
-      assert.match(doc, /workers do not own ultragoal goal state/i);
-      assert.match(doc, /no hidden Codex goal mutation/i);
-      assert.doesNotMatch(doc, /auto[- ]launches Team/i);
     }
+
+    const reference = docs[0];
+    assert.match(reference, /\.omx\/ultragoal\/goals\.json/);
+    assert.match(reference, /\.omx\/ultragoal\/ledger\.jsonl/);
+    assert.match(reference, /workers do not own ultragoal goal state/i);
+    assert.match(reference, /no hidden Codex goal mutation/i);
+    assert.doesNotMatch(reference, /auto[- ]launches Team/i);
   });
 });

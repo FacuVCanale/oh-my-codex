@@ -14,7 +14,7 @@ import {
 	type RegularFileDurabilityTracker,
 } from "../utils/file-durability.js";
 import { constants, existsSync, readFileSync, type Stats } from "fs";
-import { access, chown, lstat, mkdtemp, readdir, readFile, rmdir, rm } from "fs/promises";
+import { access, chown, lstat, mkdir, mkdtemp, readdir, readFile, rename, rmdir, rm } from "fs/promises";
 import { spawnSync } from "child_process";
 import { basename, dirname, join, relative } from "path";
 import { tmpdir } from "os";
@@ -30,6 +30,7 @@ import {
 } from "../utils/paths.js";
 import {
   readCanonicalSessionBindingSnapshot,
+  isModeStateFilename,
   normalizeSessionId,
   type CanonicalSessionBindingSnapshot,
   type StateRootSource,
@@ -110,8 +111,13 @@ import { readCatalogManifest } from "../catalog/reader.js";
 import {
 	defaultProcessInspectionProvider,
 	isValidProcessIdentity,
+	resolveSessionPointerContext,
 	type ProcessInspectionProvider,
 } from "../hooks/session.js";
+import {
+	resolveAuthoritativeTeamWorkerContext,
+	resolveConductorPolicyRoot,
+} from "../team/worker-provenance.js";
 
 let doctorClaimJournalDurabilityOverride: NativeHookClaimJournalDurability | undefined;
 
@@ -131,6 +137,13 @@ interface DoctorOptions {
 	force?: boolean;
 	dryRun?: boolean;
 	team?: boolean;
+	repairState?: boolean;
+}
+
+export interface StateProjectionRepairResult {
+	archived: string[];
+	preserved: string[];
+	skipped: string[];
 }
 
 interface Check {
@@ -379,7 +392,7 @@ function bindingRecoveryAction(
     return `${selectorFix}${rootClear}inspect selected session.json path/access; relaunch`;
   }
   if (snapshot.status === "stale-dead") {
-    return `${selectorFix}${rootClear}inspect selected session.json; confirm owner state; terminate only verified owner if necessary (still-live owner only); relaunch`;
+    return `${selectorFix}${rootClear}inspect selected session.json owner identity; run omx session pointer recover only for a positively dead, non-reused owner; reused or uncertain identity requires investigation; relaunch after resolution`;
   }
   return `${selectorFix}${rootClear}inspect selected session.json; verify owner; terminate only verified owner if necessary; relaunch`;
 }
@@ -397,6 +410,7 @@ function compactCappedBindingRecoveryAction(
     || snapshot.status === "identity-indeterminate"
     ? "terminate only verified owner if necessary;"
     : "";
+  if (snapshot.status === "stale-dead") return `${selectorFix}${rootClear}recover only verified-dead non-reused owner;investigate reused/uncertain identity;relaunch`;
   if (ownerTermination) return `${selectorFix}${rootClear}${ownerTermination}relaunch`;
   if (snapshot.status === "read-error") return `${selectorFix}${rootClear}inspect;relaunch`;
   return `${selectorFix}${rootClear}relaunch`;
@@ -468,6 +482,9 @@ export function formatStateRootSessionBindingDiagnostic(
       ...(compactRecovery.includes("terminate only verified owner if necessary")
         ? ["owner=terminate-verified-only-if-needed"]
         : []),
+      ...(snapshot.status === "stale-dead"
+        ? ["recover=dead-nonreused-only", "reused=investigate"]
+        : []),
       ...(selectedSessionLabel ? ["selected=session.json"] : []),
       ...(badSelectorsField ? [badSelectorsField] : []),
     ];
@@ -522,6 +539,9 @@ export function formatStateRootSessionBindingDiagnostic(
     ...(compactRecovery.includes("terminate only verified owner if necessary")
       ? ["owner=terminate-verified-only-if-needed"]
       : []),
+    ...(snapshot.status === "stale-dead"
+      ? ["recover=dead-nonreused-only", "reused=investigate"]
+      : []),
     ...(selectedSessionLabel ? ["selected=session.json"] : []),
     ...(badSelectorsField ? [badSelectorsField] : []),
   ];
@@ -541,6 +561,101 @@ export function checkStateRootSessionBinding(
   return { name: "State root/session binding", status, message };
 }
 
+function stateProjectionArchivePath(
+	baseStateDir: string,
+	sourcePath: string,
+	archiveRoot: string,
+): string {
+	const relativePath = relative(baseStateDir, sourcePath);
+	return join(archiveRoot, "state", relativePath);
+}
+
+async function collisionSafeArchivePath(path: string): Promise<string> {
+	if (!existsSync(path)) return path;
+	const suffix = path.endsWith(".json") ? ".json" : "";
+	const stem = suffix ? path.slice(0, -suffix.length) : path;
+	for (let index = 1; ; index += 1) {
+		const candidate = `${stem}.${index}${suffix}`;
+		if (!existsSync(candidate)) return candidate;
+	}
+}
+
+/**
+ * Archive non-authoritative mode-state projections without interpreting their
+ * workflow contents. The canonical session pointer selects the one current
+ * session scope; all other mode projection files are stale by ownership.
+ */
+export async function repairStateProjections(
+	cwd: string,
+	env: NodeJS.ProcessEnv = process.env,
+): Promise<StateProjectionRepairResult> {
+	const result: StateProjectionRepairResult = {
+		archived: [],
+		preserved: [],
+		skipped: [],
+	};
+	const snapshot = await readCanonicalSessionBindingSnapshot(cwd, env);
+	const baseStateDir = snapshot.baseStateDir;
+	if (!baseStateDir || ["resolution-error", "read-error", "malformed", "missing-recorded-cwd", "root-mismatch", "foreign-cwd"].includes(snapshot.status)) {
+		return result;
+	}
+
+	const currentSessionId = snapshot.state && ["usable", "identity-indeterminate"].includes(snapshot.status)
+		? normalizeSessionId(snapshot.state.session_id)
+		: undefined;
+	const stateDirs = [baseStateDir];
+	try {
+		const sessionsRoot = join(baseStateDir, "sessions");
+		const sessionEntries = await readdir(sessionsRoot, { withFileTypes: true });
+		for (const entry of sessionEntries) {
+			if (entry.isDirectory() && normalizeSessionId(entry.name) === entry.name) {
+				stateDirs.push(join(sessionsRoot, entry.name));
+			}
+		}
+	} catch {
+		// A missing sessions directory is normal; the canonical root is enough.
+	}
+	const archiveRoot = join(dirname(baseStateDir), "archive");
+	for (const stateDir of stateDirs) {
+		const isRoot = stateDir === baseStateDir;
+		const sessionId = isRoot ? undefined : basename(stateDir);
+		const preserveDir = isRoot
+			? currentSessionId === undefined
+			: sessionId === currentSessionId;
+		let entries: string[];
+		try {
+			entries = await readdir(stateDir);
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (!isModeStateFilename(entry)) continue;
+			const sourcePath = join(stateDir, entry);
+			if (preserveDir) {
+				result.preserved.push(sourcePath);
+				continue;
+			}
+			try {
+				const sourceStat = await lstat(sourcePath);
+				if (!sourceStat.isFile()) {
+					result.skipped.push(`${sourcePath}: not a regular projection file`);
+					continue;
+				}
+				const destination = await collisionSafeArchivePath(
+					stateProjectionArchivePath(baseStateDir, sourcePath, archiveRoot),
+				);
+				await mkdir(dirname(destination), { recursive: true });
+				await rename(sourcePath, destination);
+				result.archived.push(destination);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				result.skipped.push(`${sourcePath}: ${message}`);
+			}
+		}
+	}
+	return result;
+}
+
 export async function doctor(options: DoctorOptions = {}): Promise<void> {
 	if (options.team) {
 		await doctorTeam();
@@ -551,6 +666,14 @@ export async function doctor(options: DoctorOptions = {}): Promise<void> {
   const bindingSnapshot = await readCanonicalSessionBindingSnapshot(cwd, process.env);
 	const scopeResolution = await resolveDoctorScope(cwd);
 	const paths = resolveDoctorPaths(cwd, scopeResolution.scope);
+	if (options.repairState) {
+		const repair = await repairStateProjections(cwd);
+		console.log(
+			`State projection repair: archived ${repair.archived.length}, preserved ${repair.preserved.length}, skipped ${repair.skipped.length}`,
+		);
+		for (const skipped of repair.skipped) console.log(`  skipped: ${skipped}`);
+		console.log();
+	}
 	const recoveryTracker: RegularFileDurabilityTracker = { degraded: false };
 	const recovery = await recoverNativeHookClaimJournal(
 		paths.codexHomeDir,
@@ -775,7 +898,8 @@ interface TeamDoctorIssue {
 		| "orphan_tmux_session"
 		| "resume_blocker"
 		| "prompt_resume_unavailable"
-		| "stale_leader";
+		| "stale_leader"
+		| "worker_policy_root_unusable";
 	message: string;
 	severity: "warn" | "fail";
 }
@@ -980,6 +1104,54 @@ async function collectTeamDoctorIssues(
 					}
 				} catch {
 					// ignore malformed files
+				}
+			}
+
+			// #3536: run the same runtime preflight the native hook applies. A
+			// worker whose metadata cannot establish an authoritative context, or
+			// whose verified state root still yields an unusable Conductor policy
+			// root, would be denied at runtime while doctor reports all-pass.
+			const identityPath = join(workerDir, "identity.json");
+			if (existsSync(identityPath)) {
+				try {
+					const identity = JSON.parse(await readFile(identityPath, "utf-8")) as Record<string, unknown>;
+					const manifestForWorker = existsSync(manifestPath)
+						? JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>
+						: {};
+					const workerCwd = typeof identity.worktree_path === "string" && identity.worktree_path.trim() !== ""
+						? identity.worktree_path.trim()
+						: typeof identity.working_dir === "string" ? identity.working_dir.trim() : "";
+					const identityStateRoot = typeof identity.team_state_root === "string" && identity.team_state_root.trim() !== ""
+						? identity.team_state_root.trim()
+						: stateDir;
+					const leaderCwd = typeof manifestForWorker.leader_cwd === "string" ? manifestForWorker.leader_cwd.trim() : "";
+					if (workerCwd) {
+						const workerEnv = {
+							OMX_TEAM_INTERNAL_WORKER: `${teamName}/${worker.name}`,
+							OMX_TEAM_STATE_ROOT: identityStateRoot,
+							OMX_TEAM_LEADER_CWD: leaderCwd,
+						} as NodeJS.ProcessEnv;
+						const evidence = await resolveAuthoritativeTeamWorkerContext(workerCwd, { env: workerEnv });
+						if (!evidence) {
+							issues.push({
+								code: "worker_policy_root_unusable",
+								message: `${teamName}/${worker.name} identity/config/manifest metadata does not establish an authoritative worker context; runtime authorization would deny this worker`,
+								severity: "fail",
+							});
+						} else {
+							const selectedStateDir = resolveSessionPointerContext(workerCwd, workerEnv).baseStateDir;
+							const policyRoot = resolveConductorPolicyRoot(selectedStateDir, workerCwd, evidence);
+							if (!policyRoot.valid) {
+								issues.push({
+									code: "worker_policy_root_unusable",
+									message: `${teamName}/${worker.name} selected state root ${selectedStateDir} has no usable canonical session cwd and no verified Team-root binding; runtime authorization would deny this worker`,
+									severity: "fail",
+								});
+							}
+						}
+					}
+				} catch {
+					// ignore malformed worker metadata
 				}
 			}
 		}
@@ -3352,11 +3524,7 @@ async function checkPluginVersionDiagnostics(
 }
 
 const REQUIRED_NATIVE_REVIEWER_ROLES = ["architect", "critic"] as const;
-const ADVISORY_NATIVE_REVIEWER_ROLES = ["scholastic"] as const;
-
-type NativeReviewerRole =
-	| typeof REQUIRED_NATIVE_REVIEWER_ROLES[number]
-	| typeof ADVISORY_NATIVE_REVIEWER_ROLES[number];
+type NativeReviewerRole = typeof REQUIRED_NATIVE_REVIEWER_ROLES[number];
 
 function getParsedAgentTables(
 	configPath: string,
@@ -3422,31 +3590,14 @@ function checkNativeReviewerRoles(
 	const missingRequired = REQUIRED_NATIVE_REVIEWER_ROLES.filter(
 		(role) => !nativeReviewerRoleAvailable(paths, role),
 	);
-	const missingAdvisory = ADVISORY_NATIVE_REVIEWER_ROLES.filter(
-		(role) => !nativeReviewerRoleAvailable(paths, role),
-	);
-
 	if (missingRequired.length > 0) {
-		const advisorySuffix = missingAdvisory.length > 0
-			? `; advisory role missing: ${missingAdvisory.join(", ")}`
-			: "";
 		return {
 			name: "Native reviewer roles",
 			status: "fail",
 			message:
 				`plugin mode supplies skills/hooks, but required RALPLAN/Autopilot native reviewer role(s) are unavailable: ${missingRequired.join(", ")}. ` +
 				`Install ${formatNativeRoleFileList(missingRequired)} under ${paths.agentsDir} or define equivalent [agents.<role>] entries in ${paths.configPath}; ` +
-				`otherwise role-specific subagent calls may degrade to prompt-only/default subagents${advisorySuffix}`,
-		};
-	}
-
-	if (missingAdvisory.length > 0) {
-		return {
-			name: "Native reviewer roles",
-			status: "warn",
-			message:
-				`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); ` +
-				`advisory ontology reviewer role(s) missing: ${missingAdvisory.join(", ")} (optional unless explicitly used)`,
+				`otherwise role-specific subagent calls may degrade to prompt-only/default subagents`,
 		};
 	}
 
@@ -3454,7 +3605,7 @@ function checkNativeReviewerRoles(
 		name: "Native reviewer roles",
 		status: "pass",
 		message:
-			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")}); advisory ${ADVISORY_NATIVE_REVIEWER_ROLES.join(", ")} role is also available`,
+			`required RALPLAN/Autopilot native reviewer roles are available (${REQUIRED_NATIVE_REVIEWER_ROLES.join(", ")})`,
 	};
 }
 

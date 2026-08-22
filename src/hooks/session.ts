@@ -22,11 +22,11 @@ import {
   unlink as nodeUnlink,
   writeFile as nodeWriteFile,
 } from 'fs/promises';
-import { appendFileSync, closeSync, constants as fsConstants, fstatSync, openSync, readFileSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, fstatSync, openSync, readFileSync, realpathSync } from 'fs';
 import type { FileHandle } from 'fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'crypto';
-import { basename, dirname, isAbsolute, join } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { omxRoot, omxLogsDir, sameFilePath } from '../utils/paths.js';
 import { resolveRuntimeBinaryPath } from '../runtime/bridge.js';
 import {
@@ -454,6 +454,7 @@ export interface SessionPointerFsDependencies {
     isSymbolicLink(): boolean;
   }>;
   readFile(path: string, encoding: 'utf8'): Promise<string>;
+  readBytes(path: string): Promise<Buffer>;
   writeFile(path: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
   openAndSync(
     path: string,
@@ -481,6 +482,32 @@ export interface SessionPointerLockRecovery extends SessionPointerLockInspection
   quarantinePath?: string;
 }
 
+export type SessionPointerRecoveryStatus =
+  | 'absent'
+  | 'recovered'
+  | 'usable'
+  | 'reused'
+  | 'identity-indeterminate'
+  | 'malformed'
+  | 'foreign-cwd'
+  | 'foreign-root'
+  | 'lock-unavailable'
+  | 'race'
+  | 'collision'
+  | 'unsupported'
+  | 'recovery-required'
+  | 'io-error';
+
+export interface SessionPointerRecovery {
+  status: SessionPointerRecoveryStatus;
+  pointerPath: string;
+  action: 'none' | 'quarantined';
+  recovered: boolean;
+  reason: string;
+  sessionId?: string;
+  quarantinePath?: string;
+}
+
 /** @internal Test-only deterministic transaction seam; do not use outside session tests. */
 export interface SessionPointerTransactionDependencies {
   fs: SessionPointerFsDependencies;
@@ -502,6 +529,7 @@ const defaultFsDependencies: SessionPointerFsDependencies = {
   },
   readdir: async (path) => await nodeReaddir(path),
   readFile: async (path, encoding) => await nodeReadFile(path, encoding),
+  readBytes: async (path) => await nodeReadFile(path),
   lstat: async (path) => await nodeLstat(path),
   writeFile: async (path, data, options) => {
     await nodeWriteFile(path, data, options);
@@ -775,13 +803,23 @@ function parseProcessIdentityOutput(stdout: string): ProcessObservation {
 /**
  * Legacy boolean stale check retained for read compatibility. The pointer
  * classifier below keeps indeterminate liveness distinct from definitely dead.
+ *
+ * KNOWN GAP (darwin): `identity-indeterminate` is treated as stale here, which is fail-closed and
+ * correct on platforms that DO record process-birth evidence but cannot read it. On darwin no
+ * identity source exists at all, so a live session also classifies indeterminate and reads as
+ * stale. Two suite cases pin that gap (`treats symlinked cwd aliases as authoritative`,
+ * `writes session start/end lifecycle artifacts`), while `returns true on Linux when identity
+ * metadata is missing` / `... cannot be read` pin the fail-closed behavior, so the two cannot be
+ * reconciled by changing this mapping. Fixing it requires distinguishing "no identity source on
+ * this platform" from "identity expected but unavailable" in `classifySessionProcess` itself.
+ * Callers needing a safe live-session answer today use `classifySessionStateLiveness(...) !==
+ * 'stale-dead'` (see src/cli/setup.ts overwrite guard).
  */
-export function isSessionStale(
-  state: SessionState,
-  options: SessionStaleCheckOptions = {},
-): boolean {
-  if (!Number.isInteger(state.pid) || state.pid <= 0) return true;
-
+function sessionClassificationDependencies(options: SessionStaleCheckOptions): {
+  runtimePlatform: NodeJS.Platform;
+  probePid: (pid: number) => PidProbeResult;
+  observeProcess: (pid: number, platform: NodeJS.Platform) => ProcessObservation;
+} {
   const runtimePlatform = options.platform ?? transactionDependencies.runtimePlatform ?? process.platform;
   const probePid = options.probePid ?? (options.isPidAlive
     ? (pid: number): PidProbeResult => options.isPidAlive!(pid) ? 'alive' : 'dead'
@@ -802,13 +840,38 @@ export function isSessionStale(
       };
     }
     : transactionDependencies.observeProcess);
+  return { runtimePlatform, probePid, observeProcess };
+}
+
+export function isSessionStale(
+  state: SessionState,
+  options: SessionStaleCheckOptions = {},
+): boolean {
+  if (!Number.isInteger(state.pid) || state.pid <= 0) return true;
+
+  const { runtimePlatform, probePid, observeProcess } = sessionClassificationDependencies(options);
   const dependencies = {
     ...transactionDependencies,
     runtimePlatform,
     probePid,
     observeProcess,
   };
-  return classifySessionProcess(state, dependencies) !== 'usable';
+  const classification = classifySessionProcess(state, dependencies);
+  if (classification === 'usable') return false;
+  if (classification === 'stale-dead') return true;
+
+  // `identity-indeterminate` means two different things and only one of them is stale.
+  //
+  // Where the platform CAN record process-birth evidence (linux) but it is missing or unreadable,
+  // fail closed: that is the case `returns true on Linux when identity metadata is missing` and
+  // `... when live identity cannot be read` pin deliberately.
+  //
+  // Where no identity source exists at all, every live session classifies indeterminate, so failing
+  // closed reported a running session as dead. There a positively alive pid is the strongest
+  // evidence available, and this is a READ predicate, not an authority grant: the classifier still
+  // returns identity-indeterminate (pinned by `classifies identity-less live non-Linux pointers as
+  // identity-indeterminate`), and authority-granting paths keep requiring `usable`.
+  return !isUnobservableLivePointerState(state, runtimePlatform, probePid);
 }
 
 type ProcessClassificationStatus = 'usable' | 'stale-dead' | 'identity-indeterminate';
@@ -901,6 +964,16 @@ function recordedIdentityForState(
   return null;
 }
 
+/**
+ * A state with no recorded identity is indeterminate unless the pid is positively dead.
+ *
+ * Do NOT relax this to "alive + non-linux => usable": `classifies identity-less live non-Linux
+ * pointers as identity-indeterminate` pins it deliberately, because without birth evidence an
+ * alive pid cannot be distinguished from a REUSED pid, and granting `usable` there would let a
+ * foreign process inherit session authority. Read paths that only need "is anyone alive here"
+ * must ask `classifySessionStateLiveness(...) !== 'stale-dead'` instead (see the overwrite guard
+ * in src/cli/setup.ts); authority-granting paths keep requiring `usable`.
+ */
 function probeIdentitylessProcess(
   pid: number,
   dependencies: SessionPointerTransactionDependencies,
@@ -912,6 +985,66 @@ function probeIdentitylessProcess(
     return 'identity-indeterminate';
   }
   return probe === 'dead' ? 'stale-dead' : 'identity-indeterminate';
+}
+
+/**
+ * Is an `identity-indeterminate` pointer merely UNOBSERVABLE on this platform, rather than
+ * untrustworthy?
+ *
+ * Three distinct situations collapse into `identity-indeterminate`, and only the first one describes
+ * a pointer that may legitimately be live:
+ *  - the platform records no process-birth evidence at all (every live pointer lands here);
+ *  - linux, which does record it, is missing or cannot read it (fail closed: the metadata should
+ *    exist);
+ *  - the evidence claims a DIFFERENT platform, which is forged or foreign (fail closed).
+ *
+ * Read predicates and preservation/refusal decisions may treat the first case as occupied. Authority
+ * to own writes still requires `usable`, and the classifier itself is unchanged.
+ */
+function isUnobservableLivePointerState(
+  state: { pid?: unknown; platform?: unknown; process_identity?: { platform?: unknown } } | undefined,
+  // Explicit rather than read from transactionDependencies: isSessionStale accepts injected platform
+  // and probe overrides, and silently using the host values there evaluated the linux fail-closed
+  // cases against the wrong runtime.
+  runtimePlatform: NodeJS.Platform = transactionDependencies.runtimePlatform,
+  probe: (pid: number) => PidProbeResult = transactionDependencies.probePid,
+): boolean {
+  if (!state) return false;
+  const recordedPlatform = state.process_identity?.platform ?? state.platform ?? runtimePlatform;
+  if (recordedPlatform !== runtimePlatform) return false;
+  if (recordedPlatform === 'linux') return false;
+  if (typeof state.pid !== 'number' || !Number.isInteger(state.pid) || state.pid <= 0) return false;
+  // POSITIVE liveness is required, not merely a plausible shape. A pid that cannot be probed at all
+  // (for example an out-of-range one) is not evidence of a live session, and admitting it would let
+  // a stale pointer survive a relaunch instead of failing closed.
+  try {
+    return probe(state.pid) === 'alive';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * May an existing pointer whose liveness could NOT be proven be reconciled in place?
+ *
+ * `isUnobservableLivePointerState` answers "someone may be here", which is enough to REFUSE a foreign
+ * claim or to preserve lineage, but it is not proof of WHO is here, so reconciling it is an adoption
+ * and needs its own justification.
+ *
+ * Neither pid NOR platform equality can be required here, and both were measured rather than assumed:
+ * native SessionStart reconciliation exists so a native Codex process can adopt a pointer an OMX
+ * launch wrote, so the pid legitimately differs, and `preserves canonical session id while
+ * reconciling native SessionStart metadata` also reconciles with a different announced platform.
+ * Requiring either refused legitimate reconciliation (that test fails), which is the defect this
+ * change set fixes.
+ *
+ * What bounds the adoption is therefore: this cwd-authority check, asserted locally so the invariant
+ * is visible at the mutation site instead of only implied by the classifier's foreign-cwd rejection;
+ * plus native-id compatibility and owner-alias merge in the caller. A pointer for another working
+ * directory or another session can never be adopted.
+ */
+function mayAdoptUnprovenPointer(existing: SessionState, cwd: string): boolean {
+  return isSessionStateAuthoritativeForCwd(existing, cwd);
 }
 
 export function isSessionStateAuthoritativeForCwd(state: SessionState, cwd: string): boolean {
@@ -931,12 +1064,13 @@ export function isSessionStateUsable(
 ): boolean {
   if (!normalizeSessionId(state.session_id)) return false;
   if (typeof state.cwd === 'string' && state.cwd.trim() && !isSessionStateAuthoritativeForCwd(state, cwd)) return false;
-  const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
-  const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
-    || typeof state.pid_cmdline === 'string'
-    || state.identity_schema_version !== undefined
-    || state.process_identity !== undefined;
-  return !hasPidMetadata && !hasIdentityMetadata || !isSessionStale(state, options);
+  const { runtimePlatform, probePid, observeProcess } = sessionClassificationDependencies(options);
+  return classifySessionProcess(state, {
+    ...transactionDependencies,
+    runtimePlatform,
+    probePid,
+    observeProcess,
+  }) === 'usable';
 }
 
 function isValidStartTicks(value: unknown): value is number {
@@ -1284,9 +1418,13 @@ async function inspectLockOwnerFile(ownerPath: string, missingStatus: LockOwnerS
     } catch {
       return { status: 'identity-indeterminate', owner };
     }
-    return probe === 'dead'
-      ? { status: 'dead', owner }
-      : { status: 'identity-indeterminate', owner };
+    if (probe === 'dead') return { status: 'dead', owner };
+    // Same read-vs-authority split as the pointer path: where the platform records no process-birth
+    // evidence, an alive pid is the strongest signal available and the lock is occupied. Reaping
+    // still requires a positively 'dead' owner (safeToRecover === 'dead'), so nothing becomes
+    // reclaimable here; only "is this lock held" answers correctly.
+    if (probe === 'alive' && isUnobservableLivePointerState(owner)) return { status: 'live', owner };
+    return { status: 'identity-indeterminate', owner };
   }
 
   const classification = classifyRecordedIdentity(
@@ -1414,11 +1552,13 @@ async function moveRecoveryPathNoReplace(
   to: string,
   identity: RecoveryIdentity,
   kind: 'file' | 'directory',
+  onAtomicMove?: () => void,
 ): Promise<{ moved: boolean; unsupported?: boolean; reason?: string }> {
   try {
     const outcome = await transactionDependencies.atomicRenameNoReplace(from, to);
     if (outcome === 'unsupported') return { moved: false, unsupported: true, reason: 'Atomic no-replace recovery rename is unsupported on this platform.' };
     if (outcome === 'not-moved') return { moved: false, reason: 'Atomic recovery move left its source pathname in place.' };
+    onAtomicMove?.();
   } catch (error) {
     return { moved: false, reason: `Atomic no-replace recovery rename failed (${errorCode(error) ?? 'unknown'}).` };
   }
@@ -1599,6 +1739,387 @@ export async function recoverSessionPointerLock(cwd: string): Promise<SessionPoi
       recovered: false,
       reason: `Unable to inspect session pointer lock recovery state (${errorCode(error) ?? errorMessage(error)}).`,
     };
+  }
+}
+
+function selectedRootAuthorityFailure(
+  context: SessionPointerContext,
+  state: SessionState,
+): 'foreign-cwd' | 'foreign-root' | undefined {
+  let recordedCwd: string;
+  let observedCwd: string;
+  try {
+    if (typeof state.cwd !== 'string' || !state.cwd.trim()) return 'foreign-cwd';
+    recordedCwd = realpathSync(resolve(state.cwd));
+    observedCwd = realpathSync(resolve(context.cwd));
+    const cwdRelative = relative(recordedCwd, observedCwd);
+    if (cwdRelative === '..' || cwdRelative.startsWith(`..${sep}`) || isAbsolute(cwdRelative)) return 'foreign-cwd';
+  } catch {
+    return 'foreign-cwd';
+  }
+  try {
+    const recordedRoot = typeof state.state_root === 'string' && state.state_root.trim()
+      ? state.state_root
+      : join(recordedCwd, '.omx', 'state');
+    return sameFilePath(recordedRoot, context.baseStateDir) ? undefined : 'foreign-root';
+  } catch {
+    return 'foreign-root';
+  }
+}
+
+function classifyParsedSessionPointerForRecovery(value: unknown, raw: string): SessionPointerReadResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { status: 'malformed', raw };
+  const state = value as SessionState;
+  if (!normalizeSessionId(state.session_id)) return { status: 'malformed', raw };
+  if (state.identity_schema_version !== undefined && state.identity_schema_version !== 2) {
+    return { status: 'identity-indeterminate', raw, state };
+  }
+  if (state.process_identity !== undefined
+    && (state.identity_schema_version !== 2
+      || !isValidProcessIdentity(state.process_identity)
+      || state.platform !== undefined && state.platform !== state.process_identity.platform)) {
+    return { status: 'malformed', raw, state };
+  }
+  if (state.identity_schema_version === 2 && state.process_identity === undefined) return { status: 'malformed', raw, state };
+  return { status: classifySessionProcess(state, transactionDependencies), raw, state };
+}
+
+type SessionPointerRecoveryReadResult = SessionPointerReadResult & { bytes?: Buffer };
+
+async function readSessionPointerForRecovery(context: SessionPointerContext): Promise<SessionPointerRecoveryReadResult> {
+  let sourceStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+  try {
+    sourceStat = await transactionDependencies.fs.lstat(context.sessionPath);
+  } catch (error) {
+    if (isNotFound(error)) return { status: 'absent' };
+    throw error;
+  }
+  if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) return { status: 'malformed' };
+  const bytes = await transactionDependencies.fs.readBytes(context.sessionPath);
+  const sourceAfterRead = await transactionDependencies.fs.lstat(context.sessionPath);
+  if (!sameRecoveryIdentity(sourceAfterRead, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')) {
+    throw new Error('Selected session pointer changed while its recovery snapshot was read.');
+  }
+  const raw = bytes.toString('utf8');
+  try {
+    return { ...classifyParsedSessionPointerForRecovery(JSON.parse(raw), raw), bytes };
+  } catch (error) {
+    if (error instanceof SyntaxError) return { status: 'malformed', raw, bytes };
+    throw error;
+  }
+}
+
+function malformedRecoveryPointerReason(state: SessionState): string | undefined {
+  if (!normalizeSessionId(state.session_id)) return 'session_id is missing or invalid';
+  if (typeof state.started_at !== 'string' || !state.started_at.trim() || !Number.isFinite(Date.parse(state.started_at))) {
+    return 'started_at is missing or invalid';
+  }
+  if (typeof state.cwd !== 'string' || !state.cwd.trim()) return 'cwd is missing or invalid';
+  if (!Number.isInteger(state.pid) || state.pid <= 0) return 'pid is missing or invalid';
+  if (Object.prototype.hasOwnProperty.call(state, 'state_root')
+    && (typeof state.state_root !== 'string' || !state.state_root.trim())) return 'state_root is invalid';
+  if (state.platform !== undefined && !['linux', 'darwin', 'win32'].includes(state.platform)) return 'platform is invalid';
+  if (state.pid_start_ticks !== undefined && !isValidStartTicks(state.pid_start_ticks)) return 'pid_start_ticks is invalid';
+  if (state.pid_cmdline !== undefined && typeof state.pid_cmdline !== 'string') return 'pid_cmdline is invalid';
+  const optionalStrings: Array<keyof SessionState> = [
+    'native_session_id',
+    'previous_native_session_id',
+    'native_session_switched_at',
+    'owner_omx_session_id',
+    'owner_codex_session_id',
+    'codex_session_id',
+    'tmux_session_name',
+    'tmux_pane_id',
+  ];
+  for (const field of optionalStrings) {
+    const value = state[field];
+    if (value !== undefined && (typeof value !== 'string' || !value.trim())) return `${field} is invalid`;
+  }
+  if (state.launch_lineage_token !== undefined && !isValidToken(state.launch_lineage_token)) {
+    return 'launch_lineage_token is invalid';
+  }
+  if (recordedIdentityForState(state, transactionDependencies.runtimePlatform) === 'invalid') return 'process identity metadata is invalid';
+  return undefined;
+}
+
+function classifySessionProcessForRecovery(state: SessionState): 'usable' | 'dead' | 'reused' | 'identity-indeterminate' {
+  const hasPidMetadata = Number.isInteger(state.pid) && state.pid > 0;
+  const hasIdentityMetadata = typeof state.pid_start_ticks === 'number'
+    || typeof state.pid_cmdline === 'string'
+    || state.identity_schema_version !== undefined
+    || state.process_identity !== undefined;
+  if (!hasPidMetadata && !hasIdentityMetadata) return 'usable';
+  if (!hasPidMetadata) return 'identity-indeterminate';
+  const recordedPlatform = state.process_identity?.platform ?? state.platform;
+  if (recordedPlatform !== undefined && recordedPlatform !== transactionDependencies.runtimePlatform) {
+    return 'identity-indeterminate';
+  }
+  const recorded = recordedIdentityForState(state, transactionDependencies.runtimePlatform);
+  if (recorded === 'invalid') return 'identity-indeterminate';
+  if (!recorded) {
+    let probe: PidProbeResult;
+    try { probe = transactionDependencies.probePid(state.pid); } catch { return 'identity-indeterminate'; }
+    return probe === 'dead' ? 'dead' : 'identity-indeterminate';
+  }
+  const classification = classifyRecordedIdentity(recorded, transactionDependencies.runtimePlatform, transactionDependencies, state.pid);
+  if (classification.status === 'gone') return 'dead';
+  if (classification.status === 'birth-mismatch') return 'reused';
+  if (classification.status === 'match') return 'usable';
+  return 'identity-indeterminate';
+}
+
+function pointerRecoveryRefusal(
+  context: SessionPointerContext,
+  status: SessionPointerRecoveryStatus,
+  reason: string,
+  sessionId?: string,
+): SessionPointerRecovery {
+  return {
+    status,
+    pointerPath: context.sessionPath,
+    action: 'none',
+    recovered: false,
+    reason,
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
+/**
+ * Explicitly quarantine one authoritative, positively dead selected pointer.
+ * The canonical pointer lock serializes the final classification and move with
+ * SessionStart/SessionEnd, while the no-replace archive preserves exact bytes.
+ */
+export async function recoverDeadSessionPointer(cwd: string): Promise<SessionPointerRecovery> {
+  const context = resolveSessionPointerContext(cwd);
+  try {
+    if ((await readSessionPointerForRecovery(context)).status === 'absent') {
+      return pointerRecoveryRefusal(context, 'absent', 'No selected session pointer exists.');
+    }
+  } catch (error) {
+    return pointerRecoveryRefusal(context, 'io-error', `Unable to read the selected session pointer (${errorCode(error) ?? errorMessage(error)}).`);
+  }
+  const tracker: RegularFileDurabilityTracker = { degraded: false };
+  let lock: HeldPointerLock;
+  try {
+    lock = await acquirePointerLock(context, undefined, DEFAULT_POINTER_TIMEOUT_MS, process.platform, tracker);
+  } catch (error) {
+    const reason = isSessionPointerLaunchAbort(error) ? error.reason : errorMessage(error);
+    return pointerRecoveryRefusal(context, 'lock-unavailable', `Unable to acquire the selected pointer transaction lock (${reason}).`);
+  }
+
+  let result: SessionPointerRecovery | undefined;
+  try {
+    let pointer: SessionPointerRecoveryReadResult;
+    try {
+      pointer = await readSessionPointerForRecovery(context);
+    } catch (error) {
+      result = pointerRecoveryRefusal(context, 'io-error', `Unable to read the selected session pointer (${errorCode(error) ?? errorMessage(error)}).`);
+      return result;
+    }
+
+    if (pointer.status === 'absent') {
+      result = pointerRecoveryRefusal(context, 'absent', 'No selected session pointer exists.');
+      return result;
+    }
+    const sessionId = normalizeSessionId(pointer.state?.session_id);
+    if (pointer.status !== 'stale-dead' || !pointer.state || !pointer.raw || !pointer.bytes || !sessionId) {
+      const reason = pointer.status === 'usable'
+        ? 'The selected session pointer owner is usable or live.'
+        : pointer.status === 'identity-indeterminate'
+          ? 'The selected session pointer owner identity is indeterminate.'
+          : pointer.status === 'foreign-cwd'
+            ? 'The selected session pointer belongs to a different working directory.'
+            : 'The selected session pointer is malformed.';
+      const status: SessionPointerRecoveryStatus = pointer.status === 'stale-dead' ? 'malformed' : pointer.status;
+      result = pointerRecoveryRefusal(context, status, reason, sessionId);
+      return result;
+    }
+    const malformedReason = malformedRecoveryPointerReason(pointer.state);
+    if (malformedReason) {
+      result = pointerRecoveryRefusal(context, 'malformed', `The selected session pointer is malformed (${malformedReason}).`, sessionId);
+      return result;
+    }
+    const authorityFailure = selectedRootAuthorityFailure(context, pointer.state);
+    if (authorityFailure) {
+      const reason = authorityFailure === 'foreign-cwd'
+        ? 'The selected session pointer belongs to a different working-directory lineage.'
+        : 'The selected session pointer does not have exact state_root authority for the selected root.';
+      result = pointerRecoveryRefusal(context, authorityFailure, reason, sessionId);
+      return result;
+    }
+    const recoveryLiveness = classifySessionProcessForRecovery(pointer.state);
+    if (recoveryLiveness !== 'dead') {
+      const status: SessionPointerRecoveryStatus = recoveryLiveness === 'reused' ? 'reused' : recoveryLiveness;
+      const reason = recoveryLiveness === 'reused'
+        ? 'The selected session pointer PID was reused or its recorded birth identity mismatched.'
+        : recoveryLiveness === 'usable'
+          ? 'The selected session pointer owner is usable or live.'
+          : 'The selected session pointer owner identity is indeterminate.';
+      result = pointerRecoveryRefusal(context, status, reason, sessionId);
+      return result;
+    }
+
+    let sourceStat: Awaited<ReturnType<SessionPointerFsDependencies['lstat']>>;
+    try {
+      sourceStat = await transactionDependencies.fs.lstat(context.sessionPath);
+    } catch (error) {
+      result = pointerRecoveryRefusal(context, 'io-error', `Unable to inspect the selected session pointer (${errorCode(error) ?? errorMessage(error)}).`, sessionId);
+      return result;
+    }
+    if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+      result = pointerRecoveryRefusal(context, 'malformed', 'The selected session pointer is not a regular file.', sessionId);
+      return result;
+    }
+
+    const recoveryToken = transactionDependencies.token();
+    if (!isValidToken(recoveryToken)) {
+      result = pointerRecoveryRefusal(context, 'io-error', 'Unable to create a valid selected pointer quarantine token.', sessionId);
+      return result;
+    }
+    const quarantinePath = `${context.sessionPath}.quarantine.${sessionId}.${recoveryToken}`;
+    let quarantineMoveCommitted = false;
+    try {
+      const collision = await lstatRecoveryPath(quarantinePath);
+      if (collision) {
+        result = pointerRecoveryRefusal(context, 'collision', 'The selected pointer quarantine destination already exists.', sessionId);
+        return result;
+      }
+      const currentStat = await transactionDependencies.fs.lstat(context.sessionPath);
+      const currentBytes = await transactionDependencies.fs.readBytes(context.sessionPath);
+      const currentAfterRead = await transactionDependencies.fs.lstat(context.sessionPath);
+      const currentRaw = currentBytes.toString('utf8');
+      let current: SessionPointerReadResult;
+      try {
+        current = classifyParsedSessionPointerForRecovery(JSON.parse(currentRaw), currentRaw);
+      } catch {
+        result = pointerRecoveryRefusal(context, 'race', 'The selected session pointer changed before quarantine.', sessionId);
+        return result;
+      }
+      if (!sameRecoveryIdentity(currentStat, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')
+        || !sameRecoveryIdentity(currentAfterRead, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')
+        || !currentBytes.equals(pointer.bytes)
+        || current.status !== 'stale-dead'
+        || !current.state
+        || selectedRootAuthorityFailure(context, current.state) !== undefined
+        || classifySessionProcessForRecovery(current.state) !== 'dead') {
+        result = pointerRecoveryRefusal(context, 'race', 'The selected session pointer changed before quarantine.', sessionId);
+        return result;
+      }
+      const moved = await moveRecoveryPathNoReplace(
+        context.sessionPath,
+        quarantinePath,
+        { dev: sourceStat.dev, ino: sourceStat.ino },
+        'file',
+        () => { quarantineMoveCommitted = true; },
+      );
+      if (!moved.moved) {
+        const destinationExists = await lstatRecoveryPath(quarantinePath);
+        const sourceExists = await lstatRecoveryPath(context.sessionPath);
+        const capturedDestination = destinationExists
+          && sameRecoveryIdentity(destinationExists, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file');
+        if (capturedDestination) {
+          result = {
+            status: 'recovery-required',
+            pointerPath: context.sessionPath,
+            action: 'quarantined',
+            recovered: false,
+            reason: sourceExists
+              ? 'The atomic move outcome was ambiguous; the captured selected pointer is present at quarantine and a successor occupies the canonical path, so both were preserved for explicit recovery.'
+              : 'The atomic move outcome was ambiguous, but the captured selected pointer is present at quarantine; forensic residue was preserved for explicit recovery.',
+            sessionId,
+            quarantinePath,
+          };
+          return result;
+        }
+        const foreignDestination = destinationExists
+          && !capturedDestination;
+        result = pointerRecoveryRefusal(
+          context,
+          moved.unsupported ? 'unsupported' : foreignDestination && !sourceExists ? 'race' : destinationExists ? 'collision' : 'race',
+          moved.reason ?? 'The selected session pointer could not be quarantined atomically.',
+          sessionId,
+        );
+        return result;
+      }
+      const archivedStat = await lstatRecoveryPath(quarantinePath);
+      const sourceAfterMove = await lstatRecoveryPath(context.sessionPath);
+      const archivedBytes = archivedStat && sameRecoveryIdentity(archivedStat, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')
+        ? await transactionDependencies.fs.readBytes(quarantinePath)
+        : undefined;
+      const archivedRaw = archivedBytes?.toString('utf8');
+      let archivedPointer: SessionPointerReadResult | undefined;
+      if (archivedRaw !== undefined) {
+        try { archivedPointer = classifyParsedSessionPointerForRecovery(JSON.parse(archivedRaw), archivedRaw); } catch { /* handled below */ }
+      }
+      if (sourceAfterMove
+        || !archivedBytes?.equals(pointer.bytes)
+        || archivedPointer?.status !== 'stale-dead'
+        || !archivedPointer.state
+        || selectedRootAuthorityFailure(context, archivedPointer.state) !== undefined
+        || classifySessionProcessForRecovery(archivedPointer.state) !== 'dead') {
+        if (!sourceAfterMove && archivedBytes?.equals(pointer.bytes) && archivedStat
+          && sameRecoveryIdentity(archivedStat, { dev: sourceStat.dev, ino: sourceStat.ino }, 'file')) {
+          const rollback = await moveRecoveryPathNoReplace(
+            quarantinePath,
+            context.sessionPath,
+            { dev: sourceStat.dev, ino: sourceStat.ino },
+            'file',
+          );
+          if (rollback.moved) {
+            quarantineMoveCommitted = false;
+            result = pointerRecoveryRefusal(
+              context,
+              'race',
+              'The selected pointer became uncertain after quarantine and was restored without losing forensic bytes.',
+              sessionId,
+            );
+            return result;
+          }
+        }
+        result = {
+          status: 'recovery-required',
+          pointerPath: context.sessionPath,
+          action: 'quarantined',
+          recovered: false,
+          reason: 'The selected pointer changed or became uncertain after quarantine; forensic residue was preserved for explicit recovery.',
+          sessionId,
+          quarantinePath,
+        };
+        return result;
+      }
+      result = {
+        status: 'recovered',
+        pointerPath: context.sessionPath,
+        action: 'quarantined',
+        recovered: true,
+        reason: 'Verified-dead selected session pointer quarantined with exact forensic bytes preserved.',
+        sessionId,
+        quarantinePath,
+      };
+      return result;
+    } catch (error) {
+      if (quarantineMoveCommitted) {
+        result = {
+          status: 'recovery-required',
+          pointerPath: context.sessionPath,
+          action: 'quarantined',
+          recovered: false,
+          reason: `The selected pointer was quarantined, but post-move verification failed (${errorCode(error) ?? errorMessage(error)}); forensic residue was preserved for explicit recovery.`,
+          sessionId,
+          quarantinePath,
+        };
+        return result;
+      }
+      result = pointerRecoveryRefusal(context, 'io-error', `Unable to quarantine the selected session pointer (${errorCode(error) ?? errorMessage(error)}).`, sessionId);
+      return result;
+    }
+  } finally {
+    const failures = await releasePointerLock(lock);
+    if (failures.length > 0 && result) {
+      result.status = 'recovery-required';
+      result.recovered = false;
+      result.reason = `${result.reason} Pointer lock release requires explicit lock recovery.`;
+    }
   }
 }
 
@@ -2181,16 +2702,34 @@ function startPointerTransition(
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
     if (requireAbsent && pointer.status !== 'absent') {
-      if (pointer.status === 'usable' && pointer.state) {
+      // Same read-vs-authority split: an occupied pointer is an owner conflict even when its
+      // liveness is indeterminate, which is the only classification a live pointer can get on a
+      // platform without process-birth evidence.
+      if (pointer.state && (pointer.status === 'usable' || isUnobservableLivePointerState(pointer.state))) {
         throw ownerConflictAbort(context, requestedSessionId, pointer.state);
       }
       throw unusablePointerAbort(context, requestedSessionId, pointer);
     }
-    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+    // Read semantics, not authority: `identity-indeterminate` means "someone may still be here",
+    // and on platforms that record no process-birth evidence EVERY live pointer classifies that way
+    // (see probeIdentitylessProcess). Rejecting it outright refused legitimate sessions with a
+    // generic unusable-pointer abort and skipped lineage/metadata preservation. It is admitted as
+    // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
+    // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
+    // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    if (
+      pointer.status !== 'absent'
+      && pointer.status !== 'stale-dead'
+      && pointer.status !== 'usable'
+      && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    ) {
       throw unusablePointerAbort(context, requestedSessionId, pointer);
     }
 
-    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    const existing = pointer.status === 'usable'
+      || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+      ? pointer.state
+      : undefined;
     if (existing && !isStartCompatible(existing, requestedSessionId)) {
       throw ownerConflictAbort(context, requestedSessionId, existing);
     }
@@ -2496,7 +3035,14 @@ export async function updateDetachedSessionMetadata(
         lockPath: binding.context.lockPath, reason: `Unable to read selected session pointer: ${errorMessage(error)}`, cause: error,
       });
     }
-    if (pointerBeforeTransaction.status !== 'usable'
+    // Read against an ALREADY-authorized binding: isAuthorizedBoundPointer verifies the pointer
+    // belongs to this binding (canonical session id + launch lineage token), which is a stricter
+    // check than liveness. Admitting an unobservable-live pointer here only stops a running session
+    // on a platform without process-birth evidence from reading as absent; it grants no new
+    // authority, because the binding authorization still has to match.
+    if ((pointerBeforeTransaction.status !== 'usable'
+      && !(pointerBeforeTransaction.status === 'identity-indeterminate'
+        && isUnobservableLivePointerState(pointerBeforeTransaction.state)))
       || !isAuthorizedBoundPointer(binding, binding.context, binding.canonicalSessionId, pointerBeforeTransaction.state)) {
       throw unusablePointerAbort(binding.context, binding.canonicalSessionId, pointerBeforeTransaction);
     }
@@ -2513,7 +3059,10 @@ export async function updateDetachedSessionMetadata(
       { context: binding.context },
       DEFAULT_POINTER_TIMEOUT_MS,
       async (pointer, context) => {
-        const state = pointer.status === 'usable' ? pointer.state : undefined;
+        const state = pointer.status === 'usable'
+          || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+          ? pointer.state
+          : undefined;
         if (!state || !isAuthorizedBoundPointer(binding, context, binding.canonicalSessionId, state)) {
           throw unusablePointerAbort(context, binding.canonicalSessionId, pointer);
         }
@@ -2781,13 +3330,28 @@ function nativeSessionOwnerTransition(
   options: SessionStartOptions,
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
-    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+    // Read semantics, not authority: `identity-indeterminate` means "someone may still be here",
+    // and on platforms that record no process-birth evidence EVERY live pointer classifies that way
+    // (see probeIdentitylessProcess). Rejecting it outright refused legitimate sessions with a
+    // generic unusable-pointer abort and skipped lineage/metadata preservation. It is admitted as
+    // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
+    // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
+    // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    if (
+      pointer.status !== 'absent'
+      && pointer.status !== 'stale-dead'
+      && pointer.status !== 'usable'
+      && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    ) {
       throw unusablePointerAbort(context, nativeSessionId, pointer);
     }
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
     const linuxIdentity = sessionIdentityFor(pid, platform);
-    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    const existing = pointer.status === 'usable'
+      || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+      ? pointer.state
+      : undefined;
     if (existing && (
       normalizeSessionId(existing.session_id) !== nativeSessionId
       || normalizeSessionId(existing.native_session_id) !== nativeSessionId
@@ -2911,14 +3475,34 @@ function reconcileNativeTransition(
   options: SessionStartOptions,
 ): (pointer: SessionPointerReadResult, context: SessionPointerContext) => SessionState {
   return (pointer, context) => {
-    if (pointer.status !== 'absent' && pointer.status !== 'stale-dead' && pointer.status !== 'usable') {
+    // Read semantics, not authority: `identity-indeterminate` means "someone may still be here",
+    // and on platforms that record no process-birth evidence EVERY live pointer classifies that way
+    // (see probeIdentitylessProcess). Rejecting it outright refused legitimate sessions with a
+    // generic unusable-pointer abort and skipped lineage/metadata preservation. It is admitted as
+    // existing evidence; the ownership/compatibility checks below still refuse any pointer that does
+    // not match, so a foreign claim gets the exact owner-conflict abort. Genuinely unusable evidence
+    // (malformed, foreign-cwd) is still refused, and authority to own writes still requires 'usable'.
+    if (
+      pointer.status !== 'absent'
+      && pointer.status !== 'stale-dead'
+      && pointer.status !== 'usable'
+      && !(pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+    ) {
       throw unusablePointerAbort(context, nativeSessionId, pointer);
     }
 
     const pid = resolvePid(options);
     const platform = options.platform ?? process.platform;
     const linuxIdentity = sessionIdentityFor(pid, platform);
-    const existing = pointer.status === 'usable' ? pointer.state : undefined;
+    const livenessProven = pointer.status === 'usable';
+    const existing = livenessProven
+      || (pointer.status === 'identity-indeterminate' && isUnobservableLivePointerState(pointer.state))
+      ? pointer.state
+      : undefined;
+
+    if (existing && !livenessProven && !mayAdoptUnprovenPointer(existing, context.cwd)) {
+      throw ownerConflictAbort(context, nativeSessionId, existing);
+    }
 
     if (!existing) {
       const ownerCandidate = verifiedOwnerCandidate(context, options);

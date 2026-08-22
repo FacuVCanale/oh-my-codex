@@ -423,6 +423,12 @@ jobs:
           env -u CODEX_THREAD_ID -u OMX_SESSION_ID -u GJC_SESSION_ID -u TMUX -u TMUX_PANE \
             node --test --test-name-pattern='returns the attached client to the shell' \
             dist/cli/__tests__/launch-fallback.test.js
+      - name: Verify macOS-sensitive setup and update suites
+        run: |
+          node --test --test-force-exit dist/cli/__tests__/setup-install-mode.test.js
+          node --test --test-force-exit dist/cli/__tests__/setup-agents-overwrite.test.js
+          node --test --test-force-exit dist/cli/__tests__/update.test.js
+          node --test --test-force-exit dist/cli/__tests__/setup-skills-overwrite.test.js
 
   test:
     name: Test (Node ${{ matrix.node-version }} / ${{ matrix.lane }})
@@ -458,6 +464,7 @@ jobs:
           - node-version: 20
             lane: cli-core-rest
             test-roots: >-
+              dist/autopilot/__tests__
               dist/cli/__tests__
               dist/agents/__tests__
               dist/autoresearch/__tests__
@@ -465,7 +472,6 @@ jobs:
               dist/compat/__tests__
               dist/config/__tests__
               dist/modes/__tests__
-              dist/pipeline/__tests__
               dist/planning/__tests__
               dist/scripts/__tests__
               dist/session-history/__tests__

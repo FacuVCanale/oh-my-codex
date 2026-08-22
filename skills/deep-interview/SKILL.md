@@ -82,7 +82,7 @@ If no flag is provided, use **Standard**.
 - Do not hand off to execution while ambiguity remains above threshold unless user explicitly opts to proceed with warning
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
 - Treat early exit as a safety valve, not the default success path
-- Persist mode state for resume safety with CLI-first state commands (`omx state write/read --input '<json>' --json`); use `state_write` / `state_read` only when explicit MCP compatibility is enabled
+- Persist mode state for resume safety only through the CLI/programmatic single-writer authority (`omx state write/read --input '<json>' --json`, backed by `src/state/operations.ts`). The MCP state server is a read-only projection and must never become a second writer.
 </Execution_Policy>
 
 <Steps>
@@ -314,7 +314,7 @@ Readiness gate:
 Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Boundaries`), and the next focus dimension.
 
 ### 2e) Persist state
-Append round result and updated scores via `omx state write --input '<json>' --json`; use `state_write` only when explicit MCP compatibility is enabled.
+Append round result and updated scores via `omx state write --input '<json>' --json`. Do not write `{mode}-state.json` directly and do not use the read-only MCP state projection as a writer.
 
 ### 2f) Round controls
 - Do not offer early exit before the first explicit assumption probe and one persistent follow-up have happened
@@ -339,7 +339,7 @@ Track used modes in state to prevent repetition.
 When threshold is met (or user exits with warning / hard cap):
 
 1. Write interview transcript summary to:
-   - `.omx/interviews/{slug}-{timestamp}.md`  
+   - `.omx/interviews/{slug}-{timestamp}.md`
      (kept for ralph PRD compatibility)
 2. Write execution-ready spec to:
    - `.omx/specs/deep-interview-{slug}.md`
@@ -448,7 +448,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 
 ### 2. **`$ralplan` (Recommended when architecture/test-shape review is still needed)**
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
-- **Invocation:** `$plan --consensus --direct <spec-path>`
+- **Invocation:** `$ralplan <spec-path>`
 - **Consumer Behavior:** Treat the deep-interview spec as the requirements source of truth. Do not repeat the interview by default; refine architecture/feasibility around the clarified intent and boundaries instead.
 - **Skipped / Already-Satisfied Stages:** Requirements discovery, ambiguity clarification, and early intent-boundary elicitation
 - **Expected Output:** Canonical planning artifacts under `.omx/plans/`, especially `prd-*.md` and `test-spec-*.md`
@@ -503,7 +503,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - From attached-tmux Bash/tool paths, call it as `OMX_QUESTION_RETURN_PANE=$TMUX_PANE omx question ...` unless an explicit `%pane` return target is already known
 - If the current runtime is outside tmux and cannot render `omx question`, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer
 - After `omx question` returns JSON, prefer `answers[0].answer` / `answers[]`; use legacy `answer` only as a fallback for older records
-- Use `omx state write/read --input '<json>' --json` for resumable mode state; `state_write` / `state_read` are explicit MCP compatibility fallbacks only
+- Use `omx state write/read --input '<json>' --json` for resumable mode state through the sole-writer state operations path; the MCP state server is read-only and is not a fallback writer
 - If the interview cannot ask a required `omx question` round, persist the blocker as terminal state with `active: false` and `current_phase: "blocked"`; do not write a terminal blocked phase with `active: true`
 - Read/write context snapshots under `.omx/context/`
 - Read applicable repo docs/rules/context during preflight; write durable docs, glossary, ADR, or memory updates only when the user explicitly opts in and the content is public-safe
@@ -567,13 +567,14 @@ enableChallengeModes = true
 
 If interrupted, rerun `$deep-interview`. Resume from persisted mode state via `omx state read --input '{"mode":"deep-interview"}' --json`.
 
-## Recommended 3-Stage Pipeline
+## Canonical Autopilot Entry Pipeline
 
 ```
-deep-interview -> ralplan -> autopilot
+autopilot -> deep-interview -> ralplan -> ultragoal
 ```
 
-- Stage 1 (deep-interview): clarity gate
-- Stage 2 (ralplan): feasibility + architecture gate
-- Stage 3 (autopilot): execution + QA + validation gate
+- Autopilot begins with this independent deep-interview clarity gate; it must not substitute `$plan --interview`.
+- Stage 1 (deep-interview): ambiguity clearance and execution-ready requirements artifact
+- Stage 2 (ralplan): feasibility, architecture, and consensus gate
+- Stage 3 (ultragoal): durable execution, verification, and completion receipts
 </Advanced>

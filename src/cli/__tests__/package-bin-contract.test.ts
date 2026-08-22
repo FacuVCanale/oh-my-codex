@@ -55,7 +55,10 @@ describe('package bin contract', () => {
     assert.equal(pkg.scripts?.['test:explore'], 'cargo test -p omx-explore-harness && node --test dist/cli/__tests__/explore.test.js dist/hooks/__tests__/explore-routing.test.js dist/hooks/__tests__/explore-sparkshell-guidance-contract.test.js');
     assert.equal(pkg.scripts?.['test:team:cross-rebase-smoke:compiled'], 'node dist/scripts/run-test-files.js dist/team/__tests__/cross-rebase-smoke.test.js');
     assert.equal(pkg.scripts?.['test:node'], 'node dist/scripts/run-test-files.js dist');
-    assert.equal(pkg.scripts?.test, 'npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run test:node && node dist/scripts/generate-catalog-docs.js --check');
+    assert.equal(pkg.scripts?.test, 'npm run build && npm run verify:native-agents && npm run verify:plugin-bundle && npm run verify:capabilities-lock && npm run verify:prompt-guidance && npm run test:node && node dist/scripts/generate-catalog-docs.js --check && node dist/scripts/prompt-inventory.js --check');
+    assert.equal(pkg.scripts?.['verify:capabilities-lock'], 'node dist/scripts/verify-capabilities-lock.js');
+    assert.equal(pkg.scripts?.['verify:prompt-guidance'], 'node dist/scripts/sync-prompt-guidance-fragments.js --check');
+    assert.equal(pkg.scripts?.['verify:generated'], 'npm run verify:plugin-bundle && npm run verify:capabilities-lock && npm run verify:prompt-guidance && node dist/scripts/generate-catalog-docs.js --check');
     assert.equal(pkg.scripts?.['test:ci:compiled'], 'node dist/scripts/run-compiled-ci.js');
     assert.equal(
       pkg.scripts?.['coverage:team-critical'],
@@ -214,15 +217,6 @@ describe('package bin contract', () => {
     const traceServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/trace-server.js');
     const wikiServerEntry = results[0]?.files?.find((file) => file.path === 'dist/mcp/wiki-server.js');
     const rootRalphSkillEntry = results[0]?.files?.find((file) => file.path === 'skills/ralph/SKILL.md');
-    const rootUltraworkAgentTiersEntry = results[0]?.files?.find(
-      (file) => file.path === 'skills/ultrawork/references/agent-tiers.md',
-    );
-    const rootEcomodeAgentTiersEntry = results[0]?.files?.find(
-      (file) => file.path === 'skills/ecomode/references/agent-tiers.md',
-    );
-    const pluginUltraworkAgentTiersEntry = results[0]?.files?.find(
-      (file) => file.path === 'plugins/oh-my-codex/skills/ultrawork/references/agent-tiers.md',
-    );
     const promptEntry = results[0]?.files?.find((file) => file.path === 'prompts/executor.md');
     const templateEntry = results[0]?.files?.find((file) => file.path === 'templates/AGENTS.md');
     const rootNativeAgentEntry = results[0]?.files?.find((file) => file.path === 'agents' || file.path.startsWith('agents/'));
@@ -268,10 +262,7 @@ describe('package bin contract', () => {
         `expected npm pack output to include prompt for native agent ${agentName}`,
       );
     }
-    assert.ok(rootRalphSkillEntry, 'expected npm pack output to keep canonical root skills');
-    assert.ok(rootUltraworkAgentTiersEntry, 'expected npm pack output to include bundled ultrawork agent-tier reference');
-    assert.ok(rootEcomodeAgentTiersEntry, 'expected npm pack output to include bundled ecomode agent-tier reference');
-    assert.ok(pluginUltraworkAgentTiersEntry, 'expected npm pack output to include bundled plugin ultrawork agent-tier reference');
+    assert.ok(rootRalphSkillEntry, 'expected npm pack output to keep canonical root skills (sunset stubs remain in root)');
     assert.ok(promptEntry, 'expected npm pack output to keep prompts');
     assert.ok(templateEntry, 'expected npm pack output to keep templates');
     assert.equal(rootNativeAgentEntry, undefined, 'did not expect generated root native agent TOMLs in package output');

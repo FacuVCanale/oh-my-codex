@@ -1160,6 +1160,52 @@ describe('CLI session-scoped state parity', () => {
       await rm(runsRoot, { recursive: true, force: true });
     }
   });
+  it('issue #3550: bound detached-launch pointer lets ambient OMX_SESSION_ID cancel exact-session ralph state while a foreign session cannot', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-cli-cancel-3550-detached-root-'));
+    try {
+      const stateDir = join(wd, '.omx', 'state');
+      const omxLaunchId = 'omx-3550-launch';
+      const codexRootId = 'codex-root-3550';
+      const canonicalDir = join(stateDir, 'sessions', omxLaunchId);
+      const ralphPath = join(canonicalDir, 'ralph-state.json');
+      const ralphState = JSON.stringify({ active: true, current_phase: 'executing' }, null, 2);
+      await mkdir(canonicalDir, { recursive: true });
+      // Post-SessionStart state on current dev: the detached launch pointer has
+      // rebound to the native Codex root UUID while keeping the OMX owner alias.
+      await writeFile(join(stateDir, 'session.json'), JSON.stringify({
+        session_id: omxLaunchId,
+        native_session_id: codexRootId,
+        owner_omx_session_id: omxLaunchId,
+        cwd: wd,
+        state_root: stateDir,
+      }));
+      await writeFile(ralphPath, ralphState);
+
+      const foreignCancel = runOmxWithEnv(
+        wd,
+        { OMX_SESSION_ID: 'omx-foreign-session-3550' },
+        'cancel',
+        '--force',
+      );
+      assert.notEqual(foreignCancel.status, 0);
+      assert.match(foreignCancel.stderr, /OMX_SESSION_ID does not match the live session recorded in session\.json/);
+      assert.equal(await readFile(ralphPath, 'utf-8'), ralphState);
+
+      const boundCancel = runOmxWithEnv(
+        wd,
+        { OMX_SESSION_ID: omxLaunchId },
+        'cancel',
+        '--force',
+      );
+      assert.equal(boundCancel.status, 0, boundCancel.stderr || boundCancel.stdout);
+      assert.match(boundCancel.stdout, /Cancelled: ralph/);
+      const updated = JSON.parse(await readFile(ralphPath, 'utf-8'));
+      assert.equal(updated.active, false);
+      assert.equal(updated.current_phase, 'cancelled');
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 
   it('fails closed when multiple live run records match the same root', async () => {
     if (process.platform === 'win32') return;

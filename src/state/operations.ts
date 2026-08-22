@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { assertValidHandoffCarriersIn, requirePersistedHandoffCarrier } from './handoff-carrier.js';
 
 import { withModeRuntimeContext } from './mode-state-context.js';
 import {
@@ -32,6 +33,7 @@ import {
   hasCleanAutopilotReviewAndQaEvidence,
   isAutopilotSuccessfulTerminalState,
   validateAutopilotCompletionTransition,
+  type AutopilotCompletionAdvisory,
 } from '../autopilot/completion-gate.js';
 import { readUltragoalState } from '../hud/state.js';
 import {
@@ -51,68 +53,10 @@ import {
   writeSkillActiveStateWithPrimaryTransactionForStateDir,
 } from './skill-active.js';
 import {
-  buildWorkflowTransitionError,
-  evaluateWorkflowTransition,
   isTrackedWorkflowMode,
   type TrackedWorkflowMode,
 } from './workflow-transition.js';
 import { reconcileWorkflowTransition } from './workflow-transition-reconcile.js';
-import {
-  buildAutopilotDeepInterviewRalplanGateError,
-  canAdvanceAutopilotDeepInterviewToRalplan,
-} from '../autopilot/deep-interview-gate.js';
-import {
-  type AutopilotChildPhase,
-  deriveAutopilotChildPhase,
-  normalizeAutopilotPhase,
-} from '../autopilot/fsm.js';
-import {
-  buildAutopilotRalplanUltragoalGateError,
-  canAdvanceAutopilotRalplanToUltragoal,
-} from '../autopilot/ralplan-gate.js';
-import {
-  isUnsupportedNativeSubagentEvidenceForScope,
-} from '../leader/contract.js';
-import {
-  buildRalplanConsensusGateFromSources,
-  RALPLAN_CONSENSUS_BLOCKED_REASONS,
-  shouldBlockFreshAutopilotForRalplanReceipt,
-} from '../ralplan/consensus-gate.js';
-
-
-const AUTOPILOT_CHILD_PHASE_ORDER: AutopilotChildPhase[] = [
-  'deep-interview',
-  'ralplan',
-  'ultragoal',
-  'rework',
-  'team',
-  'ralph',
-  'code-review',
-  'ultraqa',
-];
-
-function autopilotPhaseOrder(phase: AutopilotChildPhase | null): number {
-  return phase ? AUTOPILOT_CHILD_PHASE_ORDER.indexOf(phase) : -1;
-}
-
-function isForwardAutopilotPhase(
-  currentPhase: AutopilotChildPhase | null,
-  nextPhase: AutopilotChildPhase | null,
-): boolean {
-  const currentOrder = autopilotPhaseOrder(currentPhase);
-  const nextOrder = autopilotPhaseOrder(nextPhase);
-  return currentOrder >= 0 && nextOrder > currentOrder;
-}
-
-function isNextAutopilotPhase(
-  currentPhase: AutopilotChildPhase | null,
-  nextPhase: AutopilotChildPhase | null,
-): boolean {
-  const currentOrder = autopilotPhaseOrder(currentPhase);
-  const nextOrder = autopilotPhaseOrder(nextPhase);
-  return currentOrder >= 0 && nextOrder === currentOrder + 1;
-}
-
 export const SUPPORTED_STATE_READ_MODES = [
   'autopilot',
   'autoresearch',
@@ -160,6 +104,19 @@ async function withStateWriteLock<T>(path: string, fn: () => Promise<T>): Promis
   }
 }
 
+/**
+ * The sole writer primitive for `.omx/state/` session-scoped workflow state.
+ * Every module that persists `{mode}-state.json` MUST route through this function
+ * so that the single-writer invariant is preserved.
+ */
+export async function writeStateFile(path: string, data: string): Promise<void> {
+  await writeAtomicFile(path, data);
+}
+
+/**
+ * Internal atomic write helper — not exported except through {@link writeStateFile}.
+ * Defined here so the single-writer surface has one implementation site.
+ */
 async function writeAtomicFile(path: string, data: string): Promise<void> {
   const tmpPath = `${path}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}`;
   await writeFile(tmpPath, data, 'utf-8');
@@ -303,7 +260,12 @@ function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown
   const reviewVerdict = state.review_verdict;
   const qaVerdict = state.qa_verdict;
   const nestedState = { ...objectRecord(state.state) };
-  const handoffArtifacts = { ...objectRecord(nestedState.handoff_artifacts ?? state.handoff_artifacts) };
+  // Same invariant as the writers: objectRecord() would turn a corrupt carrier into {}, and this
+  // function then stamps clean review/QA verdicts onto it. Writing completion evidence over corruption
+  // would launder it into a valid-looking clean terminal state, so a corrupt carrier fails closed.
+  // Both locations, in the same precedence order the completion gate's stateField() uses.
+  const rawCarrier = nestedState.handoff_artifacts ?? state.handoff_artifacts;
+  const handoffArtifacts = { ...requirePersistedHandoffCarrier(rawCarrier, 'handoff_artifacts carrier') };
 
   handoffArtifacts.code_review = reviewVerdict;
   handoffArtifacts.ultraqa = qaVerdict;
@@ -316,105 +278,34 @@ function normalizeCleanAutopilotCompletionEvidence(state: Record<string, unknown
   state.state = nestedState;
 }
 
+function appendAutopilotCompletionAdvisory(
+  state: Record<string, unknown>,
+  completionAdvisory: AutopilotCompletionAdvisory | null,
+): void {
+  const existing = Array.isArray(state.skipped_gates)
+    ? state.skipped_gates.filter((entry): entry is AutopilotCompletionAdvisory => (
+      Boolean(entry)
+      && typeof entry === 'object'
+      && !Array.isArray(entry)
+      && typeof (entry as Record<string, unknown>).skippedGate === 'string'
+      && typeof (entry as Record<string, unknown>).missingEvidence === 'string'
+      && typeof (entry as Record<string, unknown>).message === 'string'
+    ))
+    : [];
+  const skippedGates = completionAdvisory && !existing.some((entry) => entry.skippedGate === completionAdvisory.skippedGate)
+    ? [...existing, completionAdvisory]
+    : existing;
+  if (skippedGates.length === 0) return;
+  state.skipped_gates = skippedGates;
+  if (isAutopilotSuccessfulTerminalState(state)) state.completion_status = 'complete-with-skipped-gates';
+}
+
 function isCompleteRalplanTerminalState(state: Record<string, unknown>): boolean {
   const currentPhase = stringValue(state.current_phase).trim().toLowerCase();
-  const gate = objectRecord(state.ralplan_consensus_gate);
   return state.active === false
-    && currentPhase === 'complete'
-    && gate.complete === true;
+    && currentPhase === 'complete';
 }
 
-function isRalplanCompleteCloseoutAttempt(state: Record<string, unknown>): boolean {
-  return state.active === false && hasCleanTerminalValue(state);
-}
-function stateContainsUnsupportedNativeSubagentEvidence(
-  state: Record<string, unknown>,
-  input: { cwd?: string; sessionId?: string } = {},
-): boolean {
-  const nestedState = objectRecord(state.state);
-  const handoffArtifacts = objectRecord(state.handoff_artifacts);
-  const nestedHandoffArtifacts = objectRecord(nestedState.handoff_artifacts);
-  const ralplanHandoff = objectRecord(handoffArtifacts.ralplan);
-  const nestedRalplanHandoff = objectRecord(nestedHandoffArtifacts.ralplan);
-  return isUnsupportedNativeSubagentEvidenceForScope(state.native_subagent_support, input)
-    || isUnsupportedNativeSubagentEvidenceForScope(nestedState.native_subagent_support, input)
-    || isUnsupportedNativeSubagentEvidenceForScope(handoffArtifacts.native_subagent_support, input)
-    || isUnsupportedNativeSubagentEvidenceForScope(nestedHandoffArtifacts.native_subagent_support, input)
-    || isUnsupportedNativeSubagentEvidenceForScope(ralplanHandoff.native_subagent_support, input)
-    || isUnsupportedNativeSubagentEvidenceForScope(nestedRalplanHandoff.native_subagent_support, input);
-}
-
-function hasNonCleanTerminalValue(state: Record<string, unknown>): boolean {
-  const terminalValues = new Set(['blocked', 'cancelled', 'failed']);
-  return terminalValues.has(stringValue(state.current_phase).trim().toLowerCase())
-    || terminalValues.has(stringValue(state.status).trim().toLowerCase())
-    || terminalValues.has(stringValue(state.outcome).trim().toLowerCase())
-    || terminalValues.has(stringValue(state.terminal_outcome).trim().toLowerCase())
-    || terminalValues.has(stringValue(state.lifecycle_outcome).trim().toLowerCase())
-    || terminalValues.has(stringValue(state.run_outcome).trim().toLowerCase());
-}
-
-function hasCleanTerminalValue(state: Record<string, unknown>): boolean {
-  const terminalValues = [
-    state.current_phase,
-    state.status,
-    state.outcome,
-    state.terminal_outcome,
-    state.lifecycle_outcome,
-    state.run_outcome,
-  ];
-  return terminalValues.some((value) => stringValue(value).trim().toLowerCase() === 'complete');
-}
-
-function hasCompleteRalplanConsensusGate(state: Record<string, unknown>): boolean {
-  const nestedState = objectRecord(state.state);
-  return objectRecord(state.ralplan_consensus_gate).complete === true
-    || objectRecord(nestedState.ralplan_consensus_gate).complete === true;
-}
-
-function isApprovedUnsupportedNativeNonCleanRecoveryState(
-  state: Record<string, unknown>,
-  input: { cwd?: string; sessionId?: string } = {},
-): boolean {
-  if (state.active !== false) return false;
-  if (hasCleanTerminalValue(state)) return false;
-  if (hasCompleteRalplanConsensusGate(state)) return false;
-  return stateContainsUnsupportedNativeSubagentEvidence(state, input) && hasNonCleanTerminalValue(state);
-}
-
-export function validateRalplanTerminalConsensus(
-  cwd: string,
-  state: Record<string, unknown>,
-  sessionId: string | undefined,
-  options: { requireNativeSubagents?: boolean } = {},
-): string | null {
-  if (!isRalplanCompleteCloseoutAttempt(state)) return null;
-  if (stateContainsUnsupportedNativeSubagentEvidence(state, { cwd, sessionId })) {
-    return 'Cannot complete ralplan cleanly while native subagent support is unavailable; terminalize the workflow as blocked/cancelled/failed or restart in a runtime with working native subagents.';
-  }
-  const stateSessionId = sessionId ?? optionalSessionId(state.session_id);
-  const gate = buildRalplanConsensusGateFromSources([
-    { source: 'state-write-ralplan-terminal', value: state, sessionId: stateSessionId },
-  ], {
-    cwd,
-    sessionId: stateSessionId,
-    requireNativeSubagents: options.requireNativeSubagents === true,
-  });
-  if (gate.complete === true) {
-    if (options.requireNativeSubagents === true) {
-      state.ralplan_consensus_gate = {
-        ...objectRecord(state.ralplan_consensus_gate),
-        ...gate,
-      };
-    }
-    return null;
-  }
-  const details = gate.blockedDetails?.length ? ` Details: ${gate.blockedDetails.join('; ')}.` : '';
-  const evidenceDescription = options.requireNativeSubagents === true
-    ? 'tracker-backed native architect and critic consensus evidence'
-    : 'architect and critic consensus evidence';
-  return `ralplan complete state requires ${evidenceDescription} (${gate.blockedReason ?? 'missing_consensus'}).${details}`;
-}
 
 function buildRalplanTerminalState(
   state: Record<string, unknown>,
@@ -433,10 +324,6 @@ function buildRalplanTerminalState(
     completed_at: completedAt,
     terminal_reason: terminalReason,
     session_id: sessionId,
-    ralplan_consensus_gate: {
-      ...objectRecord(state.ralplan_consensus_gate),
-      complete: true,
-    },
   });
 }
 
@@ -569,7 +456,6 @@ export async function completeRalplanSession(options: {
   baseStateDir: string;
   state: Record<string, unknown>;
   explicitSessionId?: string;
-  requireNativeSubagents?: boolean;
   beforeCommit?: BeforeWritableCommit;
   capturedScope?: ResolvedStateScope;
 }): Promise<boolean> {
@@ -580,11 +466,6 @@ export async function completeRalplanSession(options: {
   const writableScope = options.capturedScope
     ?? await resolveWritableStateScope(options.cwd, options.explicitSessionId);
   const sessionId = writableScope.sessionId;
-  const validationError = validateRalplanTerminalConsensus(options.cwd, options.state, sessionId, {
-    requireNativeSubagents: options.requireNativeSubagents === true,
-  });
-  if (validationError) throw new Error(validationError);
-
   const beforeCommit = options.beforeCommit ?? createWritableCommitRevalidator({
     operation: 'completeRalplanSession',
     cwd: options.cwd,
@@ -748,20 +629,6 @@ function isActiveDetailWorkflowState(state: Record<string, unknown>): boolean {
   return !['complete', 'completed', 'cancelled', 'canceled', 'failed', 'cleared'].includes(phase);
 }
 
-function isResumableAutopilotState(state: Record<string, unknown>): boolean {
-  if (state.active !== true) return false;
-  if (state.mode !== undefined && state.mode !== 'autopilot') return false;
-
-  const phaseValues = ['current_phase', 'currentPhase']
-    .filter((key) => Object.prototype.hasOwnProperty.call(state, key))
-    .map((key) => normalizeAutopilotPhase(state[key]));
-  if (phaseValues.length === 0 || phaseValues.some((phase) => phase === null || phase === 'complete' || phase === 'failed')) {
-    return false;
-  }
-
-  return new Set(phaseValues).size === 1;
-}
-
 async function readSessionDetailTransitionModes(
   cwd: string,
   sessionId: string | undefined,
@@ -842,8 +709,12 @@ export async function executeStateOperation(
           state: customState,
           ...fields
         } = rawArgs;
+        const customStateRecord = customState && typeof customState === 'object' && !Array.isArray(customState)
+          ? customState as Record<string, unknown>
+          : {};
         let validationError: string | null = null;
         let transitionMessage: string | undefined;
+        let completionAdvisory: AutopilotCompletionAdvisory | null = null;
         let ensureRalphArtifacts = false;
         let skillActivePrimaryCommitted = false;
 
@@ -875,23 +746,8 @@ export async function executeStateOperation(
           }
 
           let activeCanonicalModes: TrackedWorkflowMode[] | undefined;
-          let canonicalDecision: ReturnType<typeof evaluateWorkflowTransition> | undefined;
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
             activeCanonicalModes = await readCanonicalActiveWorkflowModes(baseStateDir, effectiveSessionId);
-            canonicalDecision = evaluateWorkflowTransition(activeCanonicalModes, mode);
-            const hasExistingCanonicalRalplan = activeCanonicalModes.includes('ralplan');
-            const freshAutopilotReceiptBlocked = mode === 'autopilot'
-              && !isResumableAutopilotState(existing)
-              && hasExistingCanonicalRalplan
-              && shouldBlockFreshAutopilotForRalplanReceipt();
-            if (freshAutopilotReceiptBlocked) {
-              validationError = `${RALPLAN_CONSENSUS_BLOCKED_REASONS.documentedHostConsensusReceiptUnavailable}: official host consensus receipt verifier is unavailable`;
-              return;
-            }
-            if (!canonicalDecision.allowed && canonicalDecision.denialReason === 'rollback') {
-              validationError = buildWorkflowTransitionError(activeCanonicalModes, mode, 'write');
-              return;
-            }
           }
 
           await initializeStateEnvironment(cwd, effectiveSessionId, rootSource, stateScope.stateDir);
@@ -944,115 +800,60 @@ export async function executeStateOperation(
           }
 
           if (mode === 'autopilot') {
+            const nestedSessionId = typeof customStateRecord.session_id === 'string' ? customStateRecord.session_id.trim() : '';
+            if (nestedSessionId && effectiveSessionId && nestedSessionId !== effectiveSessionId) {
+              validationError = 'autopilot.session_id must match the selected writable session scope';
+              return;
+            }
+            const nestedWorkingDirectory = typeof customStateRecord.workingDirectory === 'string'
+              ? customStateRecord.workingDirectory.trim()
+              : '';
+            if (nestedWorkingDirectory && nestedWorkingDirectory !== cwd) {
+              validationError = 'autopilot.workingDirectory must match the selected writable workspace';
+              return;
+            }
+            const submittedSessionId = typeof mergedRaw.session_id === 'string' ? mergedRaw.session_id.trim() : '';
+            if (submittedSessionId && effectiveSessionId && submittedSessionId !== effectiveSessionId) {
+              validationError = 'autopilot.session_id must match the selected writable session scope';
+              return;
+            }
+            const submittedWorkingDirectory = typeof mergedRaw.workingDirectory === 'string'
+              ? mergedRaw.workingDirectory.trim()
+              : '';
+            if (submittedWorkingDirectory && submittedWorkingDirectory !== cwd) {
+              validationError = 'autopilot.workingDirectory must match the selected writable workspace';
+              return;
+            }
+            if (effectiveSessionId) mergedRaw.session_id = effectiveSessionId;
+            if (typeof mergedRaw.workingDirectory !== 'string' || mergedRaw.workingDirectory.trim() === '') {
+              mergedRaw.workingDirectory = cwd;
+            }
+            // state_write is an independent public writer with its own merge, so it needs the same
+            // invariant as modes/base.ts: reject a supplied malformed carrier BEFORE normalizing it.
+            // Otherwise an existing non-empty carrier simply overwrote the malformed value and the gate
+            // saw an ordinary object, which is how a forged array advanced a phase with an advisory.
+            assertValidHandoffCarriersIn(mergedRaw, 'state_write');
+            const existingHandoffs = requirePersistedHandoffCarrier(existing.handoff_artifacts, 'stored handoff_artifacts carrier');
+            const nextHandoffs = requirePersistedHandoffCarrier(mergedRaw.handoff_artifacts, 'state_write handoff_artifacts carrier');
+            if (Object.keys(existingHandoffs).length > 0 || Object.keys(nextHandoffs).length > 0) {
+              mergedRaw.handoff_artifacts = { ...existingHandoffs, ...nextHandoffs };
+            }
             normalizeCleanAutopilotCompletionEvidence(mergedRaw);
           }
 
-          const unsupportedNativeNonCleanRecovery = isApprovedUnsupportedNativeNonCleanRecoveryState(mergedRaw, { cwd, sessionId: effectiveSessionId });
-          if (mode === 'ralplan' && !unsupportedNativeNonCleanRecovery) {
-            validationError = validateRalplanTerminalConsensus(cwd, mergedRaw, effectiveSessionId, {
-              requireNativeSubagents: true,
-            });
-            if (validationError) return;
-          }
 
-          const currentAutopilotChildPhase = mode === 'autopilot'
-            ? deriveAutopilotChildPhase({ mode: 'autopilot', ...existing })
-            : null;
-          let nextAutopilotChildPhase = mode === 'autopilot'
-            ? deriveAutopilotChildPhase({ mode: 'autopilot', ...mergedRaw })
-            : null;
-
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'deep-interview'
-            && isAutopilotSuccessfulTerminalState(mergedRaw)
-          ) {
-            validationError = 'Cannot complete Autopilot before ralplan gate: deep-interview may only advance to ralplan.';
-            return;
-          }
-
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'ralplan'
-            && isAutopilotSuccessfulTerminalState(mergedRaw)
-          ) {
-            validationError = 'Cannot complete Autopilot before ultragoal gate: ralplan may only advance to ultragoal.';
-            return;
-          }
-
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'ralplan'
-            && unsupportedNativeNonCleanRecovery
-          ) {
-            nextAutopilotChildPhase = currentAutopilotChildPhase;
-          }
 
           if (mode === 'autopilot') {
-            const completionTransitionError = validateAutopilotCompletionTransition(
+            completionAdvisory = validateAutopilotCompletionTransition(
               existing as Record<string, unknown>,
               mergedRaw,
             );
-            if (completionTransitionError) {
-              validationError = completionTransitionError;
-              return;
-            }
+            appendAutopilotCompletionAdvisory(mergedRaw, completionAdvisory);
           }
 
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'deep-interview'
-            && isForwardAutopilotPhase(currentAutopilotChildPhase, nextAutopilotChildPhase)
-            && !isNextAutopilotPhase(currentAutopilotChildPhase, nextAutopilotChildPhase)
-          ) {
-            validationError = 'Cannot skip Autopilot ralplan gate: deep-interview may only advance to ralplan.';
-            return;
-          }
 
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'deep-interview'
-            && isNextAutopilotPhase(currentAutopilotChildPhase, nextAutopilotChildPhase)
-          ) {
-            const gate = await canAdvanceAutopilotDeepInterviewToRalplan({
-              cwd,
-              sessionId: effectiveSessionId,
-              baseStateDir,
-              currentState: existing as Record<string, unknown>,
-              nextState: mergedRaw,
-            });
-            if (!gate.allowed) {
-              validationError = buildAutopilotDeepInterviewRalplanGateError(gate);
-              return;
-            }
-          }
 
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'ralplan'
-            && isForwardAutopilotPhase(currentAutopilotChildPhase, nextAutopilotChildPhase)
-            && !isNextAutopilotPhase(currentAutopilotChildPhase, nextAutopilotChildPhase)
-          ) {
-            validationError = 'Cannot skip Autopilot ultragoal gate: ralplan may only advance to ultragoal.';
-            return;
-          }
 
-          if (
-            mode === 'autopilot'
-            && currentAutopilotChildPhase === 'ralplan'
-            && isNextAutopilotPhase(currentAutopilotChildPhase, nextAutopilotChildPhase)
-          ) {
-            const gate = canAdvanceAutopilotRalplanToUltragoal({
-              cwd,
-              sessionId: effectiveSessionId,
-              currentState: existing as Record<string, unknown>,
-              nextState: mergedRaw,
-            });
-            if (!gate.allowed) {
-              validationError = buildAutopilotRalplanUltragoalGateError(gate);
-              return;
-            }
-          }
 
           if (isTrackedWorkflowMode(mode) && mergedRaw.active === true) {
             const transitionCurrentModes = mode === 'ralplan'
@@ -1119,13 +920,11 @@ export async function executeStateOperation(
           }
           const data = JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>;
           const ralplanCompletionHandled = mode === 'ralplan'
-            && !isApprovedUnsupportedNativeNonCleanRecoveryState(data, { cwd, sessionId: effectiveSessionId })
             && await completeRalplanSession({
               cwd,
               baseStateDir,
               state: data,
               explicitSessionId,
-              requireNativeSubagents: true,
               beforeCommit,
               capturedScope: stateScope,
             });
@@ -1150,6 +949,7 @@ export async function executeStateOperation(
             mode,
             path,
             ...(transitionMessage ? { transition: transitionMessage } : {}),
+            ...(completionAdvisory ? { advisory: completionAdvisory } : {}),
           },
         };
       }

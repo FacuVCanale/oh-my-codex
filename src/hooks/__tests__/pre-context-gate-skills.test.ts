@@ -10,6 +10,10 @@ const ralplanSkill = readFileSync(
   join(__dirname, '../../../skills/ralplan/SKILL.md'),
   'utf-8',
 );
+const planSkill = readFileSync(
+  join(__dirname, '../../../skills/plan/SKILL.md'),
+  'utf-8',
+);
 const teamSkill = readFileSync(
   join(__dirname, '../../../skills/team/SKILL.md'),
   'utf-8',
@@ -24,35 +28,32 @@ const ralphSkill = readFileSync(
 );
 
 describe('pre-context gate guidance in planning/execution-heavy skills', () => {
-  it('ralplan documents required context snapshot intake', () => {
+  it('ralplan is the canonical consensus planning stage', () => {
+    assert.match(ralplanSkill, /canonical consensus-planning stage/i);
+    assert.match(ralplanSkill, /Planner.*Architect.*Critic/is);
     assert.match(ralplanSkill, /Pre-context Intake/i);
-    assert.match(ralplanSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
-    assert.match(ralplanSkill, /\$deep-interview\s+--quick/i);
   });
 
-  it('team documents required context snapshot gate before launch', () => {
-    assert.match(teamSkill, /Pre-context Intake Gate/i);
-    assert.match(teamSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
-    assert.match(teamSkill, /\$deep-interview\s+--quick/i);
-    assert.match(teamSkill, /initialize\/sync it from canonical team runtime state before proceeding/i);
+  it('plan skill exists as canonical planning surface', () => {
+    assert.match(planSkill, /plan/i);
+    assert.ok(planSkill.length > 10);
   });
 
-  it('autopilot documents required pre-context intake before expansion', () => {
-    assert.match(autopilotSkill, /Pre-context Intake/i);
-    assert.match(autopilotSkill, /\.omx\/context\/\{slug\}-\{timestamp\}\.md/);
-    assert.match(autopilotSkill, /run `explore` first/i);
-    assert.match(autopilotSkill, /\$deep-interview\s+--quick/i);
+  it('team documents the context snapshot precondition before launch', () => {
+    assert.match(teamSkill, /Before launch, ground the task in a recent `\.omx\/context\/\{slug\}-\*\.md`/i);
+    assert.match(teamSkill, /create a concise snapshot when none exists/i);
+    assert.match(teamSkill, /target, evidence, constraints, unknowns, and likely touchpoints/i);
+    assert.match(teamSkill, /do not launch nested Team runs/i);
   });
 
-  it('ralph documents required pre-context intake before execution loop', () => {
-    assert.match(ralphSkill, /Pre-context intake/i);
-    assert.match(ralphSkill, /\.omx\/context\/\{task-slug\}-\{timestamp\}\.md/);
-    assert.match(ralphSkill, /\$deep-interview\s+--quick/i);
+  it('autopilot is the canonical supervised orchestration surface', () => {
+    assert.match(autopilotSkill, /first-class canonical orchestrator/i);
+    assert.match(autopilotSkill, /\$deep-interview -> \$ralplan -> \$ultragoal/i);
+    assert.match(autopilotSkill, /not a list of optional hints/i);
   });
 
-  it('ralph documents state CLI retry guidance when the MCP channel is unavailable', () => {
-    assert.match(ralphSkill, /do \*\*not\*\* retry the same MCP call/i);
-    assert.match(ralphSkill, /omx state write --input '<json>' --json/i);
-    assert.match(ralphSkill, /preserving `workingDirectory` and `session_id`/i);
+  it('ralph is a sunset stub pointing to ultragoal', () => {
+    assert.match(ralphSkill, /was removed/i);
+    assert.match(ralphSkill, /\$ultragoal/i);
   });
 });

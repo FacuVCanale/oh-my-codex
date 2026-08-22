@@ -37,31 +37,32 @@ describe('catalog reader/contract', () => {
     const expected = await readSourceManifestCounts();
     assert.equal(contract.counts.skillCount, expected.skills);
     assert.equal(contract.counts.promptCount, expected.agents);
-    assert.ok(contract.skills.some((s) => s.name === 'swarm' && s.status === 'deprecated' && !s.canonical));
+    assert.ok(!contract.skills.some((s) => s.name === 'swarm'));
     assert.ok(!contract.aliases.some((a) => a.name === 'swarm'));
     assert.ok(!contract.aliases.some((a) => a.name === 'ask-claude'));
     assert.ok(!contract.aliases.some((a) => a.name === 'ask-gemini'));
     assert.ok(!contract.aliases.some((a) => a.name === 'analyze'));
     assert.ok(contract.internalHidden.includes('worker'));
-    assert.ok(contract.coreSkills.includes('autopilot'));
+    assert.ok(contract.coreSkills.includes('autopilot'), 'autopilot is a canonical core skill');
+    assert.ok(!contract.coreSkills.includes('ralph'), 'ralph is no longer core (sunset stub)');
+    assert.ok(!contract.coreSkills.includes('ultrawork'), 'ultrawork is no longer core (sunset stub)');
     assert.ok(contract.coreSkills.includes('ultragoal'));
     assert.ok(contract.skills.some((s) => s.name === 'analyze' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'ask' && s.status === 'active'));
-    assert.ok(contract.skills.some((s) => s.name === 'ask-claude' && s.status === 'deprecated' && !s.canonical));
-    assert.ok(contract.skills.some((s) => s.name === 'ask-gemini' && s.status === 'deprecated' && !s.canonical));
+    assert.ok(!contract.skills.some((s) => s.name === 'ask-claude'));
+    assert.ok(!contract.skills.some((s) => s.name === 'ask-gemini'));
     assert.ok(contract.skills.some((s) => s.name === 'ai-slop-cleaner' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'visual-ralph' && s.status === 'active'));
     assert.ok(contract.skills.some((s) => s.name === 'design' && s.status === 'active' && s.canonical === 'designer'));
-    assert.ok(contract.skills.some((s) => s.name === 'frontend-ui-ux' && s.status === 'deprecated' && !s.canonical));
-    assert.ok(
-      contract.skills.some(
-        (s) => s.name === 'web-clone' && s.status === 'deprecated' && !s.canonical,
-      ),
-    );
-    assert.ok(contract.skills.some((s) => s.name === 'prometheus-strict' && s.status === 'active'));
-    assert.ok(contract.agents.some((a) => a.name === 'prometheus-strict-metis' && a.status === 'active'));
-    assert.ok(contract.agents.some((a) => a.name === 'prometheus-strict-momus' && a.status === 'active'));
-    assert.ok(contract.agents.some((a) => a.name === 'prometheus-strict-oracle' && a.status === 'active'));
+    assert.ok(!contract.skills.some((s) => s.name === 'frontend-ui-ux'));
+    assert.ok(!contract.skills.some((s) => s.name === 'web-clone'));
+    assert.ok(!contract.skills.some((s) => s.name === 'prometheus-strict'));
+    assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-metis'));
+    assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-momus'));
+    assert.ok(!contract.agents.some((a) => a.name === 'prometheus-strict-oracle'));
+    assert.ok(contract.skills.some((s) => s.name === 'deep-interview' && s.status === 'active'));
+    assert.ok(contract.skills.some((s) => s.name === 'ralplan' && s.status === 'active'));
+    assert.ok(contract.coreSkills.includes('ralplan'));
   });
 
   it('template manifest can be synced from source manifest', async () => {

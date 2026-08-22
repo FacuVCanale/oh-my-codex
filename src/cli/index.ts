@@ -28,6 +28,7 @@ import { sidecarCommand } from "../sidecar/index.js";
 import { teamCommand } from "./team.js";
 import { ralphCommand } from "./ralph.js";
 import { ralplanCommand } from "./ralplan.js";
+import { autopilotCommand } from "./autopilot.js";
 import { ultragoalCommand } from "./ultragoal.js";
 import { performanceGoalCommand } from "./performance-goal.js";
 import { askCommand } from "./ask.js";
@@ -270,7 +271,7 @@ Usage:
   omx explore   DEPRECATED compatibility command; use normal repo inspection or omx sparkshell
   omx api       Run native omx-api localhost gateway commands (serve|status|stop|generate)
   omx session   Search and summarize local session history (--codex-home <path> escape hatch)
-                Includes session lock inspect/recover diagnostics
+                Includes session lock diagnostics and verified-dead pointer recovery
   omx url       Passive URL reader (read <url> --json)
   omx capabilities
                 Lock/check deterministic configured tool, skill, agent, and observation surfaces
@@ -344,6 +345,9 @@ Options:
                 Clear the persisted AGENTS merge policy for this project root
   --dry-run     Show what would be done without doing it
   --plugin      Use Codex plugin delivery for omx setup and remove legacy OMX-managed user/project components
+  --disable-hooks
+                Disable only OMX-owned hook registrations and related enablement; preserve foreign hooks and .omx artifacts
+  --repair-state Archive stale state projections under .omx/archive/ during omx doctor
   --legacy      Use legacy setup delivery for omx setup, overriding persisted plugin mode
   --install-mode <legacy|plugin>
                 Explicit setup install mode (canonical form; --legacy/--plugin are aliases)
@@ -1169,6 +1173,10 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
       await writeFile(destination, launchConfig, "utf-8");
       continue;
     }
+	if (entry.name === "plugins" && entry.isDirectory()) {
+		await cp(source, destination, { recursive: true });
+		continue;
+	}
     await linkOrCopyCodexHomeEntry(source, destination);
   }
   await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
@@ -1536,6 +1544,7 @@ function detachedLeaderAuthorityCondition(authority: DetachedLeaderAuthority, re
     "#{==:#{pane_dead},0}",
     `#{==:#{pane_id},${authority.paneId}}`,
     `#{==:#{pane_pid},${authority.panePid}}`,
+    `#{==:#{session_name},${authority.sessionName}}`,
     `#{==:#{session_id},${authority.sessionId}}`,
     `#{==:#{session_created},${authority.sessionCreated}}`,
     `#{==:#{window_id},${authority.windowId}}`,
@@ -1560,14 +1569,37 @@ function detachedAuthorityReceipt(): string {
   return `omx_detached_${randomUUID()}`;
 }
 
-function runDetachedLeaderMutation(authority: DetachedLeaderAuthority, args: string[], requireOwner = true): void {
-  const receipt = detachedAuthorityReceipt();
-  const success = `${args.map(quoteShellArg).join(" ")} ; display-message -p ${quoteShellArg(receipt)}`;
+function describeDetachedLeaderAuthorityMismatch(authority: DetachedLeaderAuthority): string {
   const output = execTmuxFileSync([
-    "if-shell", "-F", "-t", authority.paneId, detachedLeaderAuthorityCondition(authority, requireOwner),
-    success, "display-message -p ''",
+    "display-message", "-p", "-t", authority.paneId,
+    "#{pane_dead}\t#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}\t#{@omx_instance_id}",
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  if (output !== receipt) throw new Error("detached leader authority changed before tmux mutation");
+  const observed = output.split("\t");
+  if (observed.length !== 8) return "authority observation was malformed";
+  const expected = ["0", authority.paneId, String(authority.panePid), authority.sessionName, authority.sessionId, authority.sessionCreated, authority.windowId, authority.ownerId];
+  const labels = ["pane_dead", "pane_id", "pane_pid", "session_name", "session_id", "session_created", "window_id", "owner"];
+  const mismatches = observed.flatMap((value, index) => value === expected[index] ? [] : [`${labels[index]} expected ${JSON.stringify(expected[index])} observed ${JSON.stringify(value)}`]);
+  return mismatches.length > 0 ? mismatches.join(", ") : "authority condition was not observable";
+}
+
+function runDetachedLeaderMutation(
+  authority: DetachedLeaderAuthority,
+  args: string[],
+  requireOwner = true,
+  retryMissingReceipt = false,
+): void {
+  const attempts = retryMissingReceipt ? 2 : 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const receipt = detachedAuthorityReceipt();
+    const success = `${args.map(quoteShellArg).join(" ")} ; display-message -p ${quoteShellArg(receipt)}`;
+    const output = execTmuxFileSync([
+      "if-shell", "-F", "-t", authority.paneId, detachedLeaderAuthorityCondition(authority, requireOwner),
+      success, "display-message -p ''",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (output === receipt) return;
+  }
+  const mutation = args.length >= 4 && args[0] === "set-option" ? `${args[0]} ${args.at(-2)}` : args[0] ?? "unknown";
+  throw new Error(`detached leader authority blocked tmux mutation ${mutation}: ${describeDetachedLeaderAuthorityMismatch(authority)}`);
 }
 
 function detachedPreReportCleanupCondition(authority: DetachedLeaderAuthority): string {
@@ -2583,7 +2615,26 @@ interface MadmaxDetachedActiveRecord {
 }
 
 function resolveMadmaxRunsRoot(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  const configured = env.OMX_RUNS_DIR || join(homedir(), ".omx-runs");
+  // Canonicalize, because the detached active-record path is derived from this root and macOS reaches
+  // the same directory as both `/var/...` and `/private/var/...`. Without this, a launch that recorded
+  // its active detached session under one alias could not be found under the other, so the reuse guard
+  // silently started a DUPLICATE detached launch instead of attaching to the live one.
+  try {
+    return realpathSync(configured);
+  } catch {
+    // Not created yet: the raw path is correct for the first launch, which creates it.
+    return configured;
+  }
+}
+
+function canonicalizeExistingPath(target: string): string {
+  if (!target) return target;
+  try {
+    return realpathSync(target);
+  } catch {
+    return target;
+  }
 }
 
 function canonicalizeLaunchCwd(cwd: string): string {
@@ -2592,9 +2643,13 @@ function canonicalizeLaunchCwd(cwd: string): string {
       cwd,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim() || cwd;
+    }).trim() || canonicalizeExistingPath(cwd);
   } catch {
-    return cwd;
+    // Outside a git checkout realpath is the only canonical form available. Returning the raw value let
+    // the macOS /var vs /private/var alias survive into the context key, so the same directory reached
+    // by two aliases hashed to two different keys and a legitimate inherited context failed its own
+    // verification.
+    return canonicalizeExistingPath(cwd);
   }
 }
 
@@ -2650,7 +2705,7 @@ export function buildMadmaxDetachedLaunchContextKey(
   const payload = JSON.stringify({
     source_cwd: canonicalizeLaunchCwd(sourceCwd),
     argv: normalizeMadmaxDetachedLaunchArgv(argv),
-    run_identity: runIdentity,
+    run_identity: canonicalizeExistingPath(runIdentity),
   });
   return createHash("sha256").update(payload).digest("hex").slice(0, 32);
 }
@@ -3048,7 +3103,7 @@ export class DetachedLaunchSafetyError extends Error {
     readonly cause: unknown,
     readonly report: DetachedBootstrapReport,
   ) {
-    super(`detached launch safety failure during ${phase}${phase === "completion" && cause instanceof Error ? `: ${cause.message}` : ""}`);
+    super(`detached launch safety failure during ${phase}${cause instanceof Error ? `: ${describeDetachedLeaderFailure(cause)}` : ""}`);
   }
 }
 
@@ -3276,8 +3331,12 @@ export function createMadmaxIsolatedRoot(
   argv: string[],
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const runsRoot = resolveMadmaxRunsRoot(env);
+  let runsRoot = resolveMadmaxRunsRoot(env);
   mkdirSync(runsRoot, { recursive: true });
+  // Re-resolve after creating it: on a first launch the directory does not exist yet, so the realpath
+  // inside resolveMadmaxRunsRoot falls back to the raw value and the macOS /var vs /private/var alias
+  // survives into the run directory and the active-record path.
+  runsRoot = resolveMadmaxRunsRoot(env);
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = Math.random().toString(16).slice(2, 6);
   const runDir = join(runsRoot, sanitizeRunIdSegment(`run-${stamp}-${suffix}`));
@@ -3321,6 +3380,7 @@ function renderDetachedLaunchSafetyReport(error: DetachedLaunchSafetyError): str
   }));
   return JSON.stringify({
     phase: error.phase,
+    failure: describeDetachedLeaderFailure(error.cause),
     transitions: error.report.transitions,
     ...(establishmentCleanup ? { establishmentCleanup } : {}),
     rollback: {
@@ -3356,6 +3416,7 @@ export async function main(args: string[]): Promise<void> {
     "api",
     "sparkshell",
     "team",
+    "autopilot",
     "ralph",
     "ralplan",
     "ultragoal",
@@ -3385,6 +3446,7 @@ export async function main(args: string[]): Promise<void> {
     dryRun: flags.has("--dry-run"),
     verbose: flags.has("--verbose"),
     team: flags.has("--team"),
+    repairState: flags.has("--repair-state"),
   };
 
   if (flags.has("--help") && !commandOwnsLocalHelp(command)) {
@@ -3426,6 +3488,7 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "setup":
         await setup({
+          disableHooks: flags.has("--disable-hooks"),
           force: options.force,
           mergeAgents: options.mergeAgents,
           mergeAgentsPolicy: resolveSetupAgentsMergePolicyArg(args.slice(1)),
@@ -3523,6 +3586,9 @@ if (command !== "launch" && command !== "resume") {
         break;
       case "team":
         await teamCommand(args.slice(1), options);
+        break;
+      case "autopilot":
+        await autopilotCommand(args.slice(1));
         break;
       case "url":
         await urlCommand(args.slice(1));
@@ -6134,7 +6200,6 @@ async function completePreLaunchSetup(
     degraded.push("orphan-reaping");
     logCliOperationFailure(error);
   }
-
   let instructions: string;
   try {
     const orchestrationMode = await resolveSessionOrchestrationMode(cwd, sessionId);
@@ -6529,7 +6594,11 @@ async function runCodex(
             if (!authority) throw new Error("detached leader authority missing before tmux mutation");
             if (step.name === "tag-session") {
               runDetachedLeaderMutation(authority, step.args, false);
-              runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
+              // tmux can acknowledge the session tag before the first owner-format
+              // evaluation sees it. Retrying this idempotent first owner-guarded
+              // mutation once gives the server a command boundary without relaxing
+              // any part of the captured session, window, pane, PID, or owner fence.
+              runDetachedLeaderMutation(authority, ["set-option", "-q", "-t", authority.sessionName, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)], true, true);
               runDetachedLeaderMutation(authority, ["set-option", "-pq", "-t", authority.paneId, "history-limit", String(DETACHED_TMUX_HISTORY_LIMIT)]);
               // #3266: the owned leader pane must close with its process so a normal
               // child exit destroys the session naturally even when the user's tmux

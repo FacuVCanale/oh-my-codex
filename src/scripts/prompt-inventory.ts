@@ -16,6 +16,27 @@ export interface DuplicateFragmentFamily {
   paths: string[];
 }
 
+export type PromptInvariantRuleId = 'cancel-semantics' | 'state-ownership' | 'hook-boundaries' | 'team-protocol';
+
+export interface PromptInvariantPhraseRule {
+  id: PromptInvariantRuleId;
+  phrase: string;
+  pattern: RegExp;
+}
+
+export interface PromptInvariantDuplicate {
+  ruleId: PromptInvariantRuleId;
+  phrase: string;
+  paths: string[];
+}
+
+export interface PromptInvariantCheckReport {
+  root: string;
+  checkedPaths: string[];
+  duplicates: PromptInvariantDuplicate[];
+  ok: boolean;
+}
+
 export interface PromptInventoryReport {
   generatedAt: string;
   root: string;
@@ -57,6 +78,42 @@ const MARKERS = [
 ];
 
 const ABSOLUTE_DIRECTIVE_PATTERN = /\b(MUST(?:\s+NOT)?|DO NOT|DON'T|NEVER|ALWAYS|REQUIRED|REQUIRE|ONLY|STOP|ASK only|AUTO-CONTINUE|KEEP GOING)\b/i;
+
+function phrasePattern(phrase: string): RegExp {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  return new RegExp(escaped, 'i');
+}
+
+/**
+ * Durable invariant anchors owned by templates/AGENTS.md.
+ *
+ * These are intentionally specific phrases rather than generic words such as
+ * "state", "cancel", or "team". A phrase is allowed in the SSOT and may be
+ * referenced by any number of skills, but it must not be restated by multiple
+ * skill cards.
+ */
+export const INVARIANT_PHRASE_RULES: readonly PromptInvariantPhraseRule[] = [
+  {
+    id: 'cancel-semantics',
+    phrase: '--force does not widen cancellation scope',
+    pattern: /`?--force`?\s+does\s+not\s+widen\s+cancellation\s+scope/i,
+  },
+  {
+    id: 'state-ownership',
+    phrase: 'compatibility discovery is read-only',
+    pattern: phrasePattern('compatibility discovery is read-only'),
+  },
+  {
+    id: 'hook-boundaries',
+    phrase: 'Hooks own normal skill activation',
+    pattern: phrasePattern('Hooks own normal skill activation'),
+  },
+  {
+    id: 'team-protocol',
+    phrase: 'direct tmux send-keys is fallback-only',
+    pattern: /`?direct\s+tmux\s+send-keys`?\s+is\s+fallback-only/i,
+  },
+];
 
 function walkFiles(root: string, dir: string, out: string[]): void {
   const absoluteDir = join(root, dir);
@@ -148,6 +205,65 @@ function duplicateFragmentFamilies(root: string, paths: string[]): DuplicateFrag
     .slice(0, 50);
 }
 
+/** List only workflow skill cards. Invariant lint intentionally excludes prompts,
+ * docs, generated mirrors, and the AGENTS.md SSOT itself. */
+export function listSkillPromptPaths(root = process.cwd()): string[] {
+  const paths: string[] = [];
+  walkFiles(root, 'skills', paths);
+  return paths
+    .map((path) => path.replaceAll('\\', '/'))
+    .filter((path) => path.endsWith('/SKILL.md') || path === 'skills/SKILL.md')
+    .sort();
+}
+
+/**
+ * Find durable invariant rules restated by more than one skill card.
+ *
+ * The rule list is explicit by design: generic repeated words are inventory
+ * data, not CI failures. `templates/AGENTS.md` is the authorized SSOT and is
+ * deliberately not included in `checkedPaths`.
+ */
+export function checkPromptInvariantDuplicates(
+  root = process.cwd(),
+  rules: readonly PromptInvariantPhraseRule[] = INVARIANT_PHRASE_RULES,
+): PromptInvariantCheckReport {
+  const checkedPaths = listSkillPromptPaths(root);
+  const duplicates: PromptInvariantDuplicate[] = [];
+
+  for (const rule of rules) {
+    const matchingPaths = checkedPaths.filter((path) => rule.pattern.test(readFileSync(join(root, path), 'utf-8')));
+    if (matchingPaths.length > 1) {
+      duplicates.push({
+        ruleId: rule.id,
+        phrase: rule.phrase,
+        paths: matchingPaths,
+      });
+    }
+  }
+
+  return {
+    root,
+    checkedPaths,
+    duplicates,
+    ok: duplicates.length === 0,
+  };
+}
+
+export function renderPromptInvariantCheck(report: PromptInvariantCheckReport): string {
+  if (report.ok) {
+    return `prompt invariant check ok (${report.checkedPaths.length} skill cards checked)`;
+  }
+
+  return [
+    'prompt invariant check failed: durable invariant phrases must have one skill owner at most',
+    ...report.duplicates.flatMap((duplicate) => [
+      `- ${duplicate.ruleId}: ${duplicate.phrase}`,
+      ...duplicate.paths.map((path) => `  - ${path}`),
+    ]),
+    'Move shared invariant wording to templates/AGENTS.md and keep skill cards task-focused.',
+  ].join('\n');
+}
+
 export function buildPromptInventory(root = process.cwd(), generatedAt = new Date().toISOString()): PromptInventoryReport {
   const resolvedRoot = root;
   const paths = listPromptSurfacePaths(resolvedRoot);
@@ -207,12 +323,35 @@ export function renderPromptInventoryMarkdown(report: PromptInventoryReport): st
   ].join('\n');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const root = process.argv.includes('--root') ? process.argv[process.argv.indexOf('--root') + 1] : process.cwd();
+export function runPromptInventoryCli(argv = process.argv.slice(2), defaultRoot = process.cwd()): number {
+  const checkOnly = argv.includes('--check');
+  const json = argv.includes('--json');
+  const rootFlagIndex = argv.indexOf('--root');
+  const root = rootFlagIndex >= 0 ? argv[rootFlagIndex + 1] : defaultRoot;
+  if (!root) {
+    console.error('prompt inventory: --root requires a path');
+    return 1;
+  }
+
+  if (checkOnly) {
+    const check = checkPromptInvariantDuplicates(root);
+    if (json) {
+      console.log(JSON.stringify(check, null, 2));
+    } else {
+      console.log(renderPromptInvariantCheck(check));
+    }
+    return check.ok ? 0 : 1;
+  }
+
   const report = buildPromptInventory(root);
-  if (process.argv.includes('--json')) {
+  if (json) {
     console.log(JSON.stringify(report, null, 2));
   } else {
     console.log(renderPromptInventoryMarkdown(report));
   }
+  return 0;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exitCode = runPromptInventoryCli();
 }

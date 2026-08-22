@@ -10,7 +10,6 @@ import {
   assertInstalledReasoningDeclarationContract,
   assertInstalledRootReasoningHelp,
   assertInstalledRootReasoningRejection,
-  assertInstalledTeamSkillContract,
 } from '../smoke-packed-install.js';
 
 const root = process.cwd();
@@ -104,7 +103,7 @@ test('compiled reasoning artifacts preserve exact surface-specific max contracts
 
   const canonicalSkill = readFileSync(join(root, 'skills/team/SKILL.md'));
   const pluginSkill = readFileSync(join(root, 'plugins/oh-my-codex/skills/team/SKILL.md'));
-  assertInstalledTeamSkillContract(canonicalSkill, pluginSkill);
+  assert.deepEqual(pluginSkill, canonicalSkill, 'canonical and plugin Team skills must stay byte-identical');
 });
 
 test('compiled root reasoning keeps four-value help and rejects max/ultra without mutation', () => {

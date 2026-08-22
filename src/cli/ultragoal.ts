@@ -44,7 +44,7 @@ Usage:
   omx ultragoal record-review-blockers --goal-id <id> --title <title> --objective <text> --evidence <review-findings> --codex-goal-json <active-json-or-path> [--json]
   omx ultragoal steer --kind <add_subgoal|split_subgoal|reorder_pending|revise_pending_wording|annotate_ledger|mark_blocked_superseded> --evidence <text> --rationale <text> [--target-goal-id <id>] [--title <text>] [--objective <text>] [--after-json <json-or-path>] [--idempotency-key <key>] [--json]
   omx ultragoal steer --directive-json <json-or-path> [--json]
-  omx ultragoal checkpoint --goal-id <id> --status <complete|failed|blocked> [--evidence <text>] [--codex-goal-json <json-or-path>] [--quality-gate-json <json-or-path>] [--json]
+  omx ultragoal checkpoint --goal-id <id> --status <complete|failed|blocked> [--evidence <text>] [--codex-goal-json <json-or-path>] [--quality-gate-json <json-or-path>] [--strict] [--json]
   omx ultragoal status [--codex-goal-json <json-or-path>] [--json]
 
 Aliases:
@@ -72,9 +72,11 @@ Codex goal integration:
   Repeated identical external authorization blockers become non-retriable
   needs_user_decision stories; complete-goals --retry-failed skips them and prints
   the required external decision instead of looping.
-  Final completion is mandatory-gated: run ai-slop-cleaner, rerun verification,
-  run $code-review, and pass --quality-gate-json with APPROVE + CLEAR evidence.
-  Non-clean final review must use record-review-blockers before update_goal.
+  Final completion: ordinary requires targeted verification only (advisory review)
+  with --evidence; --strict preserves the fail-closed cohort gate (ai-slop-cleaner,
+  verification, code-review with independentReview, and architecture-invariant gate)
+  via --quality-gate-json. Non-clean final review must use record-review-blockers
+  before update_goal.
 `;
 
 function hasFlag(args: readonly string[], flag: string): boolean {
@@ -523,7 +525,8 @@ export async function ultragoalCommand(args: string[], deps: UltragoalCommandDep
       const evidence = readValue(rest, '--evidence');
       const codexGoal = await parseCodexGoalJson(readValue(rest, '--codex-goal-json'));
       const qualityGate = await readJsonInput(readValue(rest, '--quality-gate-json'));
-      const plan = await checkpointUltragoal(cwd, { goalId, status, evidence, codexGoal, qualityGate });
+      const strict = hasFlag(rest, '--strict');
+      const plan = await checkpointUltragoal(cwd, { goalId, status, evidence, codexGoal, qualityGate, strict });
       if (json) printJson({ ok: true, plan, summary: summarizeUltragoalPlan(plan) });
       else {
         const goal = plan.goals.find((candidate: UltragoalItem) => candidate.id === goalId);

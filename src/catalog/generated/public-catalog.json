@@ -1,16 +1,14 @@
 {
-  "generatedAt": "2026-06-17T05:57:55.659Z",
+  "generatedAt": "2026-08-13T04:56:25.751Z",
   "version": "2026.02.28.1",
   "counts": {
-    "skillCount": 50,
-    "promptCount": 34,
-    "activeSkillCount": 28,
-    "activeAgentCount": 20
+    "skillCount": 33,
+    "promptCount": 30,
+    "activeSkillCount": 23,
+    "activeAgentCount": 16
   },
   "coreSkills": [
     "autopilot",
-    "ralph",
-    "ultrawork",
     "team",
     "ultragoal",
     "ralplan"
@@ -26,15 +24,15 @@
     {
       "name": "ralph",
       "category": "execution",
-      "status": "active",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
       "name": "ultrawork",
       "category": "execution",
-      "status": "active",
-      "core": true,
+      "status": "deprecated",
+      "core": false,
       "internalRequired": false
     },
     {
@@ -42,13 +40,6 @@
       "category": "execution",
       "status": "active",
       "core": true,
-      "internalRequired": false
-    },
-    {
-      "name": "ecomode",
-      "category": "execution",
-      "status": "deprecated",
-      "core": false,
       "internalRequired": false
     },
     {
@@ -68,7 +59,7 @@
     {
       "name": "autoresearch-goal",
       "category": "execution",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -82,7 +73,7 @@
     {
       "name": "pipeline",
       "category": "execution",
-      "status": "active",
+      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -91,13 +82,6 @@
       "category": "execution",
       "status": "active",
       "core": true,
-      "internalRequired": false
-    },
-    {
-      "name": "swarm",
-      "category": "execution",
-      "status": "deprecated",
-      "core": false,
       "internalRequired": false
     },
     {
@@ -111,19 +95,11 @@
       "name": "ralplan",
       "category": "planning",
       "status": "active",
-      "canonical": "plan",
       "core": true,
       "internalRequired": false
     },
     {
       "name": "deep-interview",
-      "category": "planning",
-      "status": "active",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "prometheus-strict",
       "category": "planning",
       "status": "active",
       "core": false,
@@ -144,27 +120,6 @@
       "internalRequired": false
     },
     {
-      "name": "deepsearch",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "tdd",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "build-fix",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "ai-slop-cleaner",
       "category": "shortcut",
       "status": "active",
@@ -176,27 +131,6 @@
       "category": "shortcut",
       "status": "active",
       "canonical": "code-reviewer",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "security-review",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "visual-verdict",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "web-clone",
-      "category": "shortcut",
-      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -217,13 +151,6 @@
       "internalRequired": false
     },
     {
-      "name": "frontend-ui-ux",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "git-master",
       "category": "shortcut",
       "status": "alias",
@@ -232,30 +159,9 @@
       "internalRequired": false
     },
     {
-      "name": "review",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
       "name": "ask",
       "category": "shortcut",
       "status": "active",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "ask-claude",
-      "category": "shortcut",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "ask-gemini",
-      "category": "shortcut",
-      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -277,27 +183,6 @@
       "name": "wiki",
       "category": "utility",
       "status": "active",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "help",
-      "category": "utility",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "note",
-      "category": "utility",
-      "status": "deprecated",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "trace",
-      "category": "utility",
-      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -358,13 +243,6 @@
       "category": "utility",
       "status": "merged",
       "canonical": "configure-notifications",
-      "core": false,
-      "internalRequired": false
-    },
-    {
-      "name": "ralph-init",
-      "category": "utility",
-      "status": "deprecated",
       "core": false,
       "internalRequired": false
     },
@@ -528,27 +406,7 @@
       "canonical": "analyst"
     },
     {
-      "name": "prometheus-strict-metis",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "prometheus-strict-momus",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "prometheus-strict-oracle",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
       "name": "critic",
-      "category": "coordination",
-      "status": "active"
-    },
-    {
-      "name": "scholastic",
       "category": "coordination",
       "status": "active"
     },

@@ -376,6 +376,25 @@ export async function resolvePackageManagerOwnership(dependencies: Partial<Packa
   return candidates.length === 1 ? candidates[0]! : null;
 }
 
+/**
+ * A package root outside any `node_modules` directory is a working-tree build — a checkout run
+ * directly, or linked into a global root with `npm link` — so no package manager owns it and a
+ * self-update transaction would overwrite the developer's tree.
+ */
+export function isWorkingTreeInstall(
+  currentPackageRoot: string,
+  platform: NodeJS.Platform = process.platform,
+  realpath: (path: string) => string = realpathSync,
+): boolean {
+  try {
+    const path = platformPath(platform);
+    const packageRoot = realpath(currentPackageRoot);
+    return path.basename(path.dirname(packageRoot)).toLowerCase() !== 'node_modules';
+  } catch {
+    return false;
+  }
+}
+
 export function packageManagerOwnershipError(): string {
   const launcher = basename(process.env.npm_execpath ?? '').toLowerCase();
   if (launcher.includes('pnpm') || launcher.includes('yarn')) return '[omx] pnpm and Yarn global ownership layouts are not supported for self-update. Reinstall OMX with npm or Bun, then retry.';

@@ -6,19 +6,12 @@ export interface KeywordTriggerDefinition {
 }
 
 export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = [
-  { keyword: '$ralph', skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
-  { keyword: "don't stop", skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
-  { keyword: 'must complete', skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
-  { keyword: 'keep going', skill: 'ralph', priority: 9, guidance: 'Activate ralph persistence loop with verification' },
 
-  { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
-  { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
-  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
-  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Activate autopilot skill for autonomous execution' },
+  { keyword: '$autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
+  { keyword: 'autopilot', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
+  { keyword: 'build me', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
+  { keyword: 'I want a', skill: 'autopilot', priority: 10, guidance: 'Activate the canonical Autopilot orchestrator: $deep-interview -> $ralplan -> $ultragoal' },
 
-  { keyword: '$ultrawork', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
-  { keyword: 'ulw', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
-  { keyword: 'parallel', skill: 'ultrawork', priority: 10, guidance: 'Activate ultrawork parallel execution mode' },
   { keyword: '$ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: 'ultragoal', skill: 'ultragoal', priority: 10, guidance: 'Activate durable ultragoal planning/execution over Codex goal mode artifacts' },
   { keyword: '$ultraqa', skill: 'ultraqa', priority: 8, guidance: 'Activate UltraQA cycling workflow' },
@@ -26,30 +19,26 @@ export const KEYWORD_TRIGGER_DEFINITIONS: readonly KeywordTriggerDefinition[] = 
   { keyword: 'investigate', skill: 'analyze', priority: 7, guidance: 'Activate deep analysis workflow' },
 
 
-  { keyword: '$prometheus-strict', skill: 'prometheus-strict', priority: 11, guidance: 'Activate Prometheus Strict clean-room interview-driven planner workflow' },
-
-  { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'interview me', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: "don't assume", skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'ouroboros', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
-  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-inspired Socratic ambiguity-gated interview workflow' },
+  { keyword: '$deep-interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
+  { keyword: 'deep interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
+  { keyword: 'gather requirements', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic requirements interview before planning or execution' },
+  { keyword: 'interview me', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
+  { keyword: "don't assume", skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview to clear assumptions before planning or execution' },
+  { keyword: 'ouroboros', skill: 'deep-interview', priority: 8, guidance: 'Activate Ouroboros-style Socratic deep interview with ambiguity gating' },
+  { keyword: 'interview', skill: 'deep-interview', priority: 8, guidance: 'Activate Socratic deep interview with ambiguity gating before planning or execution' },
 
   { keyword: '$plan', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: 'plan this', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: 'plan the', skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
   { keyword: "let's plan", skill: 'plan', priority: 8, guidance: 'Activate planning skill' },
 
-  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
-  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate consensus planning (planner + architect + critic)' },
+  { keyword: '$ralplan', skill: 'ralplan', priority: 11, guidance: 'Activate Planner -> Architect -> Critic consensus planning with durable handoff to $ultragoal' },
+  { keyword: 'consensus plan', skill: 'ralplan', priority: 11, guidance: 'Activate Planner -> Architect -> Critic consensus planning with durable handoff to $ultragoal' },
 
   { keyword: '$autoresearch', skill: 'autoresearch', priority: 10, guidance: 'Activate autoresearch validator-gated research loop' },
   { keyword: '$best-practice-research', skill: 'best-practice-research', priority: 8, guidance: 'Activate bounded best-practice research wrapper' },
 
   { keyword: '$design', skill: 'design', priority: 6, guidance: 'Activate canonical DESIGN.md design-source-of-truth workflow' },
-  { keyword: '$frontend-ui-ux', skill: 'design', priority: 5, guidance: 'Deprecated: route to $design for DESIGN.md guidance; use $visual-ralph for visual-reference implementation' },
-
   { keyword: '$team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
   { keyword: 'coordinated team', skill: 'team', priority: 8, guidance: 'Activate coordinated team mode' },
 
@@ -77,10 +66,7 @@ export interface ExplicitSkillDefinition {
   readonly priority: number;
 }
 
-export const EXPLICIT_SKILL_ALIASES: readonly ExplicitSkillAlias[] = Object.freeze([
-  Object.freeze({ source: 'ulw', target: 'ultrawork' }),
-  Object.freeze({ source: 'frontend-ui-ux', target: 'design' }),
-]);
+export const EXPLICIT_SKILL_ALIASES: readonly ExplicitSkillAlias[] = Object.freeze([]);
 
 function createExplicitSkillLookup(): Readonly<Record<string, ExplicitSkillDefinition>> {
   const canonical = Object.create(null) as Record<string, ExplicitSkillDefinition>;

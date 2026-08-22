@@ -63,6 +63,7 @@ import {
   waitForWorkerReadyAsync,
   paneIsBootstrapping,
   parseSplitWindowPaneId,
+  bindSplitWindowReceiptFormat,
   classifyWorkerStartupInjectSafety,
   checkWorkerStartupInjectSafety,
   dismissTrustPromptIfPresent,
@@ -140,6 +141,15 @@ const CLAUDE_BYPASS_PROMPT_CAPTURE = `Bypass Permissions mode
 
 Press Enter to confirm`;
 
+const CLAUDE_BYPASS_PROMPT_2_1_CAPTURE = `WARNING: Claude Code running in Bypass Permissions mode.
+
+Claude Code may make mistakes. Bypassing permissions removes safety checks.
+
+1. No, exit
+2. Yes, I accept
+
+Do you want to confirm that you want to use this mode?`;
+
 const READY_HELPER_CAPTURE = `╭────────────────────────────────────────────╮
 │ >_ OpenAI Codex (v0.114.0)                 │
 │                                            │
@@ -161,6 +171,16 @@ const VIEWPORT_WITHOUT_VISIBLE_PROMPT_CAPTURE = `╭─────────�
 const VIEWPORT_SCROLLBACK_READY_CAPTURE = `${VIEWPORT_WITHOUT_VISIBLE_PROMPT_CAPTURE}
 
 › support lane on multi-image attach`;
+
+const CLAUDE_TRUST_PROMPT_2_1_CAPTURE = `Quick safety check: Is this a project you created or one you trust?
+
+1. Yes, I trust this folder
+2. No, exit`;
+
+const CODEX_TRUST_PROMPT_CAPTURE = `Do you trust the contents of this directory?
+
+Yes, continue
+No, quit`;
 
 const QUEUED_AFTER_TOOL_CALL_CAPTURE = `• Messages to be submitted after next tool call (press esc to interrupt and send immediately)
   ↳ Read $OMX_TEAM_STATE_ROOT/team/demo/workers/worker-1/inbox.md, work now, report progress
@@ -289,6 +309,12 @@ if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "
   receipt="$(printf '%s' "$success" | sed -n "s/.*\\(omx_source_[A-Za-z0-9_]*\\).*/\\1/p")"
   effect="${'$'}{success%% ; display-message*}"
   eval "set -- $effect"
+  split_format=''
+  previous=''
+  for arg in "${'$'}@"; do
+    if [ "$previous" = '-F' ]; then split_format="$arg"; break; fi
+    previous="$arg"
+  done
   output="$($0 "${'$'}@")" || exit 1
   case "${'$'}1" in
     split-window)
@@ -302,7 +328,7 @@ if [ "${'$'}1" = "if-shell" ] && [ "${'$'}{2:-}" = "-F" ] && [ "${'$'}{3:-}" = "
         mkdir -p "$source_state"
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$session" "$session_id" "$created" "$index" "$window_id" "$created_pid" > "$source_state/$created_pane"
       }
-      printf '%s\t%s\n' "$created_pane" "$receipt"
+      printf '%s\n' "$split_format" | sed "s/#{pane_id}/$created_pane/g"
       ;;
     *) printf '%s\\n' "$receipt" ;;
   esac
@@ -342,7 +368,7 @@ esac
         const captured = spawnSync('tmux', ['display-message', '-p', '-t', '%1', '#{session_name}\t#{session_id}\t#{session_created}\t#{window_index}\t#{window_id}\t#{pane_id}\t#{pane_pid}'], { encoding: 'utf8' });
         assert.equal(captured.status, 0);
         assert.equal(captured.stdout, 'recycled\t$1\t1\t0\t@0\t%1\t101\n');
-        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}\tomx_source_recycled' ; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
+        const guarded = spawnSync('tmux', ['if-shell', '-F', '-t', '%1', '#{==:#{pane_pid},101}', "split-window -h -t %1 -P -F '#{pane_id}:omx_source_recycled' ; display-message -p 'omx_source_recycled'", "display-message -p ''"], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
         assert.equal(guarded.stdout, '');
         assert.equal(fs.existsSync(`${logPath}.split`), false);
@@ -376,7 +402,7 @@ esac
         const guarded = spawnSync('tmux', [
           'if-shell', '-F', '-t', '%1',
           '#{&&:#{==:#{pane_dead},0},#{&&:#{==:#{pane_id},%1},#{&&:#{==:#{pane_pid},101},#{&&:#{==:#{session_id},$1},#{&&:#{==:#{session_created},1},#{&&:#{==:#{window_id},@0},#{==:#{@omx_team_pane_owner_id},team:original}}}}}}',
-          `split-window -h -t %1 -P -F '#{pane_id}\\t${receipt}' ; display-message -p '${receipt}'`,
+          `split-window -h -t %1 -P -F '#{pane_id}:${receipt}' ; display-message -p '${receipt}'`,
           "display-message -p ''",
         ], { encoding: 'utf8' });
         assert.equal(guarded.status, 0);
@@ -769,6 +795,44 @@ Press enter to continue`, 'codex'), {
   });
 });
 
+describe('trust and Claude bypass prompt detection', () => {
+  it('matches Codex and pre-2.1 Claude trust wording', () => {
+    assert.equal(
+      evaluateStartupDirectTriggerSafetyCapture('Do you trust the contents of this directory?\nPress enter to continue', 'codex').reason,
+      'trust_prompt',
+    );
+    assert.equal(evaluateStartupDirectTriggerSafetyCapture(CODEX_TRUST_PROMPT_CAPTURE, 'codex').reason, 'trust_prompt');
+  });
+
+  it('matches the Claude 2.1.x quick-safety-check numbered-choice trust prompt', () => {
+    assert.equal(
+      evaluateStartupDirectTriggerSafetyCapture(CLAUDE_TRUST_PROMPT_2_1_CAPTURE, 'claude').reason,
+      'trust_prompt',
+    );
+    assert.equal(classifyWorkerStartupInjectSafety(CLAUDE_TRUST_PROMPT_2_1_CAPTURE), 'trust_prompt');
+  });
+
+  it('does not flag ordinary pane text as a trust prompt', () => {
+    assert.notEqual(evaluateStartupDirectTriggerSafetyCapture(READY_HELPER_CAPTURE, 'codex').reason, 'trust_prompt');
+    assert.notEqual(
+      evaluateStartupDirectTriggerSafetyCapture('Do you trust the contents of this directory?\n1. Something unrelated', 'codex').reason,
+      'trust_prompt',
+    );
+    assert.notEqual(
+      evaluateStartupDirectTriggerSafetyCapture('Quick safety check: unrelated banner\n1. Yes, I trust this folder\n2. No, exit', 'claude').reason,
+      'trust_prompt',
+    );
+  });
+
+  it('blocks the Claude 2.1.x bypass-permissions warning with numbered choices', () => {
+    assert.equal(
+      evaluateStartupDirectTriggerSafetyCapture(CLAUDE_BYPASS_PROMPT_2_1_CAPTURE, 'claude').reason,
+      'claude_bypass_prompt',
+    );
+    assert.equal(classifyWorkerStartupInjectSafety(CLAUDE_BYPASS_PROMPT_2_1_CAPTURE), 'claude_bypass_prompt');
+  });
+});
+
 describe('sendToWorker validation', () => {
   it('rejects text over 200 chars', async () => {
     await assert.rejects(
@@ -876,7 +940,7 @@ esac
       async ({ logPath }) => {
         await sendToWorker('omx-team-x', 1, 'check inbox');
         const log = await readFile(logPath, 'utf-8');
-        const enterCount = (log.match(/send-keys -t omx-team-x:1 C-m/g) || []).length;
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 Enter/g) || []).length;
         assert.equal(
           enterCount,
           2,
@@ -884,6 +948,49 @@ esac
         );
         assert.match(log, /capture-pane -t omx-team-x:1 -p/);
         assert.match(log, /capture-pane -t omx-team-x:1 -p -S -80/);
+      },
+    );
+  });
+
+  it('submits claude worker triggers with the tmux named key Enter, never C-m', async () => {
+    await withMockTmuxFixture(
+      'omx-tmux-claude-submit-named-enter-',
+      (logPath) => `#!/bin/sh
+set -eu
+state_dir="$(dirname "${logPath}")"
+text_sent_file="$state_dir/text-sent"
+printf '%s\\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if [ -f "$text_sent_file" ]; then
+      cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+    else
+      cat <<'EOF'
+✻ Welcome to Claude Code
+EOF
+    fi
+    exit 0
+    ;;
+  send-keys)
+    if [ "\${4:-}" = "-l" ] && [ "\${6:-}" = "check inbox" ]; then
+      : > "$text_sent_file"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+      async ({ logPath }) => {
+        await sendToWorker('omx-team-x', 1, 'check inbox', undefined, 'claude');
+        const log = await readFile(logPath, 'utf-8');
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 Enter/g) || []).length;
+        assert.ok(enterCount >= 1, `expected named Enter submits for a claude worker:\n${log}`);
+        assert.doesNotMatch(log, /send-keys -t omx-team-x:1 C-m/, `claude submit must not use C-m:\n${log}`);
+        assert.doesNotMatch(log, /send-keys -t omx-team-x:1 Tab/, `claude submit must not queue via Tab:\n${log}`);
       },
     );
   });
@@ -930,7 +1037,7 @@ EOF
     if [ "\${4:-}" = "-l" ] && [ "\${6:-}" = "check inbox" ]; then
       : > "$text_sent_file"
     fi
-    if [ "\${4:-}" = "C-m" ]; then
+    if [ "\${4:-}" = "Enter" ]; then
       enter_count=0
       if [ -f "$enter_count_file" ]; then
         enter_count=$(cat "$enter_count_file")
@@ -948,7 +1055,7 @@ esac
       async ({ logPath }) => {
         await sendToWorker('omx-team-x', 1, 'check inbox');
         const log = await readFile(logPath, 'utf-8');
-        const enterCount = (log.match(/send-keys -t omx-team-x:1 C-m/g) || []).length;
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 Enter/g) || []).length;
         assert.ok(
           enterCount >= 4,
           `expected extra submit nudges when Codex queues the trigger:\n${log}`,
@@ -1001,7 +1108,7 @@ esac
           /submit_queued_after_tool_call/,
         );
         const log = await readFile(logPath, 'utf-8');
-        const enterCount = (log.match(/send-keys -t omx-team-x:1 C-m/g) || []).length;
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 Enter/g) || []).length;
         assert.ok(
           enterCount >= 4,
           `expected repeated submit nudges before failing closed on stuck queued banner:\n${log}`,
@@ -1052,7 +1159,7 @@ esac
           /submit_failed/,
         );
         const log = await readFile(logPath, 'utf-8');
-        const enterCount = (log.match(/send-keys -t omx-team-x:1 C-m/g) || []).length;
+        const enterCount = (log.match(/send-keys -t omx-team-x:1 Enter/g) || []).length;
         assert.ok(
           enterCount >= 4,
           `expected repeated submit nudges before failing on the still-visible wrapped draft:\n${log}`,
@@ -4173,7 +4280,7 @@ esac
         assert.equal(waitForWorkerReady('omx-team-x', 1, 5_000), true);
         const log = await readFile(logPath, 'utf-8');
         assert.match(log, /send-keys -t omx-team-x:1 -l -- 2/);
-        assert.match(log, /send-keys -t omx-team-x:1 C-m/);
+        assert.match(log, /send-keys -t omx-team-x:1 Enter/);
       },
     );
   });
@@ -4329,7 +4436,7 @@ EOF
     exit 0
     ;;
   send-keys)
-    if [ "\${4:-}" = "C-m" ]; then
+    if [ "\${4:-}" = "Enter" ]; then
       : > "$accepted_file"
     fi
     exit 0
@@ -4342,12 +4449,108 @@ esac
         async ({ logPath }) => {
           assert.equal(await waitForWorkerReadyAsync('omx-team-x', 1, 5_000), true);
           const log = await readFile(logPath, 'utf-8');
-          assert.match(log, /send-keys -t omx-team-x:1 C-m/);
+          assert.match(log, /send-keys -t omx-team-x:1 Enter/);
         },
       );
     } finally {
       if (typeof previousAutoTrust === 'string') process.env.OMX_TEAM_AUTO_TRUST = previousAutoTrust;
       else delete process.env.OMX_TEAM_AUTO_TRUST;
+    }
+  });
+  it('auto-dismisses the Claude 2.1.x quick-safety-check trust prompt with named Enter', async () => {
+    const previousAutoTrust = process.env.OMX_TEAM_AUTO_TRUST;
+    delete process.env.OMX_TEAM_AUTO_TRUST;
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-worker-ready-async-claude-trust-2-1-',
+        (logPath) => `#!/bin/sh
+set -eu
+state_dir="$(dirname "${logPath}")"
+accepted_file="$state_dir/accepted"
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if [ -f "$accepted_file" ]; then
+      cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+    else
+      cat <<'EOF'
+${CLAUDE_TRUST_PROMPT_2_1_CAPTURE}
+EOF
+    fi
+    exit 0
+    ;;
+  send-keys)
+    if [ "\${4:-}" = "Enter" ]; then
+      : > "$accepted_file"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          assert.equal(await waitForWorkerReadyAsync('omx-team-x', 1, 5_000), true);
+          const log = await readFile(logPath, 'utf-8');
+          assert.match(log, /send-keys -t omx-team-x:1 Enter/);
+          assert.doesNotMatch(log, /send-keys -t omx-team-x:1 C-m/);
+        },
+      );
+    } finally {
+      if (typeof previousAutoTrust === 'string') process.env.OMX_TEAM_AUTO_TRUST = previousAutoTrust;
+      else delete process.env.OMX_TEAM_AUTO_TRUST;
+    }
+  });
+
+  it('auto-accepts the Claude 2.1.x bypass-permissions warning and then observes readiness', async () => {
+    const previousAutoAccept = process.env.OMX_TEAM_AUTO_ACCEPT_BYPASS;
+    delete process.env.OMX_TEAM_AUTO_ACCEPT_BYPASS;
+    try {
+      await withMockTmuxFixture(
+        'omx-tmux-worker-ready-async-claude-bypass-2-1-',
+        (logPath) => `#!/bin/sh
+set -eu
+state_dir="$(dirname "${logPath}")"
+accepted_file="$state_dir/accepted"
+printf '%s\n' "$*" >> "${logPath}"
+case "$1" in
+  capture-pane)
+    if [ -f "$accepted_file" ]; then
+      cat <<'EOF'
+${READY_HELPER_CAPTURE}
+EOF
+    else
+      cat <<'EOF'
+${CLAUDE_BYPASS_PROMPT_2_1_CAPTURE}
+EOF
+    fi
+    exit 0
+    ;;
+  send-keys)
+    if [ "\${4:-}" = "-l" ] && [ "\${6:-}" = "2" ]; then
+      : > "$accepted_file"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`,
+        async ({ logPath }) => {
+          assert.equal(await waitForWorkerReadyAsync('omx-team-x', 1, 5_000), true);
+          const log = await readFile(logPath, 'utf-8');
+          assert.match(log, /send-keys -t omx-team-x:1 -l -- 2/);
+          assert.match(log, /send-keys -t omx-team-x:1 Enter/);
+          assert.doesNotMatch(log, /send-keys -t omx-team-x:1 C-m/);
+        },
+      );
+    } finally {
+      if (typeof previousAutoAccept === 'string') process.env.OMX_TEAM_AUTO_ACCEPT_BYPASS = previousAutoAccept;
+      else delete process.env.OMX_TEAM_AUTO_ACCEPT_BYPASS;
     }
   });
 
@@ -4430,6 +4633,9 @@ describe('createTeamSession tmux instance tagging', () => {
       ['%2', undefined, '%2'],
       ['%2\n', undefined, '%2'],
       ['%2\r\n', undefined, '%2'],
+      ['%2:omx_source_receipt', 'omx_source_receipt', '%2'],
+      ['%2:omx_source_receipt\n', 'omx_source_receipt', '%2'],
+      ['%2:omx_source_receipt\r\n', 'omx_source_receipt', '%2'],
       ['%2\tomx_source_receipt', 'omx_source_receipt', '%2'],
       ['%2\tomx_source_receipt\n', 'omx_source_receipt', '%2'],
       ['notice\n%2\n', undefined, null],
@@ -4439,11 +4645,46 @@ describe('createTeamSession tmux instance tagging', () => {
       ['%2\n\n', undefined, null],
       ['%2 warning\n', undefined, null],
       [' %2\n', undefined, null],
-      ['%2\tomx_source_other\n', 'omx_source_receipt', null],
-      ['%2\tomx_source_receipt\n%3\tomx_source_receipt\n', 'omx_source_receipt', null],
+      ['%2', 'omx_source_receipt', null],
+      ['%2\\tomx_source_receipt\n', 'omx_source_receipt', null],
+      ['%2:omx_source_other\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt:trailing\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt trailing\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt\n%3:omx_source_receipt\n', 'omx_source_receipt', null],
+      ['%2:omx_source_receipt\nnotice\n', 'omx_source_receipt', null],
       ['notice only\n', undefined, null],
     ] as const) {
       assert.equal(parseSplitWindowPaneId(stdout, receipt), expected);
+    }
+  });
+
+  it('binds one exact tmux-safe split receipt format and rejects malformed construction inputs', () => {
+    const receipt = 'omx_source_123_456_deadbeef';
+    const effect = "split-window -h -P -F '#{pane_id}' -t %1 'worker command'";
+    assert.equal(
+      bindSplitWindowReceiptFormat(effect, receipt),
+      "split-window -h -P -F '#{pane_id}:omx_source_123_456_deadbeef' -t %1 'worker command'",
+    );
+    assert.throws(
+      () => bindSplitWindowReceiptFormat("split-window -h -P -t %1 'worker command'", receipt),
+      /tmux_split_window_format_contract_invalid/,
+    );
+    assert.throws(
+      () => bindSplitWindowReceiptFormat(`${effect} ${effect}`, receipt),
+      /tmux_split_window_format_contract_invalid/,
+    );
+    for (const invalidReceipt of [
+      'omx_source_bad:field',
+      'omx_source_#{pane_id}',
+      'omx_source_bad;kill-pane',
+      "omx_source_bad'quote",
+      'omx_source_bad receipt',
+      'wrong_prefix_receipt',
+    ]) {
+      assert.throws(
+        () => bindSplitWindowReceiptFormat(effect, invalidReceipt),
+        /tmux_source_transaction_receipt_invalid/,
+      );
     }
   });
 
@@ -8548,7 +8789,7 @@ esac
           assert.match(commands[index - 1] ?? '', exactGlobalPaneProof, `fresh proof must immediately precede ${command}`);
         }
         assert.match(commands.join('\n'), /send-keys -t %9 -l -- check inbox/);
-        assert.doesNotMatch(commands.join('\n'), /send-keys -t %9 C-m/);
+        assert.doesNotMatch(commands.join('\n'), /send-keys -t %9 (?:C-m|Enter)/);
       },
     );
   });

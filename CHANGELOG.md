@@ -3,7 +3,49 @@
 All notable changes to this project are documented in this file.
 
 ## [Unreleased]
+## [0.21.0] - 2026-08-22
 
+Minor release for the exact 99-commit range `v0.20.5..0f2bbb704b83f94a69622b1915f555498e0dd283` (310 files, +31,779/−69,216). This is the post-epic consolidation train: deprecated skills are removed with migration stubs, hard workflow gates are replaced by advisory guidance, state becomes a single-source-of-truth with a read-only MCP surface, and `omx autopilot` returns as the canonical staged orchestrator. Consumers invoking removed skills or MCP writer tools receive explicit migration errors — this is an intentional breaking change with migration paths.
+
+### Removed
+
+- **Deprecated skills and prompts** — 25 removed skills now fail fast through a uniform sunset-stub resolver with direct replacements: `$ralph` → `$ultragoal` (`omx ralph` CLI and persistence runtime unaffected), `$ultrawork`/`$ecomode`/`$swarm` → `$team`, `$prometheus-strict` → `$plan`, `$review`/`$security-review` → `$code-review`, `$ask-claude`/`$ask-gemini` → `$ask`, `$deepsearch` → `$analyze`, `$frontend-ui-ux` → `$design`, `$visual-verdict`/`$web-clone` → `$visual-ralph`, `$help` → `$omx-setup`; `$tdd`, `$note`, `$trace`, and `$build-fix` removed without a direct replacement. Prompts `prometheus-strict-metis`, `momus`, `oracle`, `scholastic`, and `sisyphus-lite` and their agents are deregistered (#3506, #3502, #3508).
+- **MCP state writer tools** — `state_write` and `state_clear` are removed from the MCP surface and now return explicit deprecation errors; durable writes route exclusively through the CLI/programmatic state operations (#3507, #3498).
+- **Hard workflow gates** — the Autopilot/Ralplan consensus-receipt gate and the planning-gate requirement are removed; workflow transitions no longer require a host-issued consensus receipt (#3492).
+- **Merged-away execution loops** — the standalone autopilot/pipeline loops are merged into the unified planning/execution surfaces (#3502, #3508).
+
+### Added
+
+- **`omx autopilot` canonical orchestrator** — first-class CLI command restoring the staged `$deep-interview` → `$ralplan` → `$ultragoal` orchestration as the canonical chain (#3518, #3517).
+- **Ultragoal ordinary/strict modes** — the completion cohort gate is advisory in ordinary mode and strict in strict mode (#3500, #3505).
+- **Upgrade fixture and drift tests** — a 0.20.x → 0.21 upgrade fixture plus generator `--check` surfaces are promoted into `npm test` (#3509).
+- **Setup flags** — `--disable-hooks` (disable only OMX-owned hook registrations, preserving foreign hooks) and `omx doctor --repair-state` (archive stale state projections under `.omx/archive/`) (#3497, #3507).
+
+### Changed
+
+- **State single source of truth** — a sole-writer state model with read-only MCP projection, shared handoff-carrier invariants for every writer, explicit stale-projection retirement, and fail-closed handling of corrupt or laundered carriers (#3507, #3498 follow-ups).
+- **Hooks simplified; PreToolUse advisory-only** — conductor PreToolUse write guards are replaced by advisory guidance with Codex App capability warnings (#3497, #3492).
+- **Prompt architecture slimmed** — invariants are centralized and the prompt surface reduced (#3513).
+- **Bounded plugin lifecycle** — plugin snapshots are bounded with a hook escape hatch, unpinned historical snapshots retired, and deprecated-skill retirement keyed to install badges (#3499, #3512).
+- **Team worker provenance** — team workers on external OMX state roots are authorized through evidence-returning provenance verification shared by the native hook and `omx doctor --team` (#3537).
+- **Session pointer authority split** — read semantics and write authority are separated on platforms without process-birth evidence; identity-indeterminate live pointers count as occupied evidence but never grant write authority, with bounded unproven-pointer adoption and verified-dead pointer quarantine (#3527, #3541, #3528).
+- **Dependencies** — `@biomejs/biome` 2.5.6→2.5.8 (#3532) and `@types/node` 26.1.2→26.2.0 (#3485).
+
+### Fixed
+
+- **Detached `--madmax` root identity on macOS** — path-alias canonicalization, post-create root re-resolution, and path-alias-insensitive launch-context keys; regression-locked by #3550/#3551.
+- **Detached tmux owner race** — post-tag owner mutation is retried under an unchanged authority fence (#3540, #3541).
+- **macOS arm64 runtime hydration** — `omx-runtime` hydrates and is discovered on arm64 npm installs (#3519, #3520).
+- **URL reader false truncation** — content at an exact size limit is no longer reported truncated (#3546).
+- **Notification durations** — zero and invalid durations are handled (#3544).
+- **Worker triggers** — submitted with tmux named `Enter` instead of raw `C-m`, with Claude 2.1.x prompt detection (#3531).
+- **Team scale-down claim boundary** — synchronization coverage made load-tolerant (#3548, #3549).
+- **Guarded tmux split receipts** — format-string injection is rejected (#3489).
+- **Ralplan → Ultragoal handoff** — reachable via user-authorized execution handoff (#3463, #3483).
+- **Conductor delegation lanes** — unblocked under typed, positively-supported native spawn surfaces (#3482).
+- **HUD Fish parsing** — tmux parsing no longer breaks on Fish `export` (#3480).
+- **Version display** — `OMX_VERSION_REVISION` takes precedence over `OMX_GIT_REVISION` (#3417).
+- **Canonical contracts** — workflow and hook recovery contracts aligned (#3514, #3486).
 ## [0.20.5] - 2026-08-10
 
 Patch release for the exact 68-commit range `v0.20.4..13c08f84cb6c27750b8f5c4a4d5105faad074196`. No intentional breaking CLI or package-layout changes.

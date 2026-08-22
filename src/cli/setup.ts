@@ -57,6 +57,7 @@ import {
 } from "../utils/file-durability.js";
 import {
 	buildMergedConfig,
+	formatTomlStringArray,
 	getRootModelName,
 	getRootTomlArray,
 	hasLegacyOmxTeamRunTable,
@@ -86,6 +87,7 @@ import {
 	classifyManagedCodexNativeHookWindowsShimOwnership,
 	ManagedCodexHooksPlanError,
 	type ManagedCodexHookTrustState,
+	type ManagedCodexHooksPlan,
 	validateCodexHooksConfigStrict,
 } from "../config/codex-hooks.js";
 
@@ -105,7 +107,7 @@ import {
 	isSetupPromptAssetName,
 } from "../agents/policy.js";
 import { getPackageRoot } from "../utils/package.js";
-import { readSessionState, isSessionStale } from "../hooks/session.js";
+import { readSessionState, classifySessionStateLiveness } from "../hooks/session.js";
 import { getCatalogHeadlineCounts } from "./catalog-contract.js";
 import { tryReadCatalogManifest } from "../catalog/reader.js";
 import { DEFAULT_FRONTIER_MODEL } from "../config/models.js";
@@ -138,13 +140,13 @@ import {
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
 	OMX_PLUGIN_NAME,
+	discoverOmxPluginCacheDirs,
 	materializePackagedOmxPluginCache,
 	resolvePackagedOmxMarketplace,
 	upsertLocalOmxMarketplaceRegistration,
 	upsertLocalOmxPluginEnablement,
 	upsertLocalOmxPluginMcpServerEnablement,
 	hasLocalOmxPluginMcpServerRegistrations,
-	pluginHookCacheMatchesPackaged,
 } from "./plugin-marketplace.js";
 import { resolveCodexHookFeatureSupportForCli } from "./codex-feature-probe.js";
 
@@ -186,6 +188,7 @@ interface PluginDeveloperInstructionsDecision {
 interface SetupOptions {
 	codexFeaturesProbe?: () => string | null;
 	codexVersionProbe?: () => string | null;
+	disableHooks?: boolean;
 	force?: boolean;
 	mergeAgents?: boolean;
 	mergeAgentsPolicy?: { kind: "set"; value: boolean } | { kind: "clear" };
@@ -197,6 +200,8 @@ interface SetupOptions {
 	verbose?: boolean;
 	agentsOverwritePrompt?: (destinationPath: string) => Promise<boolean>;
 	skipNativeAgentRefresh?: boolean;
+	/** Trusted setup-owned receipt location, never inside the user skills directory. */
+	skillReceiptPath?: string;
 	setupScopePrompt?: (defaultScope: SetupScope) => Promise<SetupScope>;
 	persistedSetupReviewPrompt?: (
 		preferences: Partial<PersistedSetupScope>,
@@ -278,7 +283,6 @@ const LEGACY_PROJECT_GITIGNORE_ENTRIES = [".codex/"] as const;
 const SETUP_ONLY_INSTALLABLE_SKILLS = new Set(["wiki"]);
 const DEFAULT_SETUP_MCP_MODE: SetupMcpMode = "none";
 const SKIP_NATIVE_AGENT_REFRESH_ENV = "OMX_SKIP_NATIVE_AGENT_REFRESH";
-const HARD_DEPRECATED_SKILL_NAMES = new Set(["web-clone"]);
 const TEAM_MODE_SKILL_NAMES = new Set(["team", "worker"]);
 const TEAM_MODE_PROMPT_NAMES = new Set(["team-executor"]);
 const TEAM_MODE_NATIVE_AGENT_NAMES = new Set(["team-executor"]);
@@ -2292,12 +2296,170 @@ export async function validateSkillFile(skillMdPath: string): Promise<void> {
 	parseSkillFrontmatter(content, skillMdPath);
 }
 
+const INSTALLED_SKILL_BADGE_PREFIX = "[OMX] ";
+
+/**
+ * Does this installed skill directory carry the badge OMX writes on install?
+ *
+ * The badge replaced a hand-maintained name list as the SIGNAL that a directory came from OMX, and it
+ * is the only such signal that survives a skill being deleted from the catalog. It is NOT sufficient
+ * for deletion on its own: a user who edits the body keeps the badge, so ordinary removal paths also
+ * require `isUnmodifiedRecordedInstall` proof from the install receipt. The single exception is
+ * `--force` on a catalog-known name, which is an explicit destructive opt-in.
+ */
+/**
+ * Per-file digests of what OMX actually installed, so retirement can prove a directory is an
+ * UNMODIFIED OMX install rather than merely badged.
+ *
+ * The description badge alone is not sufficient ownership evidence for deletion: a user who edits the
+ * body of a retired skill keeps the badge, and archiving their edit is not preserving it. A receipt
+ * distinguishes "we wrote exactly these bytes" from "this looks like ours". Directories with no
+ * receipt - including installs that predate it - are conservatively RETAINED, which trades slower
+ * cleanup of legacy installs for never deleting user work.
+ */
+interface InstalledSkillReceipt {
+  version: 1;
+  skills: Record<string, { files: Record<string, string> }>;
+}
+
+function installedSkillReceiptPath(scope: SetupScope, projectRoot: string): string {
+  const authorityRoot = scope === "project" ? projectRoot : homedir();
+  return join(authorityRoot, ".omx", "state", "setup", "installed-skills.json");
+}
+
+async function readInstalledSkillReceipt(receiptPath: string): Promise<InstalledSkillReceipt> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(receiptPath, "utf-8"),
+    ) as InstalledSkillReceipt;
+    if (parsed?.version === 1 && parsed.skills && typeof parsed.skills === "object") {
+      // Re-key through a prototype-less record so a `__proto__` entry in a persisted receipt is a
+      // real own property on both sides of the comparison.
+      const skills: InstalledSkillReceipt["skills"] = Object.create(null);
+      for (const [name, entry] of Object.entries(parsed.skills)) {
+        const files: Record<string, string> = Object.create(null) as Record<string, string>;
+        for (const [file, digest] of Object.entries(entry?.files ?? {})) files[file] = String(digest);
+        skills[name] = { files };
+      }
+      return { version: 1, skills };
+    }
+  } catch {
+    // A missing or unreadable receipt means "no proof of ownership", which retains conservatively.
+  }
+  return { version: 1, skills: Object.create(null) as InstalledSkillReceipt["skills"] };
+}
+
+/**
+ * Digest the CURRENT contents of a skill directory, used to compare against a receipt.
+ *
+ * Non-regular entries (symlinks, sockets) are recorded as a sentinel rather than skipped, so a
+ * directory containing one can never compare equal to a receipt of regular files and is therefore
+ * retained instead of deleted.
+ */
+async function digestSkillDirectory(skillDir: string): Promise<Record<string, string>> {
+  // Prototype-less: a file literally named `__proto__` assigned into a normal object literal is not an
+  // own enumerable property, so it would vanish from Object.keys() and let a user entry be deleted
+  // while the comparison still reported equality.
+  const files: Record<string, string> = Object.create(null) as Record<string, string>;
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, relPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        files[relPath] = "non-regular-entry";
+        continue;
+      }
+      files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
+    }
+  };
+  await walk(skillDir, "");
+  return files;
+}
+
+/** True only when every current file matches the digest OMX recorded at install time. */
+async function isUnmodifiedRecordedInstall(
+  receiptPath: string,
+  skillName: string,
+  skillDir: string,
+): Promise<boolean> {
+  const receipt = await readInstalledSkillReceipt(receiptPath);
+  const recorded = receipt.skills[skillName]?.files;
+  if (!recorded || Object.keys(recorded).length === 0) return false;
+  let current: Record<string, string>;
+  try {
+    current = await digestSkillDirectory(skillDir);
+  } catch {
+    return false;
+  }
+  const recordedNames = Object.keys(recorded).sort();
+  const currentNames = Object.keys(current).sort();
+  if (recordedNames.length !== currentNames.length) return false;
+  return recordedNames.every((name, index) => currentNames[index] === name && current[name] === recorded[name]);
+}
+
+/**
+ * Record digests for EXACTLY the files OMX wrote, keyed by skill.
+ *
+ * Digesting the destination tree instead would poison the receipt: a note a user drops into an active
+ * skill directory would be recorded as OMX-owned and then deleted when that skill is later retired.
+ * The receipt therefore describes the installer's own output, and any extra entry present at
+ * retirement time makes the comparison fail, which retains the directory.
+ */
+async function writeInstalledSkillReceipt(
+  receiptPath: string,
+  skillsDir: string,
+  writtenFilesBySkill: ReadonlyMap<string, readonly string[]>,
+  options: Pick<SetupOptions, "dryRun">,
+): Promise<void> {
+  if (options.dryRun) return;
+  const receipt = await readInstalledSkillReceipt(receiptPath);
+  for (const [name, relativePaths] of writtenFilesBySkill) {
+    const files: Record<string, string> = Object.create(null) as Record<string, string>;
+    let complete = true;
+    for (const relPath of relativePaths) {
+      const full = join(skillsDir, name, relPath);
+      try {
+        files[relPath] = createHash("sha256").update(await readFile(full)).digest("hex");
+      } catch {
+        complete = false;
+        break;
+      }
+    }
+    if (complete && Object.keys(files).length > 0) receipt.skills[name] = { files };
+    else delete receipt.skills[name];
+  }
+  try {
+    await mkdir(dirname(receiptPath), { recursive: true });
+    await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  } catch {
+    // A receipt we cannot persist simply means the next refresh retains conservatively.
+  }
+}
+
+async function isOmxManagedInstalledSkillDir(skillDir: string): Promise<boolean> {
+	const skillMdPath = join(skillDir, "SKILL.md");
+	if (!existsSync(skillMdPath)) return false;
+	try {
+		const metadata = parseSkillFrontmatter(
+			await readFile(skillMdPath, "utf-8"),
+			skillMdPath,
+		);
+		return metadata.description.startsWith(INSTALLED_SKILL_BADGE_PREFIX);
+	} catch {
+		return false;
+	}
+}
+
 function rewriteInstalledSkillDescriptionBadge(
 	content: string,
 	filePath = "SKILL.md",
 ): string {
 	const metadata = parseSkillFrontmatter(content, filePath);
-	const badgePrefix = "[OMX] ";
+	const badgePrefix = INSTALLED_SKILL_BADGE_PREFIX;
 	const displayDescription = metadata.description.startsWith(badgePrefix)
 		? metadata.description
 		: `${badgePrefix}${metadata.description}`;
@@ -2800,204 +2962,11 @@ async function resolveSetupScope(
 	return { scope: DEFAULT_SETUP_SCOPE, source: "default" };
 }
 
-async function readPluginManifestName(
-	manifestPath: string,
-): Promise<string | null> {
-	try {
-		const parsed = JSON.parse(await readFile(manifestPath, "utf-8")) as unknown;
-		return typeof parsed === "object" &&
-			parsed !== null &&
-			"name" in parsed &&
-			typeof (parsed as { name?: unknown }).name === "string"
-			? (parsed as { name: string }).name
-			: null;
-	} catch {
-		return null;
-	}
-}
-
-interface OmxPluginCacheManifest {
-	name: string | null;
-	version: string | null;
-	skills: string | null;
-	hooks: string | null;
-}
-
-async function readPluginManifestSummary(
-	manifestPath: string,
-): Promise<OmxPluginCacheManifest | null> {
-	try {
-		const parsed = JSON.parse(await readFile(manifestPath, "utf-8")) as unknown;
-		if (typeof parsed !== "object" || parsed === null) return null;
-		const manifest = parsed as {
-			name?: unknown;
-			version?: unknown;
-			skills?: unknown;
-			hooks?: unknown;
-		};
-		return {
-			name: typeof manifest.name === "string" ? manifest.name : null,
-			version: typeof manifest.version === "string" ? manifest.version : null,
-			skills: typeof manifest.skills === "string" ? manifest.skills : null,
-			hooks: typeof manifest.hooks === "string" ? manifest.hooks : null,
-		};
-	} catch {
-		return null;
-	}
-}
-
-async function listChildDirectoryNames(dir: string): Promise<string[] | null> {
-	try {
-		const entries = await readdir(dir, { withFileTypes: true });
-		return entries
-			.filter((entry) => entry.isDirectory())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return null;
-	}
-}
-
-async function discoverOmxPluginCacheDirs(
-	cacheRoot = join(codexHome(), "plugins", "cache"),
-): Promise<string[]> {
-	if (!existsSync(cacheRoot)) return [];
-
-	const queue: Array<{ path: string; depth: number }> = [
-		{ path: cacheRoot, depth: 0 },
-	];
-	const maxDepth = 5;
-	const matches: string[] = [];
-
-	while (queue.length > 0) {
-		const current = queue.shift();
-		if (!current) break;
-
-		const manifestPath = join(current.path, ".codex-plugin", "plugin.json");
-		if (existsSync(manifestPath)) {
-			const name = await readPluginManifestName(manifestPath);
-			if (name === "oh-my-codex") {
-				matches.push(current.path);
-				continue;
-			}
-		}
-
-		if (current.depth >= maxDepth) continue;
-
-		let entries;
-		try {
-			entries = await readdir(current.path, { withFileTypes: true });
-		} catch {
-			continue;
-		}
-
-		for (const entry of entries) {
-			if (!entry.isDirectory()) continue;
-			if (entry.name === ".git" || entry.name === "node_modules") continue;
-			queue.push({
-				path: join(current.path, entry.name),
-				depth: current.depth + 1,
-			});
-		}
-	}
-
-	return matches.sort();
-}
-
 async function discoverOmxPluginCacheDir(
-	cacheRoot = join(codexHome(), "plugins", "cache"),
-): Promise<string | null> {
-	return (await discoverOmxPluginCacheDirs(cacheRoot))[0] ?? null;
-}
-
-interface PluginDiscoveryCacheRefreshResult {
-	status: "unavailable" | "unchanged" | "refreshed";
-	staleDirs: string[];
-}
-
-async function refreshOmxPluginDiscoveryCache(
-	pkgRoot: string,
-	options: Pick<SetupOptions, "dryRun" | "verbose">,
 	codexHomeDir = codexHome(),
-): Promise<PluginDiscoveryCacheRefreshResult> {
-	const packagedMarketplace = await resolvePackagedOmxMarketplace(pkgRoot);
-	if (!packagedMarketplace) {
-		return { status: "unavailable", staleDirs: [] };
-	}
-
-	const [pkg, expectedSkillNames, cachedDirs] = await Promise.all([
-		readFile(join(pkgRoot, "package.json"), "utf-8").then((raw) =>
-			JSON.parse(raw) as { version?: unknown },
-		),
-		listChildDirectoryNames(join(packagedMarketplace.pluginRoot, "skills")),
-		discoverOmxPluginCacheDirs(join(codexHomeDir, "plugins", "cache")),
-	]);
-	const expectedVersion = typeof pkg.version === "string" ? pkg.version : null;
-	const staleDirs: string[] = [];
-
-	for (const cacheDir of cachedDirs) {
-		const manifest = await readPluginManifestSummary(
-			join(cacheDir, ".codex-plugin", "plugin.json"),
-		);
-		if (manifest?.name !== "oh-my-codex") continue;
-
-		const cachedSkillNames = await listChildDirectoryNames(join(cacheDir, "skills"));
-		const versionChanged =
-			expectedVersion !== null && manifest.version !== expectedVersion;
-		const skillsPointerChanged = manifest.skills !== "./skills/";
-		const hooksPointerChanged = manifest.hooks !== "./hooks/hooks.json";
-		const hookFilesMissing = !existsSync(join(cacheDir, "hooks", "hooks.json"))
-			|| !existsSync(join(cacheDir, "hooks", "codex-native-hook.mjs"))
-			|| !existsSync(join(cacheDir, "hooks", "omx-command.json"));
-		const hookFilesChanged = !hookFilesMissing
-			&& !(await pluginHookCacheMatchesPackaged(cacheDir, packagedMarketplace));
-		const skillListChanged =
-			expectedSkillNames !== null &&
-			cachedSkillNames !== null &&
-			JSON.stringify(cachedSkillNames) !== JSON.stringify(expectedSkillNames);
-
-		if (
-			!versionChanged &&
-			!skillsPointerChanged &&
-			!hooksPointerChanged &&
-			!hookFilesMissing &&
-			!hookFilesChanged &&
-			!skillListChanged
-		) continue;
-
-
-
-		staleDirs.push(cacheDir);
-		if (!options.dryRun) {
-			await rm(cacheDir, { recursive: true, force: true });
-		}
-		if (options.verbose) {
-			const reasons = [
-				versionChanged
-					? `version ${manifest.version ?? "unknown"} -> ${expectedVersion}`
-					: null,
-				skillsPointerChanged
-					? `skills pointer ${manifest.skills ?? "missing"} -> ./skills/`
-					: null,
-				hooksPointerChanged
-					? `hooks pointer ${manifest.hooks ?? "missing"} -> ./hooks/hooks.json`
-					: null,
-				hookFilesMissing ? "plugin hook files missing" : null,
-				hookFilesChanged ? "plugin hook files changed" : null,
-				skillListChanged ? "skill directory list changed" : null,
-			].filter(Boolean);
-			console.log(
-				`  ${options.dryRun ? "would invalidate" : "invalidated"} Codex plugin discovery cache ${cacheDir} (${reasons.join(", ")})`,
-			);
-		}
-	}
-
-	return {
-		status: staleDirs.length > 0 ? "refreshed" : "unchanged",
-		staleDirs,
-	};
+): Promise<string | null> {
+	return (await discoverOmxPluginCacheDirs(codexHomeDir))[0] ?? null;
 }
-
 
 function resolveSetupMcpMode(
 	scope: SetupScope,
@@ -3571,6 +3540,159 @@ interface PlanNativeHookSetupTransactionOptions {
 	forceStatusLinePreset: boolean;
 	configSnapshot: NativeHookTransactionArtifactSnapshot;
 	notifyMetadataSnapshot?: NativeHookTransactionArtifactSnapshot;
+	disableHooks?: boolean;
+}
+
+function stripLocalOmxPluginEnablementForDisable(config: string): string {
+	const lines = config.split(/\r?\n/);
+	const header = '[plugins."oh-my-codex@oh-my-codex-local"]';
+	const start = lines.findIndex((line) => line.trim() === header);
+	if (start >= 0) {
+		let end = lines.length;
+		for (let index = start + 1; index < lines.length; index += 1) {
+			if (/^\s*\[/.test(lines[index]!)) {
+				end = index;
+				break;
+			}
+		}
+		for (let index = end - 1; index > start; index -= 1) {
+			if (/^\s*enabled\s*=\s*true\s*(?:#.*)?$/.test(lines[index]!)) {
+				lines[index] = lines[index]!.replace("true", "false");
+				break;
+			}
+		}
+	}
+	const pluginsStart = lines.findIndex((line) => /^\s*\[plugins\]\s*$/.test(line));
+	if (pluginsStart >= 0) {
+		for (let index = pluginsStart + 1; index < lines.length && !/^\s*\[/.test(lines[index]!); index += 1) {
+			if (/^\s*"oh-my-codex@oh-my-codex-local"\s*=\s*true\s*(?:#.*)?$/.test(lines[index]!)) {
+				lines[index] = lines[index]!.replace("true", "false");
+				break;
+			}
+		}
+	}
+	return lines.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+function stripHookFeatureFlagsForDisable(
+	config: string,
+	preserveNativeHooks: boolean,
+): string {
+	const lines = config.split(/\r?\n/);
+	const featuresStart = lines.findIndex((line) => /^\s*\[features\]\s*$/.test(line));
+	if (featuresStart < 0) return config;
+	let sectionEnd = lines.length;
+	for (let index = featuresStart + 1; index < lines.length; index += 1) {
+		if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[index]!)) {
+			sectionEnd = index;
+			break;
+		}
+	}
+	const removable = new Set(preserveNativeHooks
+		? ["plugin_hooks"]
+		: ["hooks", "codex_hooks", "plugin_hooks"]);
+	for (let index = sectionEnd - 1; index > featuresStart; index -= 1) {
+		const match = /^\s*([A-Za-z0-9_-]+)\s*=\s*true\s*(?:#.*)?$/.exec(lines[index]!);
+		if (match && removable.has(match[1]!)) lines[index] = lines[index]!.replace("true", "false");
+	}
+	const nextFeaturesStart = lines.findIndex((line) => /^\s*\[features\]\s*$/.test(line));
+	if (nextFeaturesStart >= 0) {
+		let nextSectionEnd = lines.length;
+		for (let index = nextFeaturesStart + 1; index < lines.length; index += 1) {
+			if (/^\s*\[\[?[^\]]+\]?\]\s*$/.test(lines[index]!)) {
+				nextSectionEnd = index;
+				break;
+			}
+		}
+		if (lines.slice(nextFeaturesStart + 1, nextSectionEnd).every((line) => line.trim() === "")) {
+			lines.splice(nextFeaturesStart, nextSectionEnd - nextFeaturesStart);
+		}
+	}
+	return lines.join("\n");
+}
+
+interface DisableHooksNotifyPlan {
+	finalConfig: string;
+	metadataPath?: string;
+	metadataAfter: Buffer | null;
+}
+
+function parseDisableHooksNotifyMetadata(
+	snapshot: NativeHookTransactionArtifactSnapshot,
+	metadataPath: string,
+	currentNotify: readonly string[],
+): string[] | null {
+	if (!snapshot.bytes) {
+		throw new ManagedCodexHooksPlanError(
+			"invalid_document",
+			`Refusing to remove managed notification dispatcher: metadata ${metadataPath} is missing.`,
+		);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(decodeNativeHookTransactionUtf8(snapshot.bytes, `notification metadata ${metadataPath}`));
+	} catch (error) {
+		throw new ManagedCodexHooksPlanError(
+			"invalid_document",
+			`Refusing to remove managed notification dispatcher: metadata ${metadataPath} is invalid JSON (${error instanceof Error ? error.message : String(error)}).`,
+		);
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new ManagedCodexHooksPlanError("invalid_document", `Refusing to remove managed notification dispatcher: metadata ${metadataPath} must be an object.`);
+	}
+	const metadata = parsed as Record<string, unknown>;
+	const dispatcherNotify = metadata.dispatcherNotify;
+	if (metadata.managedBy !== "oh-my-codex" || metadata.version !== 1 ||
+		!Array.isArray(dispatcherNotify) ||
+		dispatcherNotify.length !== currentNotify.length ||
+		dispatcherNotify.some((part, index) => part !== currentNotify[index])) {
+		throw new ManagedCodexHooksPlanError("invalid_document", `Refusing to remove managed notification dispatcher: metadata ${metadataPath} does not prove OMX ownership.`);
+	}
+	const previousNotify = metadata.previousNotify;
+	if (previousNotify !== null && (!Array.isArray(previousNotify) || !previousNotify.every((part) => typeof part === "string"))) {
+		throw new ManagedCodexHooksPlanError("invalid_document", `Refusing to remove managed notification dispatcher: metadata ${metadataPath} has invalid previousNotify.`);
+	}
+	return sanitizePreviousNotifyCommand(previousNotify as string[] | null, getPackageRoot());
+}
+
+async function planDisableHooksConfig(
+	existingConfig: string,
+	pkgRoot: string,
+	managedHooksPlan: ManagedCodexHooksPlan | null,
+	codexHomeDir: string,
+	notifyMetadataSnapshot?: NativeHookTransactionArtifactSnapshot,
+): Promise<DisableHooksNotifyPlan> {
+	const priorManagedHookTrustState = managedHooksPlan?.priorTrustState ?? {};
+	let finalConfig = stripManagedCodexHookTrustState(existingConfig, {
+		priorManagedHookTrustState,
+		managedTrustState: {},
+	});
+	finalConfig = stripHookFeatureFlagsForDisable(
+		finalConfig,
+		managedHooksPlan?.hasForeignHooks === true,
+	);
+	finalConfig = stripLocalOmxPluginEnablementForDisable(finalConfig);
+	const notify = getRootTomlArray(finalConfig, "notify");
+	if (!notify || !isOmxManagedNotifyCommand(notify, pkgRoot)) {
+		return { finalConfig, metadataAfter: null };
+	}
+	const metadataPath = getNotifyMetadataPath(codexHomeDir);
+	if (isOmxDispatcherNotifyCommand(notify, pkgRoot)) {
+		const previousNotify = parseDisableHooksNotifyMetadata(
+			notifyMetadataSnapshot ?? { bytes: null, topology: { kind: "absent" } },
+			metadataPath,
+			notify,
+		);
+		finalConfig = removeRootTomlKey(finalConfig, "notify");
+		if (previousNotify) {
+			finalConfig = insertRootTomlKey(
+				finalConfig,
+				`notify = ${formatTomlStringArray(previousNotify)}`,
+			);
+		}
+		return { finalConfig, metadataPath, metadataAfter: null };
+	}
+	return { finalConfig: removeRootTomlKey(finalConfig, "notify"), metadataAfter: null };
 }
 
 async function planNativeHookSetupTransaction(
@@ -3604,8 +3726,46 @@ async function planNativeHookSetupTransaction(
 	let notifyMetadataPrecondition: NativeHookTransactionPrecondition | null = null;
 	let modelUpgrade: NativeHookSetupTransactionPlan["modelUpgrade"];
 	let repairedLegacyTeamRunTable = false;
+	if (options.disableHooks) {
+		let managedHooksPlan: ManagedCodexHooksPlan | null = null;
+		if (existingHooksContent !== null) {
+			const removal = planManagedCodexHooksRemoval(existingHooksContent, options.hooksPath, {
+				platform: options.platform,
+				codexHomeDir: options.codexHomeDir,
+			});
+			if (!removal.ok) throw removal.error;
+			managedHooksPlan = removal;
+			finalHooksContent = removal.finalContent;
+			hooksRemovedCount = removal.removedCount;
+			diagnostics = removal.diagnostics;
+		}
+		const notifyPlan = await planDisableHooksConfig(
+			existingConfig,
+			options.pkgRoot,
+			managedHooksPlan,
+			options.codexHomeDir,
+			options.notifyMetadataSnapshot,
+		);
+		finalConfig = notifyPlan.finalConfig;
+		if (notifyPlan.metadataPath) {
+			const metadataBefore = options.notifyMetadataSnapshot ?? { bytes: null, topology: { kind: "absent" } };
+			notifyMetadataPrecondition = nativeHookTransactionPrecondition(
+				"metadata",
+				notifyPlan.metadataPath,
+				`notification metadata ${notifyPlan.metadataPath}`,
+				metadataBefore,
+			);
+			notifyMetadataArtifact = nativeHookTransactionArtifact(
+				"metadata",
+				notifyPlan.metadataPath,
+				`notification metadata ${notifyPlan.metadataPath}`,
+				metadataBefore,
+				notifyPlan.metadataAfter,
+			);
+		}
+	}
 
-	if (options.isPluginInstallMode) {
+	if (!options.disableHooks && options.isPluginInstallMode) {
 		const pluginPlan = buildPluginModeHooksConfigPlan(
 			existingConfig,
 			existingHooksContent,
@@ -3648,7 +3808,7 @@ async function planNativeHookSetupTransaction(
 		);
 		finalConfig = developerInstructionsPlan.finalConfig;
 		pluginDeveloperInstructionsResult = developerInstructionsPlan.result;
-	} else {
+	} else if (!options.disableHooks) {
 		const managedHooksPlan = planManagedCodexHooksMerge(
 			existingHooksContent,
 			options.pkgRoot,
@@ -3733,7 +3893,7 @@ async function planNativeHookSetupTransaction(
 		}
 	}
 
-	if (options.isPluginInstallMode && options.sharedMcpRegistry.servers.length > 0) {
+	if (!options.disableHooks && options.isPluginInstallMode && options.sharedMcpRegistry.servers.length > 0) {
 		finalConfig = mergeSharedMcpRegistryBlock(
 			finalConfig,
 			options.sharedMcpRegistry.servers,
@@ -3781,13 +3941,15 @@ async function planNativeHookSetupTransaction(
 			finalHooksContent,
 			shimPath,
 		);
+		const shouldDeleteShim =
+			shimReference === "not_referenced" &&
+			(options.disableHooks || (options.isPluginInstallMode && options.pluginScopedHooks));
 		shimArtifact = nativeHookTransactionArtifact(
 			"shim",
 			shimPath,
 			`native hook Windows shim ${shimPath}`,
 			shimSnapshot,
-			options.isPluginInstallMode && options.pluginScopedHooks &&
-			shimReference === "not_referenced"
+			shouldDeleteShim
 				? null
 				: shimAfter,
 		);
@@ -3855,6 +4017,7 @@ async function planNativeHookSetupTransaction(
 
 export async function setup(options: SetupOptions = {}): Promise<void> {
 	const {
+		disableHooks = false,
 		force = false,
 		dryRun = false,
 		installMode: requestedInstallMode,
@@ -4024,6 +4187,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 			`notification metadata ${getNotifyMetadataPath(scopeDirs.codexHomeDir)}`,
 		)
 		: undefined;
+	if (disableHooks && !notifyMetadataSnapshot && isOmxDispatcherNotifyCommand(getRootTomlArray(existingConfigForMcpMigration, "notify"), pkgRoot)) {
+		throw new ManagedCodexHooksPlanError(
+			"invalid_document",
+			`Refusing to disable OMX hooks: managed notification metadata is unavailable for ${getNotifyMetadataPath(scopeDirs.codexHomeDir)}.`,
+		);
+	}
 	const firstPartyMcpRegistrationKinds = [
 		hasFirstPartyOmxMcpRegistrations(existingConfigForMcpMigration)
 			? "config.toml [mcp_servers.omx_*]"
@@ -4055,6 +4224,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	const scopeSourceMessage =
 		resolvedScope.source === "persisted" ? " (from .omx/setup-scope.json)" : "";
 	const backupContext = getBackupContext(resolvedScope.scope, projectRoot);
+	const skillReceiptPath = installedSkillReceiptPath(resolvedScope.scope, projectRoot);
 	const isPluginInstallMode = resolvedInstallMode?.installMode === "plugin";
 	const pluginAgentsMdDst =
 		resolvedScope.scope === "project"
@@ -4135,6 +4305,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		forceStatusLinePreset: force,
 		configSnapshot: existingConfigForMcpMigrationSnapshot,
 		notifyMetadataSnapshot,
+		disableHooks,
 	});
 	const summary = createEmptyRunSummary();
 	for (const precondition of nativeHookSetupTransaction.preconditions) {
@@ -4144,6 +4315,24 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 	await assertNativeHookTransactionAncestorPrecondition(
 		nativeHookTransactionAncestorPrecondition,
 	);
+	if (disableHooks) {
+		const disableSummary = createEmptyRunSummary();
+		const durabilityTracker: RegularFileDurabilityTracker = { degraded: false };
+		await commitNativeHookTransaction(
+			nativeHookSetupTransaction.artifacts,
+			nativeHookSetupTransaction.preconditions,
+			nativeHookTransactionAncestorPrecondition,
+			backupContext,
+			durabilityTracker,
+			disableSummary.config,
+			{ dryRun, verbose },
+		);
+		emitDegradedDurabilityWarning("native-hook setup", durabilityTracker);
+		console.log(
+			`${dryRun ? "Would disable" : "Disabled"} OMX hook registrations; non-OMX hooks and .omx artifacts were preserved.`,
+		);
+		return;
+	}
 
 	console.log("oh-my-codex setup");
 	console.log("=================\n");
@@ -4303,7 +4492,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				skillsSrc,
 				skillsDst,
 				backupContext,
-				{ dryRun, verbose },
+				{ dryRun, verbose, skillReceiptPath },
 			);
 			summary.skills.backedUp += cleanup.backedUp;
 			summary.skills.removed += cleanup.removedSkillNames.length;
@@ -4329,6 +4518,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 					force,
 					dryRun,
 					verbose,
+					skillReceiptPath,
 					teamMode: resolvedTeamMode,
 				},
 			);
@@ -4365,7 +4555,7 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		console.log(
 			`  Native agent role refresh complete (${scopeDirs.nativeAgentsDir}); plugin mode still installs role TOML so agent_type routing works.\n`,
 		);
-	} else {
+	} else if (!options.disableHooks) {
 		summary.nativeAgents = await refreshNativeAgentConfigs(
 			pkgRoot,
 			scopeDirs.nativeAgentsDir,
@@ -4469,23 +4659,6 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 				`  Local Codex plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} already registered (${pkgRoot}).`,
 			);
 		}
-		const pluginCacheRefresh = await refreshOmxPluginDiscoveryCache(
-			pkgRoot,
-			{
-				dryRun,
-				verbose,
-			},
-			scopeDirs.codexHomeDir,
-		);
-		if (pluginCacheRefresh.status === "refreshed") {
-			if (pluginCacheRefresh.staleDirs.length > 0) {
-				console.log(
-					`  ${dryRun ? "Would invalidate" : "Invalidated"} ${pluginCacheRefresh.staleDirs.length} stale Codex plugin discovery cache entr${pluginCacheRefresh.staleDirs.length === 1 ? "y" : "ies"} so plugin skills refresh from the packaged manifest.`,
-				);
-			}
-		} else if (pluginCacheRefresh.status === "unchanged") {
-			console.log("  Codex plugin discovery cache already matches packaged plugin metadata.");
-		}
 		const pluginCacheMaterialize = await materializePackagedOmxPluginCache(
 			scopeDirs.codexHomeDir,
 			preflightMarketplace,
@@ -4573,7 +4746,12 @@ export async function setup(options: SetupOptions = {}): Promise<void> {
 		resolvedScope.scope === "project"
 			? await readSessionState(projectRoot)
 			: null;
-	const sessionIsActive = activeSession && !isSessionStale(activeSession);
+	// Only a definitely dead session releases the overlay. macOS records no process-birth evidence, so
+	// a live session classifies as identity-indeterminate; treating that as stale would let setup
+	// overwrite the AGENTS.md overlay of a running session.
+	const sessionIsActive =
+		activeSession !== null &&
+		classifySessionStateLiveness(activeSession) !== "stale-dead";
 	if (isPluginInstallMode) {
 		const agentsMdSrc = join(pkgRoot, "templates", "AGENTS.md");
 		const pluginAgentsMdExists = pluginAgentsMdPathExists;
@@ -5699,9 +5877,15 @@ export async function installSkills(
 	): boolean =>
 		isCatalogInstallableStatus(status) || installableSkillNames.has(skillName);
 	const entries = await readdir(srcDir, { withFileTypes: true });
-	const staleCandidateSkillNames = new Set(
+	const catalogKnownSkillNames = new Set(
 		manifest?.skills.map((skill) => skill.name) ?? [],
 	);
+	const staleCandidateSkillNames = new Set(catalogKnownSkillNames);
+	if (existsSync(dstDir)) {
+		for (const installed of await readdir(dstDir, { withFileTypes: true })) {
+			if (installed.isDirectory()) staleCandidateSkillNames.add(installed.name);
+		}
+	}
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
 		staleCandidateSkillNames.add(entry.name);
@@ -5738,6 +5922,7 @@ export async function installSkills(
 		await validateSkillFile(join(skill.sourceDir, "SKILL.md"));
 	}
 
+	const writtenFilesBySkill = new Map<string, readonly string[]>();
 	for (const skill of installableSkills) {
 		const skillName = skill.name;
 		const skillSrc = skill.sourceDir;
@@ -5748,11 +5933,13 @@ export async function installSkills(
 		}
 
 		const skillFiles = await readdir(skillSrc);
+		const writtenForSkill: string[] = [];
 		for (const sf of skillFiles) {
 			const sfPath = join(skillSrc, sf);
 			const sfStat = await stat(sfPath);
 			if (!sfStat.isFile()) continue;
 			const dstPath = join(skillDst, sf);
+			writtenForSkill.push(sf);
 			if (sf === "SKILL.md") {
 				await syncManagedContent(
 					rewriteInstalledSkillDescriptionBadge(
@@ -5776,6 +5963,14 @@ export async function installSkills(
 				`skill ${skillName}/${sf}`,
 			);
 		}
+		writtenFilesBySkill.set(skillName, writtenForSkill);
+	}
+
+	// Record what we just wrote so a later refresh can prove an unmodified install before retiring it.
+	// Without an authority path, refuse to create a receipt rather than placing deletion authority
+	// in the user-writable skills directory.
+	if (options.skillReceiptPath) {
+		await writeInstalledSkillReceipt(options.skillReceiptPath, dstDir, writtenFilesBySkill, options);
 	}
 
 	if (manifest && existsSync(dstDir)) {
@@ -5783,14 +5978,34 @@ export async function installSkills(
 			const status = skillStatusByName?.get(staleSkill);
 			const disabledTeamSkill = !teamModeEnabled(options.teamMode) && TEAM_MODE_SKILL_NAMES.has(staleSkill);
 			if (isSetupInstallableSkill(staleSkill, status) && !disabledTeamSkill) continue;
-			const hardDeprecated = HARD_DEPRECATED_SKILL_NAMES.has(staleSkill);
-			if (!options.force && !hardDeprecated && !disabledTeamSkill) continue;
 
 			const staleSkillDir = join(dstDir, staleSkill);
 			if (!existsSync(staleSkillDir)) continue;
 
-			if (!options.dryRun) {
-				await rm(staleSkillDir, { recursive: true, force: true });
+			// A directory the catalog no longer ships is ours to retire on any refresh - which is what
+			// makes `omx update` drop deprecated skills without an extra flag - but only when we can
+			// prove it is an UNMODIFIED install we wrote. The badge alone is not proof: a user who
+			// edits the body keeps it, and archiving their edit is not preserving it.
+			const unmodifiedInstall = Boolean(options.skillReceiptPath)
+				&& await isUnmodifiedRecordedInstall(options.skillReceiptPath!, staleSkill, staleSkillDir);
+			const omxManaged = await isOmxManagedInstalledSkillDir(staleSkillDir) && unmodifiedInstall;
+			const forcedCatalogSkill = options.force && catalogKnownSkillNames.has(staleSkill);
+			// Disabling Team mode is a configuration change, not a destructive opt-in, so it must not
+			// delete a directory we cannot prove we wrote. --force remains the explicit destructive path.
+			const removableDisabledTeamSkill = disabledTeamSkill && unmodifiedInstall;
+			if (!omxManaged && !forcedCatalogSkill && !removableDisabledTeamSkill) {
+				summary.skipped += 1;
+				if (options.verbose) {
+					const why = await isOmxManagedInstalledSkillDir(staleSkillDir)
+						? "modified since install, or installed before receipts existed"
+						: "not an OMX-managed skill install";
+					console.log(`  kept ${staleSkill}/ (${why})`);
+				}
+				continue;
+			}
+
+			if (await removeDirectoryCopyAware(staleSkillDir, backupContext, options)) {
+				summary.backedUp += 1;
 			}
 			summary.removed += 1;
 			if (options.verbose) {
@@ -5798,9 +6013,9 @@ export async function installSkills(
 					? "would remove stale skill"
 					: "removed stale skill";
 				const label = status ?? "unlisted";
-				const reason = disabledTeamSkill
+				const reason = removableDisabledTeamSkill
 					? ", Team mode disabled"
-					: hardDeprecated ? ", hard-deprecated" : "";
+					: omxManaged ? ", retired from the catalog" : "";
 				console.log(`  ${prefix} ${staleSkill}/ (status: ${label}${reason})`);
 			}
 		}
@@ -5849,7 +6064,7 @@ async function cleanupLegacyManagedSkills(
 	srcDir: string,
 	dstDir: string,
 	backupContext: SetupBackupContext,
-	options: Pick<SetupOptions, "dryRun" | "verbose">,
+	options: Pick<SetupOptions, "dryRun" | "verbose" | "skillReceiptPath">,
 ): Promise<LegacySkillCleanupResult> {
 	const result: LegacySkillCleanupResult = {
 		backedUp: 0,
@@ -5886,6 +6101,15 @@ async function cleanupLegacyManagedSkills(
 			result.warnings.push(warning);
 			continue;
 		}
+		// A matching SKILL.md does not prove the whole directory is ours: a user file sitting beside it
+		// would be deleted with the directory. Require the same unmodified-install proof the ordinary
+		// retirement sweep uses.
+		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, skillName, installedSkillDir))) {
+			const warning = `Skipping legacy skill cleanup for ${skillName}: directory contents are not a receipted unmodified OMX install.`;
+			result.skippedSkillNames.push(skillName);
+			result.warnings.push(warning);
+			continue;
+		}
 
 		const removed = await removeDirectoryCopyAware(
 			installedSkillDir,
@@ -5895,6 +6119,27 @@ async function cleanupLegacyManagedSkills(
 		if (removed) {
 			result.backedUp += 1;
 			result.removedSkillNames.push(skillName);
+		}
+	}
+
+	// Plugin mode never reinstalls into the legacy directory, so a skill the catalog has retired
+	// would otherwise survive there forever. Retire OMX-badged orphans on every refresh.
+	for (const entry of await readdir(dstDir, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		if (installableSkillNames.has(entry.name)) continue;
+		const installedSkillDir = join(dstDir, entry.name);
+		if (!(await isOmxManagedInstalledSkillDir(installedSkillDir))) continue;
+		// The badge alone is not proof of ownership for deletion; a user-edited body keeps it.
+		if (!options.skillReceiptPath || !(await isUnmodifiedRecordedInstall(options.skillReceiptPath, entry.name, installedSkillDir))) {
+			result.skippedSkillNames.push(entry.name);
+			result.warnings.push(
+				`Skipping retired skill ${entry.name}: modified since install, or installed before receipts existed.`,
+			);
+			continue;
+		}
+		if (await removeDirectoryCopyAware(installedSkillDir, backupContext, options)) {
+			result.backedUp += 1;
+			result.removedSkillNames.push(entry.name);
 		}
 	}
 

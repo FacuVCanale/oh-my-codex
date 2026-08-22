@@ -158,6 +158,7 @@ export function normalizeSkillActiveState(raw) {
   const skill = safeString(raw.skill);
   if (!skill) return null;
   return {
+    ...raw,
     version: asNumber(raw.version) ?? 1,
     active: raw.active !== false,
     skill,

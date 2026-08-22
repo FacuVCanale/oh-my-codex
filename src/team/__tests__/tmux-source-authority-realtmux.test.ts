@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
-import { runSourceAuthorizedTmux, type SourcePaneAuthority } from '../tmux-session.js';
+import { runSourceAuthorizedSplit, runSourceAuthorizedTmux, type SourcePaneAuthority } from '../tmux-session.js';
 import { isRealTmuxAvailable, type TempTmuxSessionFixture, withTempTmuxSession } from './tmux-test-fixture.js';
 
 const SOURCE_AUTHORITY_FORMAT = '#{session_name}\t#{session_id}\t#{session_created}\t#{window_index}\t#{window_id}\t#{pane_id}\t#{pane_pid}';
@@ -121,6 +121,28 @@ describe('runSourceAuthorizedTmux real private-server argv boundary', () => {
           const sendKeysReceipt = 'omx_source_send_keys_3459';
           expectedTransactions.push(expectedIfShellArgv(source, sendKeysEffect, sendKeysReceipt));
           assert.equal(runSourceAuthorizedTmux(source, sendKeysEffect, sendKeysReceipt), sendKeysReceipt);
+
+          const guardedSplitPaneId = runSourceAuthorizedSplit(
+            source,
+            (receipt) => `split-window -d -h -P -F '#{pane_id}' -t ${source.windowId} ${quoteTmuxString(`sleep 60 # ${receipt}`)}`,
+          );
+          assert.match(guardedSplitPaneId, /^%[0-9]+$/, 'guarded split must parse the exact pane/receipt frame');
+          assert.equal(
+            fixture.run(['display-message', '-p', '-t', guardedSplitPaneId, '#{window_id}']),
+            source.windowId,
+            'guarded split must create the pane in the authorized source window',
+          );
+          const guardedSplitTransaction = parseShimTmuxArgv(await readFile(shimLogPath, 'utf-8'))
+            .filter((argv) => argv[0] === 'if-shell')
+            .at(-1);
+          assert.ok(guardedSplitTransaction, 'PATH shim must record the guarded split transaction');
+          assert.match(
+            guardedSplitTransaction[5] ?? '',
+            /split-window .* -F '#\{pane_id\}:omx_source_[A-Za-z0-9_]+'/,
+            'product argv must use a literal tmux-safe separator before the exact split receipt',
+          );
+          assert.doesNotMatch(guardedSplitTransaction[5] ?? '', /#\{pane_id\}\\t/, 'product argv must not depend on tmux expanding backslash-t');
+          expectedTransactions.push(guardedSplitTransaction);
 
           const hostileValue = "literal; no-command 'still literal'";
           const hostileReceipt = `omx_source_hostile'; kill-session -t ${source.sessionName}; #`;
