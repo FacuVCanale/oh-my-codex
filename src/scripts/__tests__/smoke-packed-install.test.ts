@@ -53,6 +53,8 @@ import {
   assertCodexBatchWriteResult,
   assertGeneratedTrustMatchesCodex,
   managedCodexHooksByEvent,
+  assertNativeHookAdvisoryPreToolUse,
+  listPersistedStateFiles,
 } from '../smoke-packed-install.js';
 import { parseNativeSubagentResultDisposition } from '../../leader/contract.js';
 
@@ -1106,7 +1108,7 @@ test('packed install smoke covers directive activation and terminal false-activa
     { name: 'compact-explicit-negation', prompt: '$ralplan,$autopilot are prohibited', expectedSkill: null, expectedStopBlock: false },
     { name: 'compact-implicit-negation', prompt: 'Autopilot mode،deep interview are prohibited.', expectedSkill: null, expectedStopBlock: false },
     { name: 'doc-clause-local-prefix', prompt: '$ralplan; $autopilot is documented in the guide.', expectedSkill: 'ralplan', expectedStopBlock: true },
-    { name: 'doc-chain-described', prompt: 'use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it', expectedSkill: 'team', expectedStopBlock: false, insideTmux: true },
+    { name: 'doc-chain-described', prompt: 'use $ralplan is the workflow command; autopilot mode is documented in the guide; $team execute it', expectedSkill: 'team', expectedStopBlock: true, insideTmux: true },
     { name: 'doc-chain-workflow', prompt: 'use $ralplan is the workflow command; autopilot mode is workflow documentation; use $ralph execute it', expectedSkill: 'ralph', expectedStopBlock: true },
     { name: 'ref-inline-explicit', prompt: '[docs]: $ralplan\n$autopilot build it', expectedSkill: 'autopilot', expectedStopBlock: true },
     { name: 'ref-inline-prompts', prompt: '[docs]: /prompts:architect\n$autopilot build it', expectedSkill: 'autopilot', expectedStopBlock: true },
@@ -1132,10 +1134,10 @@ test('packed install smoke covers directive activation and terminal false-activa
     { name: 'neg-fw-dot-reopen', prompt: 'Do not run $ralplan． use $autopilot build it', expectedSkill: 'autopilot', expectedStopBlock: true },
     { name: 'neg-greek-q-reopen', prompt: 'Do not run $ralplan; use $autopilot build it', expectedSkill: 'autopilot', expectedStopBlock: true },
     { name: 'unicode-attached-contrast', prompt: 'Do not use deep interview яbut use autopilot mode.', expectedSkill: null, expectedStopBlock: false },
-    { name: 'prefix-list-followup', prompt: 'Do not run $ralplan, $autopilot; use $team execute it', expectedSkill: 'team', expectedStopBlock: false, insideTmux: true },
+    { name: 'prefix-list-followup', prompt: 'Do not run $ralplan, $autopilot; use $team execute it', expectedSkill: 'team', expectedStopBlock: true, insideTmux: true },
     { name: 'mixed-postposed-chain', prompt: '$ralplan, autopilot mode, $team are prohibited.', expectedSkill: null, expectedStopBlock: false },
-    { name: 'implicit-first-doc-chain', prompt: 'Autopilot mode and $ralplan are workflow commands; use $team execute it', expectedSkill: 'team', expectedStopBlock: false, insideTmux: true },
-    { name: 'both-mixed-doc-followup', prompt: 'Both autopilot mode and $ralplan are workflow commands; use $team execute it', expectedSkill: 'team', expectedStopBlock: false, insideTmux: true },
+    { name: 'implicit-first-doc-chain', prompt: 'Autopilot mode and $ralplan are workflow commands; use $team execute it', expectedSkill: 'team', expectedStopBlock: true, insideTmux: true },
+    { name: 'both-mixed-doc-followup', prompt: 'Both autopilot mode and $ralplan are workflow commands; use $team execute it', expectedSkill: 'team', expectedStopBlock: true, insideTmux: true },
     { name: 'doc-semicolon-preserves-earlier', prompt: 'Use autopilot mode; use $ralplan is the workflow command.', expectedSkill: 'autopilot', expectedStopBlock: true },
     { name: 'doc-independent-comma', prompt: 'Use autopilot mode, and $ralplan is documented in the guide.', expectedSkill: 'autopilot', expectedStopBlock: true },
     { name: 'reference-unclosed-quote-destination', prompt: '[docs]: "target\n$autopilot build it', expectedSkill: null, expectedStopBlock: false },
@@ -1183,14 +1185,14 @@ test('packed install smoke covers directive activation and terminal false-activa
     { name: 'percent-suffix', prompt: '$ralplan%docs', expectedSkill: null, expectedStopBlock: false },
     { name: 'fullwidth-percent-suffix', prompt: '$ralplan％docs', expectedSkill: null, expectedStopBlock: false },
     { name: 'g1a-ordered-multi-skill', prompt: '$ralplan, $autopilot; $team', expectedSkill: 'ralplan', expectedStopBlock: true, expectedDeferredSkills: ['autopilot', 'team'], expectedActiveSkills: ['ralplan'], insideTmux: true },
-    { name: 'g1c-duplicate-alias', prompt: '$autopilot $oh-my-codex:autopilot build it', expectedSkill: 'autopilot', expectedStopBlock: true, expectedDeferredSkills: [], expectedActiveSkills: [] },
+    { name: 'g1c-duplicate-alias', prompt: '$autopilot $oh-my-codex:autopilot build it', expectedSkill: 'autopilot', expectedStopBlock: true, expectedDeferredSkills: [], expectedActiveSkills: ['autopilot'] },
     { name: 'b3-longer-valid-fence', prompt: '```text\n$autopilot build it\n````\n$ralplan plan it', expectedSkill: 'ralplan', expectedStopBlock: true },
     { name: 'b4-shorter-invalid-fence', prompt: '````text\n$autopilot build it\n```\n$ralplan plan it', expectedSkill: null, expectedStopBlock: false },
     { name: 'b5-different-marker-invalid-fence', prompt: '```text\n$autopilot build it\n~~~\n$ralplan plan it', expectedSkill: null, expectedStopBlock: false },
   ]);
 });
 
-test('packed regression workflow expectations require active Autopilot and Ralplan activation', () => {
+test('packed regression workflow expectations require active supported skills and failed retired ralph receipts', () => {
   assert.doesNotThrow(() => assertPackedRegressionWorkflowState(
     { name: 'active-ralplan', expectedSkill: 'ralplan' },
     { active: true, skill: 'ralplan' },
@@ -1203,11 +1205,26 @@ test('packed regression workflow expectations require active Autopilot and Ralpl
     { name: 'failed-autopilot', expectedSkill: 'autopilot' },
     { active: false, skill: 'autopilot', phase: 'failed', active_skills: [] },
   ), /persisted unexpected workflow state/);
+  assert.doesNotThrow(() => assertPackedRegressionWorkflowState(
+    { name: 'retired-ralph', expectedSkill: 'ralph' },
+    {
+      active: false,
+      skill: 'ralph',
+      phase: 'failed',
+      transition_error: 'Skill "$ralph" has been removed. Use "$ultragoal" instead. The `omx ralph` CLI and ralph persistence runtime are unaffected.',
+      active_skills: [],
+    },
+  ));
+  assert.throws(() => assertPackedRegressionWorkflowState(
+    { name: 'active-retired-ralph', expectedSkill: 'ralph' },
+    { active: true, skill: 'ralph', phase: 'executing' },
+  ), /unexpected retired ralph state/);
 });
 
-test('packed regression Stop expectations keep active Autopilot continuation enabled', () => {
+test('packed regression Stop expectations keep active workflows blocked but retired ralph terminal', () => {
   assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'ralplan', expectedStopBlock: true }), true);
   assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'autopilot', expectedStopBlock: true }), true);
+  assert.equal(shouldPackedRegressionStopBlock({ expectedSkill: 'ralph', expectedStopBlock: true }), false);
 });
 
 test('packed regression environment clears inherited Team routing state', () => {
@@ -1691,6 +1708,102 @@ test('ensureRepoDependencies falls back to npm ci when no reusable node_modules 
 
     assert.equal(result.strategy, 'installed');
     assert.deepEqual(installs, [root]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test('assertNativeHookAdvisoryPreToolUse accepts the two documented advisory shapes', () => {
+  // Empty no-op: the hook intentionally produced no advisory content (#3497).
+  assertNativeHookAdvisoryPreToolUse('advisory-empty', {});
+
+  // Documented advisory context with the PreToolUse event name.
+  assertNativeHookAdvisoryPreToolUse('advisory-context', {
+    systemMessage: 'advisory guidance',
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: 'advisory guidance',
+    },
+  });
+
+  // systemMessage alone, without a hookSpecificOutput envelope, is also advisory.
+  assertNativeHookAdvisoryPreToolUse('advisory-system-message', { systemMessage: 'guidance only' });
+});
+
+test('assertNativeHookAdvisoryPreToolUse rejects outputs that would hide a regression', () => {
+  const rejections: Array<[string, Record<string, unknown>, RegExp]> = [
+    ['hard block', { decision: 'block', reason: 'nope' }, /hard block/],
+    ['stopped continuation', { continue: false }, /stopped continuation/],
+    ['stopReason', { stopReason: 'native_hook_stdin_parse_error' }, /emitted stopReason/],
+    ['permission deny', {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
+    }, /permissionDecision "deny"/],
+    ['permission allow', {
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    }, /permissionDecision "allow"/],
+    ['wrong event name', {
+      systemMessage: 'x',
+      hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'x' },
+    }, /hookSpecificOutput names "Stop"/],
+    ['non-string system message', { systemMessage: 1 }, /malformed systemMessage/],
+    ['empty system message', { systemMessage: '' }, /malformed systemMessage/],
+    ['empty envelope', { hookSpecificOutput: {} }, /malformed PreToolUse advisory envelope/],
+    ['system message plus empty envelope', {
+      systemMessage: 'x',
+      hookSpecificOutput: {},
+    }, /malformed PreToolUse advisory envelope/],
+    ['envelope without event name', {
+      systemMessage: 'x',
+      hookSpecificOutput: { additionalContext: 'x' },
+    }, /malformed PreToolUse advisory envelope/],
+    ['envelope without context', {
+      systemMessage: 'x',
+      hookSpecificOutput: { hookEventName: 'PreToolUse' },
+    }, /malformed PreToolUse advisory envelope/],
+    ['mismatched envelope content', {
+      systemMessage: 'x',
+      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'y' },
+    }, /does not mirror systemMessage/],
+    ['unexpected top-level field', { systemMessage: 'x', reason: 'stray' }, /unexpected top-level field "reason"/],
+    ['unexpected hook field', {
+      systemMessage: 'x',
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecisionReason: 'stray' },
+    }, /emitted unexpected field "permissionDecisionReason"/],
+    ['malformed hookSpecificOutput', { hookSpecificOutput: 'nope' }, /malformed hookSpecificOutput/],
+    ['array hookSpecificOutput', { hookSpecificOutput: [] }, /malformed hookSpecificOutput/],
+  ];
+  for (const [label, output, pattern] of rejections) {
+    assert.throws(
+      () => assertNativeHookAdvisoryPreToolUse(`probe-${label}`, output),
+      pattern,
+      `${label} must be rejected`,
+    );
+  }
+});
+
+test('listPersistedStateFiles permits empty state directory bootstrap but detects persisted artifacts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'omx-packed-state-artifacts-'));
+  try {
+    const stateRoot = join(root, '.omx', 'state');
+    await mkdir(join(stateRoot, 'sessions', 'nested'), { recursive: true });
+    assert.deepEqual(listPersistedStateFiles(stateRoot), []);
+
+    const persistedFile = join(stateRoot, 'sessions', 'nested', 'skill-active-state.json');
+    await writeFile(persistedFile, '{}\n');
+    assert.deepEqual(listPersistedStateFiles(stateRoot), [persistedFile]);
+    await rm(persistedFile);
+
+    const symlinkPath = join(stateRoot, 'sessions', 'state-link');
+    await symlink(join(root, 'missing-target'), symlinkPath);
+    assert.deepEqual(listPersistedStateFiles(stateRoot), [symlinkPath]);
+    await rm(symlinkPath);
+
+    const rootLink = join(root, 'state-link');
+    await symlink(stateRoot, rootLink);
+    assert.deepEqual(listPersistedStateFiles(rootLink), [rootLink]);
+
+    const rootFile = join(root, 'state-file');
+    await writeFile(rootFile, '{}\n');
+    assert.deepEqual(listPersistedStateFiles(rootFile), [rootFile]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
