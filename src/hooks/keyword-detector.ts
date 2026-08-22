@@ -957,6 +957,24 @@ const EXPLICIT_TOKEN_BOUNDARY_PUNCTUATION = /[,;؛!?:؟)\]}"'”’»›」』�
 const DIRECTIVE_PUNCTUATION = /[,;؛:!?؟？、،]/u;
 const CLAUSE_BOUNDARY_PUNCTUATION = /[,;؛.!?؟？。！？：،、\r\n\u2013\u2014\u2028\u2029]/u;
 const LOGICAL_SENTENCE_BOUNDARY_PUNCTUATION = /[;؛.!?؟？。！？]/u;
+
+// Unicode regex matching can case-fold compatibility characters such as the
+// Kelvin sign (K) into ASCII K. Explicit skill invocations are intentionally
+// ASCII-only: confusable continuations must remain inert rather than routing a
+// near-miss token to a workflow.
+function isAsciiExplicitToken(token: string): boolean {
+  if (token.length === 0) return false;
+  for (let index = 0; index < token.length; index += 1) {
+    const code = token.charCodeAt(index);
+    const isAsciiLetter = (code >= 0x41 && code <= 0x5A) || (code >= 0x61 && code <= 0x7A);
+    const isAsciiDigit = code >= 0x30 && code <= 0x39;
+    if (index === 0 ? !isAsciiLetter : !(isAsciiLetter || isAsciiDigit || code === 0x5F || code === 0x2D)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function asciiCaseWordPattern(word: string): string {
   return [...word].map((character) => `[${character.toUpperCase()}${character.toLowerCase()}]`).join('');
 }
@@ -2412,14 +2430,21 @@ function scanExplicitCandidates(text: string): ExplicitCandidateScan[] {
     const initialEnd = canonicalEnd ?? start + 1;
     const end = maximalExplicitTokenEnd(text, initialEnd);
     const rawKeyword = text.slice(start, end);
+    const rawToken = rawKeyword.replace(/^\$(?:(?:[Oo][Hh]-[Mm][Yy]-[Cc][Oo][Dd][Ee][Xx]):)?/u, '');
     dollarScanner.lastIndex = Math.max(end, start + 1);
     const reasons = new Set<KeywordInertDiagnostic>();
     for (const reason of STRUCTURAL_INERT_DIAGNOSTICS) {
       if (isInInertRange(inertRangeIndexes[reason], start)) reasons.add(reason);
     }
     if (hasOddImmediateBackslashes(text, start)) reasons.add('escaped');
-    const canonicalToken = canonicalEnd === end ? (canonicalMatch?.[1] ?? '').toLowerCase() : '';
-    const normalizedToken = canonicalToken || rawKeyword.replace(/^\$(?:(?:[Oo][Hh]-[Mm][Yy]-[Cc][Oo][Dd][Ee][Xx]):)?/u, '').toLowerCase();
+    const capturedToken = canonicalMatch?.[1] ?? '';
+    const canonicalToken = canonicalEnd === end && isAsciiExplicitToken(rawToken)
+      ? capturedToken.toLowerCase()
+      : '';
+    // Do not case-fold malformed/non-ASCII candidates. Besides bypassing the
+    // explicit-skill lookup, folding them here would still route compatibility
+    // characters (for example K) through the removed-skill sunset resolver.
+    const normalizedToken = canonicalToken || rawToken;
     const definition = canonicalToken ? getExplicitSkillDefinition(canonicalToken) : undefined;
     candidates.push({
       rawKeyword,
@@ -3399,7 +3424,7 @@ export function classifyKeywordInput(text: string): KeywordInputClassification {
     if (isInInertRange(documentationRanges, candidate.start)) continue;
     if ([...candidate.reasons].some((reason) => reason !== 'not-leading-region')) continue;
     if (isNegativeExplicitMention(candidate, postposedNegations)) continue;
-    if (candidate.skill !== null) continue;
+    if (candidate.skill !== null || !isAsciiExplicitToken(candidate.normalizedToken)) continue;
     const info = getRemovedSkillInfo(candidate.normalizedToken);
     if (!info) continue;
     if (removedTokensSeen.has(candidate.normalizedToken)) continue;
