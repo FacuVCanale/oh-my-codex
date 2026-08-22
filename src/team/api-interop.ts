@@ -147,26 +147,34 @@ async function markLatestMailboxDispatchDelivered(
   cwd: string,
 ): Promise<{ matched_request_id: string | null; dispatch_updated: boolean }> {
   const active = (await teamListDispatchRequests(teamName, cwd, { kind: 'mailbox', to_worker: worker }))
-    .filter((request) => request.status === 'pending' || request.status === 'notified')
-    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
-  const latest = active[0];
-  if (!latest) return { matched_request_id: null, dispatch_updated: false };
+    .filter((request) => request.status === 'pending' || request.status === 'notified');
+  // Dispatch persistence is append-only. Keep the newest exact-message receipt
+  // when concurrent paths queued more than one wake in the same clock tick.
+  const matching = active.filter((request) => request.message_id === messageId).at(-1);
+  if (!matching) return { matched_request_id: null, dispatch_updated: false };
 
   const mailbox = await listMailboxMessages(teamName, worker, cwd);
   if (mailbox.some((message) => !message.delivered_at)) {
-    return { matched_request_id: latest.request_id, dispatch_updated: false };
+    return { matched_request_id: matching.request_id, dispatch_updated: false };
   }
 
+  const deliveredMessageIds = new Set(
+    mailbox.filter((message) => message.delivered_at).map((message) => message.message_id),
+  );
   let allDelivered = true;
   for (const request of active) {
-    if (request.status === 'pending') {
-      await teamMarkDispatchRequestNotified(teamName, request.request_id, { message_id: messageId }, cwd);
+    if (!request.message_id || !deliveredMessageIds.has(request.message_id)) {
+      allDelivered = false;
+      continue;
     }
-    const delivered = await teamMarkDispatchRequestDelivered(teamName, request.request_id, { message_id: messageId }, cwd);
+    if (request.status === 'pending') {
+      await teamMarkDispatchRequestNotified(teamName, request.request_id, { message_id: request.message_id }, cwd);
+    }
+    const delivered = await teamMarkDispatchRequestDelivered(teamName, request.request_id, { message_id: request.message_id }, cwd);
     allDelivered &&= delivered?.status === 'delivered';
   }
   return {
-    matched_request_id: latest.request_id,
+    matched_request_id: matching.request_id,
     dispatch_updated: allDelivered,
   };
 }

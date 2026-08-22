@@ -7,6 +7,7 @@ import {
   teamReadDispatchRequest as readDispatchRequest,
   teamTransitionDispatchRequest as transitionDispatchRequest,
   teamMarkDispatchRequestNotified as markDispatchRequestNotified,
+  teamMarkDispatchRequestFailed as markDispatchRequestFailed,
   type TeamDispatchRequest,
   type TeamDispatchRequestInput,
 } from './team-ops.js';
@@ -110,17 +111,7 @@ async function markImmediateDispatchFailure(params: {
   if (!current) return;
   if (current.status === 'failed' || current.status === 'notified' || current.status === 'delivered') return;
 
-  await transitionDispatchRequest(
-    teamName,
-    request.request_id,
-    current.status,
-    'failed',
-    {
-      message_id: messageId ?? current.message_id,
-      last_reason: reason,
-    },
-    cwd,
-  ).catch(() => {});
+  await markDispatchRequestFailed(teamName, request.request_id, reason, cwd);
 }
 
 async function markLeaderPaneMissingDeferred(params: {
