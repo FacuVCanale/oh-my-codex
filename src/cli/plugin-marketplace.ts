@@ -411,10 +411,103 @@ async function applyTeamModeToPluginCache(
 }
 
 export interface OmxPluginCacheMaterializeResult {
-	status: "unavailable" | "unchanged" | "materialized";
+	status: "unavailable" | "unchanged" | "materialized" | "stale-launcher";
 	cacheDir?: string;
 	version?: string;
 	retiredDirs?: string[];
+	reason?: string;
+	launcherTarget?: string;
+}
+
+export const PLUGIN_LAUNCHER_RECOVERY_HINT = "codex plugin remove oh-my-codex@oh-my-codex-local --json";
+
+async function canonicalRealpath(path: string): Promise<string | null> {
+	try {
+		return await realpath(path);
+	} catch {
+		return null;
+	}
+}
+
+export async function readPinnedLauncherRaw(cacheDir: string): Promise<{ raw: string | null; parsed: { command?: unknown; argsPrefix?: unknown } | null; error?: string }> {
+	const launcherPath = join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE);
+	try {
+		const raw = await readFile(launcherPath, "utf-8");
+		try {
+			const parsed = JSON.parse(raw) as { command?: unknown; argsPrefix?: unknown };
+			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return { raw, parsed: null, error: `malformed pinned launcher JSON: expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}` };
+			}
+			return { raw, parsed, error: undefined };
+		} catch (e) {
+			return { raw, parsed: null, error: `malformed pinned launcher JSON: ${(e as Error).message}` };
+		}
+	} catch (e) {
+		if (isMissingPathError(e)) return { raw: null, parsed: null, error: "missing pinned launcher" };
+		return { raw: null, parsed: null, error: `cannot read pinned launcher: ${(e as Error).message}` };
+	}
+}
+
+export async function getPinnedLauncherIncompatibilityReason(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<{ reason: string; target?: string } | null> {
+	const launcherPath = join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE);
+	let raw: string;
+	try {
+		raw = await readFile(launcherPath, "utf-8");
+	} catch (e) {
+		if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw) as unknown;
+	} catch (e) {
+		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (${(e as Error).message}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	const obj = parsed as { command?: unknown; argsPrefix?: unknown };
+	if (typeof obj.command !== "string" || obj.command.trim() === "") {
+		return { reason: `pinned launcher at ${launcherPath} has invalid command; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	if (!Array.isArray(obj.argsPrefix) || obj.argsPrefix.length === 0 || !obj.argsPrefix.every((v) => typeof v === "string")) {
+		return { reason: `pinned launcher at ${launcherPath} has invalid argsPrefix; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	const command = obj.command.trim();
+	const target = (obj.argsPrefix as string[])[0]!;
+	// Validate command field (generated launcher contract) — fail-closed on dead/mismatched executable
+	if (!isAbsolute(command)) {
+		return { reason: `pinned launcher command is not absolute: ${command}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+	}
+	if (!existsSync(command)) {
+		return { reason: `pinned launcher command does not exist: ${command}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+	}
+	const expectedCommand = process.execPath;
+	const [canonicalActualCommand, canonicalExpectedCommand] = await Promise.all([
+		canonicalRealpath(command),
+		canonicalRealpath(expectedCommand),
+	]);
+	if (canonicalActualCommand === null || canonicalExpectedCommand === null || canonicalActualCommand !== canonicalExpectedCommand) {
+		return { reason: `pinned launcher command provenance mismatch: expected ${expectedCommand} but found ${command} (different Node executable); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+	}
+	if (!isAbsolute(target)) {
+		return { reason: `pinned launcher target is not absolute: ${target}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+	}
+	if (!existsSync(target)) {
+		return { reason: `pinned launcher target does not exist: ${target} (package root removed?); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+	}
+	const expectedTarget = join(packagedMarketplace.packageRoot, "dist", "cli", "omx.js");
+	const [canonicalActual, canonicalExpected] = await Promise.all([
+		canonicalRealpath(target),
+		canonicalRealpath(expectedTarget),
+	]);
+	if (canonicalActual === null || canonicalExpected === null || canonicalActual !== canonicalExpected) {
+		return { reason: `pinned launcher provenance mismatch: expected ${expectedTarget} but found ${target} (different package root); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`, target };
+	}
+	return null;
 }
 
 async function retireUnpinnedManagedSnapshots(
@@ -467,13 +560,34 @@ export async function materializePackagedOmxPluginCache(
 				: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
 		};
 	}
+	// Same-version directory exists but is not byte-identical: distinguish immutable-preserved vs dead/provenance-incompatible launcher.
+	// Preserve #3499 immutability: never rewrite an existing same-version directory in place.
+	const rootState = await inspectCacheRoot(cacheDir);
+	if (rootState === "directory") {
+		const incompat = await getPinnedLauncherIncompatibilityReason(cacheDir, packagedMarketplace);
+		if (incompat) {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: incompat.reason,
+				launcherTarget: incompat.target,
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+			};
+		}
+		return {
+			status: "unchanged",
+			cacheDir,
+			version,
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+		};
+	}
+	if (rootState === "foreign") {
+		return { status: "unavailable", cacheDir, version };
+	}
 	if (!options.dryRun) {
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
 		await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
-		const rootState = await inspectCacheRoot(cacheDir);
-		if (rootState === "foreign") {
-			return { status: "unavailable", cacheDir, version };
-		}
 		const tempDir = await mkdtemp(join(tmpdir(), `omx-plugin-${version}-`));
 		try {
 			const snapshotDir = await stageCompletePluginSnapshot(
@@ -482,7 +596,6 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				options.teamMode,
 			);
-			if (rootState === "directory") return { status: "unchanged", cacheDir, version };
 			await rename(snapshotDir, cacheDir);
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
