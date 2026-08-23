@@ -331,7 +331,7 @@ describe('detached leader HUD teardown', () => {
       ]).split('\t');
       const hud = createOwnedHud(fixture, 'owner-zero');
       if (!leaderPaneId) throw new Error('invalid HUD teardown fixture');
-      cleanupDetachedHudPane(hud, 'owner-zero');
+      assert.equal(cleanupDetachedHudPane(hud, 'owner-zero'), true);
       await poll('proven HUD pane removal', () => !fixture.run(['list-panes', '-a', '-F', '#{pane_id}']).split('\n').includes(hud.paneId) ? true : undefined);
       process.kill(Number(leaderPidRaw), 'SIGTERM');
       await poll('last-pane session destruction', () => !fixture.sessionExists() ? true : undefined);
@@ -345,12 +345,12 @@ describe('detached leader HUD teardown', () => {
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
       ]);
       const staleHudProof = createOwnedHud(fixture, 'owner-user-pane');
-      cleanupDetachedHudPane(staleHudProof, 'owner-user-pane');
+      assert.equal(cleanupDetachedHudPane(staleHudProof, 'owner-user-pane'), true);
       const replacementPaneId = fixture.run([
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
       ]);
       // A stale proof must be an ordinary fail-closed preserve, never a throw.
-      assert.doesNotThrow(() => cleanupDetachedHudPane(staleHudProof, 'owner-user-pane'));
+      assert.equal(cleanupDetachedHudPane(staleHudProof, 'owner-user-pane'), false, 'a stale proof must fail closed as a boolean false');
       assert.equal(fixture.run(['display-message', '-p', '-t', replacementPaneId, '#{pane_id}']), replacementPaneId);
       process.kill(Number(leaderPidRaw), 'SIGTERM');
       await poll('unrelated pane survives leader exit', () => fixture.sessionExists() ? true : undefined);
@@ -372,11 +372,12 @@ describe('detached leader HUD teardown', () => {
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
       ]);
       const staleHudProof = createOwnedHud(fixture, 'stale-proof-owner');
-      assert.equal(cleanupDetachedHudPane(staleHudProof, 'stale-proof-owner'), undefined);
+      assert.equal(cleanupDetachedHudPane(staleHudProof, 'stale-proof-owner'), true);
       await poll('proven HUD removal', () => !paneExists(fixture, staleHudProof.paneId) ? true : undefined);
       const replacementPaneId = fixture.run([
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
       ]);
+      assert.equal(cleanupDetachedHudPane(staleHudProof, 'stale-proof-owner'), false, 'a stale proof must fail closed as a boolean false');
       assert.doesNotThrow(() => cleanupDetachedHudPane(staleHudProof, 'stale-proof-owner'));
       assert.equal(paneExists(fixture, replacementPaneId), true, 'the replacement pane must survive a stale proof');
       assert.equal(fixture.sessionExists(), true, 'the private fixture session must survive a stale proof');
@@ -387,10 +388,10 @@ describe('detached leader HUD teardown', () => {
     // Missing proof target: the proof pane id no longer exists anywhere.
     await withTempTmuxSession(async (fixture) => {
       const missingProof = createOwnedHud(fixture, 'missing-proof-owner');
-      assert.equal(cleanupDetachedHudPane(missingProof, 'missing-proof-owner'), undefined);
+      assert.equal(cleanupDetachedHudPane(missingProof, 'missing-proof-owner'), true);
       await poll('proven HUD removal', () => !paneExists(fixture, missingProof.paneId) ? true : undefined);
       const ghostProof = { ...missingProof, paneId: '%999999' };
-      assert.doesNotThrow(() => cleanupDetachedHudPane(ghostProof, 'missing-proof-owner'));
+      assert.equal(cleanupDetachedHudPane(ghostProof, 'missing-proof-owner'), false, 'a missing proof target must fail closed as a boolean false');
       assert.equal(fixture.sessionExists(), true, 'the private fixture session must survive a missing proof target');
     });
   });
@@ -403,7 +404,7 @@ describe('detached leader HUD teardown', () => {
       ]).split('\t');
       const staleProof = createOwnedHud(fixture, 'attack-owner');
       // Remove the proven HUD and let its pane id be recycled by a replacement pane.
-      assert.equal(cleanupDetachedHudPane(staleProof, 'attack-owner'), undefined);
+      assert.equal(cleanupDetachedHudPane(staleProof, 'attack-owner'), true);
       await poll('proven HUD removal', () => !paneExists(fixture, staleProof.paneId) ? true : undefined);
       const replacementPaneId = fixture.run([
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
@@ -411,7 +412,7 @@ describe('detached leader HUD teardown', () => {
       const foreignSessionName = `${fixture.sessionName}-foreign`;
       fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 120']);
       // The stale proof must fail closed without killing the server, session, or panes.
-      assert.doesNotThrow(() => cleanupDetachedHudPane(staleProof, 'attack-owner'));
+      assert.equal(cleanupDetachedHudPane(staleProof, 'attack-owner'), false, 'a stale proof must fail closed as a boolean false');
       assert.equal(fixture.sessionExists(), true, 'leader session must survive');
       assert.equal(tmuxSessionExists(foreignSessionName, fixture.serverName), true, 'foreign session must survive');
       assert.equal(paneExists(fixture, leaderPaneId), true, 'leader pane must survive');
@@ -425,6 +426,59 @@ describe('detached leader HUD teardown', () => {
     assert.ok(typeof fixtureServer === 'string');
   });
 
+  it('preserves the leader, session, and foreign panes across normal child-exit teardown with a recycled HUD proof', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    const wd = mkdtempSync(join(tmpdir(), 'omx-detached-leader-stale-seam-'));
+    // This subtest preserves every leader-session pane (remain-on-exit keeps the
+    // dead leader visible), so the HUD watcher keeps running until fixture teardown.
+    let hudPanePid: number | undefined;
+    try {
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-detached-stale-seam';
+        const sessionId = 'detached-stale-seam-session';
+        const sentinel = join(wd, 'child-release');
+        // The child blocks on a sentinel so the HUD proof can be recycled before
+        // the leader reaches normal child-exit teardown.
+        const fakeChild = writeChild(wd, 'while [ ! -f child-release ]; do sleep 0.1; done\nexit 0');
+        const started = await startDetachedLeader(fixture, wd, sessionName, sessionId, 'stale-seam-nonce', fakeChild);
+        hudPanePid = started.hud.panePid;
+        // Retain the dead leader pane: with remain-on-exit on, an executed
+        // `kill-pane -t leaderPaneId` destroys the pane (and the session when it
+        // is the last one), while a preserved zero-mutation teardown leaves it
+        // visible as dead. This makes the leader kill observable even after the
+        // leader process has exited normally.
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        // Remove the proven HUD out from under the leader's retained proof and
+        // recycle its pane id, exactly like the stale-proof attack, then add a
+        // replacement pane and a foreign session that must all survive teardown.
+        assert.equal(cleanupDetachedHudPane(started.hud, sessionId), true);
+        await poll('proven HUD removal', () => !paneExists(fixture, started.hud.paneId) ? true : undefined);
+        const replacementPaneId = fixture.run([
+          'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, '-c', wd, 'sleep 300',
+        ]);
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', wd, 'sleep 300']);
+        // Release the child into its normal exit and let the leader finalize.
+        writeFileSync(sentinel, 'released\n');
+        const terminal = await readReportWhen(started.releaseMarkerPath, (report) => report.kind === 'terminal');
+        assert.equal(terminal.finalized, true);
+        assert.equal(terminal.exitStatus, 0);
+        await poll('retained dead leader pane', () => fixture.run([
+          'display-message', '-p', '-t', started.leaderPaneId, '#{pane_dead}',
+        ]) === '1' ? true : undefined);
+
+        // Fail-closed teardown: the recycled HUD proof must suppress the leader
+        // kill entirely, leaving the leader, session, and every bystander intact.
+        assert.equal(paneExists(fixture, started.leaderPaneId), true, 'the dead leader pane must be retained, not killed');
+        assert.equal(tmuxSessionExists(sessionName, fixture.serverName), true, 'the leader session must survive zero-mutation teardown');
+        assert.equal(paneExists(fixture, replacementPaneId), true, 'the replacement pane must survive zero-mutation teardown');
+        assert.equal(tmuxSessionExists(foreignSessionName, fixture.serverName), true, 'the foreign session must survive zero-mutation teardown');
+        assert.equal(fixture.sessionExists(), true, 'the private fixture session must survive zero-mutation teardown');
+      });
+    } finally {
+      await cleanupDetachedWorkdir(wd, hudPanePid);
+    }
+  });
   it('removes only the matching bootstrap HUD after a finalized leader failure', async (t) => {
     if (!skipUnlessTmux(t)) return;
     await withTempTmuxSession(async (fixture) => {
@@ -467,10 +521,15 @@ describe('detached leader HUD teardown', () => {
         const sessionId = 'detached-zero-session';
         const fakeChild = writeChild(wd, 'sleep 1\nexit 0');
         const started = await startDetachedLeader(fixture, wd, sessionName, sessionId, 'zero-nonce', fakeChild);
+        // Retain the dead leader pane: the teardown must still kill it, proving
+        // the leader kill runs when and only when HUD cleanup succeeded.
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
         const terminal = await readReportWhen(started.releaseMarkerPath, (report) => report.kind === 'terminal');
         assert.equal(terminal.finalized, true);
         assert.equal(terminal.exitStatus, 0);
         await poll('leader pane removal', () => !paneExists(fixture, started.leaderPaneId) ? true : undefined);
+        // Under remain-on-exit retention, only the teardown's own leader
+        // kill-pane can destroy this pane: natural exit would retain it dead.
         await poll('HUD pane removal', () => !paneExists(fixture, started.hud.paneId) ? true : undefined);
         await poll('leader session destruction', () => !tmuxSessionExists(sessionName, fixture.serverName) ? true : undefined);
         await poll('HUD process exit', () => !processAlive(started.hud.panePid) ? true : undefined);

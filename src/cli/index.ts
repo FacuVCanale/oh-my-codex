@@ -1762,14 +1762,15 @@ function awaitDetachedHudPaneRemoval(paneId: string): void {
   throw new Error("detached HUD topology changed before teardown");
 }
 
-export function cleanupDetachedHudPane(authority: DetachedHudAuthority, ownerId?: string): void {
+export function cleanupDetachedHudPane(authority: DetachedHudAuthority, ownerId?: string): boolean {
   if (!removeDetachedHudPaneIfAuthorized(authority, ownerId)) {
     // A stale, missing, or changed proof is an ordinary fail-closed preserve
     // result. Throwing here would let callers escalate a benign mismatch into
     // broader cleanup; the HUD pane and its session are left untouched.
-    return;
+    return false;
   }
   awaitDetachedHudPaneRemoval(authority.paneId);
+  return true;
 }
 
 /**
@@ -7163,10 +7164,11 @@ function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLea
   // Contract: only the proven HUD is removed. A pane the user added to the detached
   // session is deliberately preserved, which intentionally keeps that session (and any
   // attached client) alive; natural closure and shell return happen only when no other
-  // panes remain.
+  // panes remain. The leader pane is removed only after the proven HUD removal is
+  // confirmed; a stale, missing, or changed HUD proof leaves the leader untouched too.
   if (!hudProof) return;
   try {
-    cleanupDetachedHudPane(hudProof, payload.sessionId);
+    if (!cleanupDetachedHudPane(hudProof, payload.sessionId)) return;
     execTmuxFileSync(["kill-pane", "-t", leaderPaneId], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
   } catch (error) {
     traceDetachedLeaderPhase(`hud-teardown-error:${describeDetachedLeaderFailure(error)}`);
