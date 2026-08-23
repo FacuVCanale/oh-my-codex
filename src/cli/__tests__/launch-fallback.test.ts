@@ -142,7 +142,7 @@ if [ "$1" = "if-shell" ] && [ "$2" = "-F" ] && [ "$3" = "-t" ]; then
   esac
   [ -n "$receipt" ] || exit 1
   case "$success" in
-    *split-window*) printf '%%99\t456\t$1\t@1\t%s\n' "$receipt" ;;
+    *split-window*) printf '%%99\t456\t$1\t$2\t1\t@1\t%s\n' "$receipt" ;;
     *) printf '%s\n' "$receipt" ;;
   esac
   exit 0
@@ -266,7 +266,7 @@ if [ "$1" = "if-shell" ] && [ "$2" = "-F" ] && [ "$3" = "-t" ]; then
   esac
   [ -n "$receipt" ] || exit 1
   case "$success" in
-    *split-window*) printf '%%99\t456\t$1\t@1\t%s\n' "$receipt" ;;
+    *split-window*) printf '%%99\t456\t$1\t$2\t1\t@1\t%s\n' "$receipt" ;;
     *) printf '%s\n' "$receipt" ;;
   esac
   exit 0

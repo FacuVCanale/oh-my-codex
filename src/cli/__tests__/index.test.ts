@@ -57,6 +57,7 @@ import {
   executeDetachedLaunchStateMachine,
   isExactDetachedFinalization,
   type DetachedLaunchDependencies,
+  type DetachedReleaseFailureResolution,
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
@@ -597,6 +598,31 @@ describe("detached launch state machine", () => {
     assert.equal(finalization?.kind, "terminal");
     assert.deepEqual(events.slice(-2), ["D9", "hud-only-cleanup"]);
   });
+  for (const kind of ["malformed", "", "FAILED", "terminal ", "terminalized"] as const) {
+    it(`never grants HUD-only rollback authority when a matching report kind is "${kind}"`, async () => {
+      const events: string[] = [];
+      const deps = createDependencies(events, "D9");
+      deps.abortAndAwaitFinalization = async () => ({
+        acknowledged: true,
+        nonce: "nonce",
+        sessionId: "session",
+        sessionName: "session-name",
+        leaderPid: 123,
+        kind,
+      } as unknown as DetachedReleaseFailureResolution);
+      let observedFinalization: Parameters<typeof deps.rollback>[2];
+      deps.rollback = async (_ownedRecord, _report, finalization) => {
+        events.push("rollback");
+        observedFinalization = finalization;
+      };
+      await assert.rejects(() => executeDetachedLaunchStateMachine(
+        { preflight: { kind: "available", shouldAttach: true, report: { transitions: ["D0"], rollback: { attempted: [], failures: [] } } } },
+        deps,
+      ));
+      assert.equal(observedFinalization, undefined);
+      assert.equal(events.includes("rollback"), false, `kind ${JSON.stringify(kind)} must never reach rollback`);
+    });
+  }
 
   it("finalizes and closes exactly once before D2 rollback without transport effects", async () => {
     const events: string[] = [];

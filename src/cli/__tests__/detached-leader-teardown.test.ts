@@ -90,7 +90,7 @@ function createOwnedHud(fixture: TempTmuxSessionFixture, ownerId: string): Detac
   const [paneId, panePidRaw, sessionName, sessionId, sessionCreated, windowId] = fixture.run([
     'split-window', '-d', '-P', '-F', '#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}',
     '-t', fixture.sessionName, `env OMX_DETACHED_HUD_OPERATION=${operationMarker} sleep 120`,
-  ]).split('\t');
+  ]).trim().split('\t');
   const panePid = Number(panePidRaw);
   assert.ok(paneId && sessionName && sessionId && sessionCreated && windowId);
   assert.equal(Number.isSafeInteger(panePid) && panePid > 0, true);
@@ -186,14 +186,19 @@ async function startDetachedLeader(
   const operationMarker = randomUUID();
   const splitArgs = [...splitHud.args];
   splitArgs[splitArgs.length - 1] = `env OMX_DETACHED_HUD_OPERATION=${operationMarker} ${splitArgs.at(-1)}`;
-  const hudPaneId = fixture.run(splitArgs);
-  const [paneId, panePidRaw, hudSessionName, hudSessionId, sessionCreated, windowId] = fixture.run([
-    'display-message', '-p', '-t', hudPaneId, '#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}',
-  ]).split('\t');
+  const splitFormatIndex = splitArgs.indexOf('-F');
+  assert.ok(splitFormatIndex >= 0 && splitArgs[splitFormatIndex + 1] === '#{pane_id}');
+  splitArgs[splitFormatIndex + 1] = '#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}\tRECEIPT';
+  const splitReceipt = fixture.run(splitArgs).trim().split('\t');
+  assert.equal(splitReceipt.length, 7, 'the HUD split must return the seven-field production receipt');
+  const [paneId, panePidRaw, hudSessionName, hudSessionId, sessionCreated, windowId, observedReceipt] = splitReceipt;
+  assert.match(observedReceipt ?? '', /^RECEIPT$/, 'the HUD split receipt must terminate with the literal receipt marker');
   const panePid = Number(panePidRaw);
-  assert.equal(paneId, hudPaneId);
   assert.equal(Number.isSafeInteger(panePid) && panePid > 0, true);
   assert.notEqual(windowId, '');
+  // The production split sink tags the created HUD pane with the session owner
+  // before any finalize step runs.
+  fixture.run(['set-option', '-pq', '-t', paneId, '@omx_hud_owner', sessionId]);
 
   const ready = await readReportWhen(releaseMarkerPath, (report) => report.kind === 'ready');
   assert.equal(ready.nonce, nonce);
@@ -344,12 +349,80 @@ describe('detached leader HUD teardown', () => {
       const replacementPaneId = fixture.run([
         'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
       ]);
-      assert.throws(() => cleanupDetachedHudPane(staleHudProof, 'owner-user-pane'));
+      // A stale proof must be an ordinary fail-closed preserve, never a throw.
+      assert.doesNotThrow(() => cleanupDetachedHudPane(staleHudProof, 'owner-user-pane'));
       assert.equal(fixture.run(['display-message', '-p', '-t', replacementPaneId, '#{pane_id}']), replacementPaneId);
       process.kill(Number(leaderPidRaw), 'SIGTERM');
       await poll('unrelated pane survives leader exit', () => fixture.sessionExists() ? true : undefined);
       assert.equal(fixture.run(['display-message', '-p', '-t', userPaneId, '#{pane_id}']), userPaneId);
     });
+  });
+
+  it('treats a stale or missing HUD proof target as an ordinary preserved mismatch without destroying the server', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    // Stale proof after the proven HUD was already removed and the pane id was
+    // replaced by a new pane. The stale `-t %N` target must resolve to an
+    // ordinary fail-closed preserve result: no throw, no server/session loss,
+    // and no harm to the replacement or foreign panes.
+    await withTempTmuxSession(async (fixture) => {
+      const [, leaderPidRaw] = fixture.run([
+        'display-message', '-p', '-t', fixture.sessionName, '#{pane_id}\t#{pane_pid}',
+      ]).split('\t');
+      const userPaneId = fixture.run([
+        'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
+      ]);
+      const staleHudProof = createOwnedHud(fixture, 'stale-proof-owner');
+      assert.equal(cleanupDetachedHudPane(staleHudProof, 'stale-proof-owner'), undefined);
+      await poll('proven HUD removal', () => !paneExists(fixture, staleHudProof.paneId) ? true : undefined);
+      const replacementPaneId = fixture.run([
+        'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
+      ]);
+      assert.doesNotThrow(() => cleanupDetachedHudPane(staleHudProof, 'stale-proof-owner'));
+      assert.equal(paneExists(fixture, replacementPaneId), true, 'the replacement pane must survive a stale proof');
+      assert.equal(fixture.sessionExists(), true, 'the private fixture session must survive a stale proof');
+      assert.equal(fixture.run(['display-message', '-p', '-t', userPaneId, '#{pane_id}']), userPaneId);
+      process.kill(Number(leaderPidRaw), 'SIGTERM');
+    });
+
+    // Missing proof target: the proof pane id no longer exists anywhere.
+    await withTempTmuxSession(async (fixture) => {
+      const missingProof = createOwnedHud(fixture, 'missing-proof-owner');
+      assert.equal(cleanupDetachedHudPane(missingProof, 'missing-proof-owner'), undefined);
+      await poll('proven HUD removal', () => !paneExists(fixture, missingProof.paneId) ? true : undefined);
+      const ghostProof = { ...missingProof, paneId: '%999999' };
+      assert.doesNotThrow(() => cleanupDetachedHudPane(ghostProof, 'missing-proof-owner'));
+      assert.equal(fixture.sessionExists(), true, 'the private fixture session must survive a missing proof target');
+    });
+  });
+
+  it('preserves the tmux server, leader, replacement pane, and foreign session across a stale HUD proof attack', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    const fixtureServer = await withTempTmuxSession(async (fixture) => {
+      const [leaderPaneId, leaderPidRaw] = fixture.run([
+        'display-message', '-p', '-t', fixture.sessionName, '#{pane_id}\t#{pane_pid}',
+      ]).split('\t');
+      const staleProof = createOwnedHud(fixture, 'attack-owner');
+      // Remove the proven HUD and let its pane id be recycled by a replacement pane.
+      assert.equal(cleanupDetachedHudPane(staleProof, 'attack-owner'), undefined);
+      await poll('proven HUD removal', () => !paneExists(fixture, staleProof.paneId) ? true : undefined);
+      const replacementPaneId = fixture.run([
+        'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', fixture.sessionName, 'sleep 120',
+      ]);
+      const foreignSessionName = `${fixture.sessionName}-foreign`;
+      fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 120']);
+      // The stale proof must fail closed without killing the server, session, or panes.
+      assert.doesNotThrow(() => cleanupDetachedHudPane(staleProof, 'attack-owner'));
+      assert.equal(fixture.sessionExists(), true, 'leader session must survive');
+      assert.equal(tmuxSessionExists(foreignSessionName, fixture.serverName), true, 'foreign session must survive');
+      assert.equal(paneExists(fixture, leaderPaneId), true, 'leader pane must survive');
+      assert.equal(paneExists(fixture, replacementPaneId), true, 'replacement pane must survive');
+      // The server must still be reachable for ordinary commands after the attack.
+      assert.ok(fixture.run(['list-sessions', '-F', '#{session_name}']).includes(fixture.sessionName));
+      return fixture.serverName;
+    });
+    // Server liveness must persist past the fixture scope: the cleanup kill-server
+    // in withTempTmuxSession proves termination is fixture-owned, not attack-owned.
+    assert.ok(typeof fixtureServer === 'string');
   });
 
   it('removes only the matching bootstrap HUD after a finalized leader failure', async (t) => {

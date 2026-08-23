@@ -1649,14 +1649,106 @@ function runDetachedHudMutation(
 }
 
 
+function detachedHudPaneProofFormat(): string {
+  // The trailing literal sentinel keeps an empty @omx_hud_owner from being
+  // trimmed away as trailing whitespace by tmux's format output.
+  return "#{pane_id}\t#{pane_pid}\t#{session_name}\t#{session_id}\t#{session_created}\t#{window_id}\t#{pane_dead}\t#{@omx_hud_owner}\t#{pane_start_command}\tEND";
+}
+
+type DetachedHudPaneProof = {
+  paneId: string;
+  panePid: string;
+  sessionName: string;
+  sessionId: string;
+  sessionCreated: string;
+  windowId: string;
+  paneDead: string;
+  paneStartCommand: string;
+  hudOwner: string;
+};
+
+function parseDetachedHudPaneProofLine(line: string): DetachedHudPaneProof | undefined {
+  const fields = line.split("\t");
+  // Seven fixed fields, then @omx_hud_owner, then pane_start_command (which may
+  // itself contain TAB bytes), then the literal END sentinel.
+  if (fields.length < 10 || fields.at(-1) !== "END") return undefined;
+  const [paneId, panePid, sessionName, sessionId, sessionCreated, windowId, paneDead, hudOwner] = fields;
+  const paneStartCommand = fields.slice(8, -1).join("\t");
+  return {
+    paneId: paneId ?? "", panePid: panePid ?? "", sessionName: sessionName ?? "",
+    sessionId: sessionId ?? "", sessionCreated: sessionCreated ?? "", windowId: windowId ?? "",
+    paneDead: paneDead ?? "", paneStartCommand, hudOwner: hudOwner ?? "",
+  };
+}
+
+function matchesDetachedHudAuthority(proof: DetachedHudPaneProof, authority: DetachedHudAuthority, ownerId?: string): boolean {
+  if (proof.paneId !== authority.paneId) return false;
+  if (Number(proof.panePid) !== authority.panePid) return false;
+  if (proof.paneDead !== "0") return false;
+  if (proof.sessionName !== authority.sessionName) return false;
+  if (proof.sessionId !== authority.sessionId) return false;
+  if (proof.sessionCreated !== authority.sessionCreated) return false;
+  if (proof.windowId !== authority.windowId) return false;
+  // Marker non-vacuity: tmux reports pane_start_command wrapped in double
+  // quotes; the command must begin with the exact env assignment the
+  // production split sink injects. A pane whose command merely contains the
+  // marker text (e.g. an echo) is not the HUD.
+  const markerPrefix = `env OMX_DETACHED_HUD_OPERATION=${authority.operationMarker} `;
+  const startCommand = proof.paneStartCommand.replace(/^"|"$/g, "");
+  if (!startCommand.startsWith(markerPrefix)) return false;
+  if (ownerId !== undefined && proof.hudOwner !== ownerId) return false;
+  return true;
+}
+
+/**
+ * Enumerate the exact expected HUD pane inside its proven session scope and
+ * evaluate the full proof locally. The tmux enumeration target is the session
+ * name (a server-scoped stable identity), never the pane id: a stale or
+ * missing pane proof must resolve to an ordinary fail-closed preserve result
+ * instead of an `if-shell -t <stale pane>` evaluation that can tear down the
+ * server with the leader and any replacement/foreign panes (#3562).
+ *
+ * Preserve (undefined) on malformed enumeration output and any tmux command
+ * failure; callers preserve on zero or multiple authority matches.
+ */
+function listDetachedHudPaneProofsInSession(authority: DetachedHudAuthority): DetachedHudPaneProof[] | undefined {
+  try {
+    const output = execTmuxFileSync([
+      "list-panes", "-t", authority.sessionName, "-F", detachedHudPaneProofFormat(),
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    const proofs: DetachedHudPaneProof[] = [];
+    for (const line of output.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const proof = parseDetachedHudPaneProofLine(trimmed);
+      if (!proof) return undefined;
+      proofs.push(proof);
+    }
+    return proofs;
+  } catch {
+    return undefined;
+  }
+}
+
 function removeDetachedHudPaneIfAuthorized(authority: DetachedHudAuthority, ownerId?: string): boolean {
+  const proofs = listDetachedHudPaneProofsInSession(authority);
+  if (!proofs) return false;
+  const matching = proofs.filter((proof) => matchesDetachedHudAuthority(proof, authority, ownerId));
+  if (matching.length !== 1) return false;
   const receipt = detachedAuthorityReceipt();
-  const success = `kill-pane -t ${quoteShellArg(authority.paneId)} ; display-message -p ${quoteShellArg(receipt)}`;
-  const output = execTmuxFileSync([
-    "if-shell", "-F", "-t", authority.paneId, detachedHudAuthorityCondition(authority, true, ownerId),
-    success, "display-message -p ''",
-  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  return output === receipt;
+  const killed = `killed:${receipt}`;
+  const mismatched = `mismatch:${receipt}`;
+  try {
+    const output = execTmuxFileSync([
+      "if-shell", "-F", "-t", matching[0]!.paneId,
+      detachedHudAuthorityCondition(authority, true, ownerId),
+      `kill-pane -t ${quoteShellArg(matching[0]!.paneId)} ; display-message -p ${quoteShellArg(killed)}`,
+      `display-message -p ${quoteShellArg(mismatched)}`,
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return output === killed;
+  } catch {
+    return false;
+  }
 }
 
 function awaitDetachedHudPaneRemoval(paneId: string): void {
@@ -1672,7 +1764,10 @@ function awaitDetachedHudPaneRemoval(paneId: string): void {
 
 export function cleanupDetachedHudPane(authority: DetachedHudAuthority, ownerId?: string): void {
   if (!removeDetachedHudPaneIfAuthorized(authority, ownerId)) {
-    throw new Error("detached HUD authority changed before teardown");
+    // A stale, missing, or changed proof is an ordinary fail-closed preserve
+    // result. Throwing here would let callers escalate a benign mismatch into
+    // broader cleanup; the HUD pane and its session are left untouched.
+    return;
   }
   awaitDetachedHudPaneRemoval(authority.paneId);
 }
@@ -3160,7 +3255,8 @@ export function isExactDetachedFinalization(
     leaderPid: number | null;
   },
 ): boolean {
-  return finalization !== undefined && finalization.nonce === expected.nonce &&
+  return finalization !== undefined && (finalization.kind === "failed" || finalization.kind === "terminal") &&
+    finalization.nonce === expected.nonce &&
     finalization.sessionId === expected.sessionId && finalization.sessionName === expected.sessionName &&
     finalization.leaderPid === expected.leaderPid;
 }
@@ -3169,7 +3265,8 @@ function authenticatedDetachedFinalization(
   resolution: DetachedReleaseFailureResolution | undefined,
 ): DetachedFinalizationAuthority | undefined {
   if (resolution?.acknowledged !== true || !resolution.nonce || !resolution.sessionId || !resolution.sessionName ||
-    typeof resolution.leaderPid !== "number" || !Number.isSafeInteger(resolution.leaderPid) || !resolution.kind) return undefined;
+    typeof resolution.leaderPid !== "number" || !Number.isSafeInteger(resolution.leaderPid) ||
+    (resolution.kind !== "failed" && resolution.kind !== "terminal")) return undefined;
   return {
     nonce: resolution.nonce,
     sessionId: resolution.sessionId,
