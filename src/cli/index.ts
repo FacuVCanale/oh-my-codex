@@ -1707,6 +1707,9 @@ function matchesDetachedHudAuthority(proof: DetachedHudPaneProof, authority: Det
  * missing pane proof must resolve to an ordinary fail-closed preserve result
  * instead of an `if-shell -t <stale pane>` evaluation that can tear down the
  * server with the leader and any replacement/foreign panes (#3562).
+ * `-s` widens the enumeration to every window of the session: an attached user
+ * may select another window, and a window-scoped listing would hide a fully
+ * matching HUD in the original window (#3562 review).
  *
  * Preserve (undefined) on malformed enumeration output and any tmux command
  * failure; callers preserve on zero or multiple authority matches.
@@ -1714,7 +1717,7 @@ function matchesDetachedHudAuthority(proof: DetachedHudPaneProof, authority: Det
 function listDetachedHudPaneProofsInSession(authority: DetachedHudAuthority): DetachedHudPaneProof[] | undefined {
   try {
     const output = execTmuxFileSync([
-      "list-panes", "-t", authority.sessionName, "-F", detachedHudPaneProofFormat(),
+      "list-panes", "-s", "-t", authority.sessionName, "-F", detachedHudPaneProofFormat(),
     ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
     const proofs: DetachedHudPaneProof[] = [];
     for (const line of output.split("\n")) {

@@ -624,6 +624,91 @@ describe('detached leader HUD teardown', () => {
     }
   });
 
+  it('tears down the matching HUD and leader from a non-current window while preserving foreign windows and sessions', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    const wd = mkdtempSync(join(tmpdir(), 'omx-detached-leader-cross-window-'));
+    try {
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-detached-cross-window';
+        const sessionId = 'detached-cross-window-session';
+        const sentinel = join(wd, 'child-release');
+        // Block the child on a sentinel so the session topology can change
+        // before the leader reaches normal child-exit teardown.
+        const fakeChild = writeChild(wd, 'while [ ! -f child-release ]; do sleep 0.1; done\nexit 0');
+        const started = await startDetachedLeader(fixture, wd, sessionName, sessionId, 'cross-window-nonce', fakeChild);
+        // Retain the dead leader pane so the leader kill stays observable under
+        // remain-on-exit even after the leader process exits normally.
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        // An attached user creates and selects another window in the leader
+        // session: the proven HUD stays in the original (now non-current)
+        // window while the session's current window moves to window 1.
+        const foreignWindowPaneId = fixture.run([
+          'new-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${sessionName}:`, '-c', wd, 'sleep 300',
+        ]);
+        fixture.run(['select-window', '-t', `${sessionName}:1`]);
+        assert.equal(
+          fixture.run(['display-message', '-p', '-t', sessionName, '#{window_id}']),
+          fixture.run(['display-message', '-p', '-t', foreignWindowPaneId, '#{window_id}']),
+          'the selected window must be the foreign window, not the HUD window',
+        );
+        assert.equal(
+          fixture.run(['list-panes', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(started.hud.paneId),
+          false,
+          'a window-scoped listing must not see the HUD in the non-current window',
+        );
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', wd, 'sleep 300']);
+        // Release the child into its normal exit and let the leader finalize.
+        writeFileSync(sentinel, 'released\n');
+        const terminal = await readReportWhen(started.releaseMarkerPath, (report) => report.kind === 'terminal');
+        assert.equal(terminal.finalized, true);
+        assert.equal(terminal.exitStatus, 0);
+        // Session-wide proof enumeration must still authenticate the HUD in the
+        // non-current window, so teardown removes the HUD and the gated leader.
+        await poll('leader pane removal', () => !paneExists(fixture, started.leaderPaneId) ? true : undefined);
+        await poll('HUD pane removal', () => !paneExists(fixture, started.hud.paneId) ? true : undefined);
+        await poll('HUD process exit', () => !processAlive(started.hud.panePid) ? true : undefined);
+        assertProcessDead(started.hud.panePid);
+        // The user-added window keeps its live pane, so the leader session is
+        // deliberately preserved (#3266 contract): natural closure happens only
+        // when no other panes remain. The foreign window pane, the foreign
+        // session on the same server, and the private fixture session survive.
+        assert.equal(paneExists(fixture, foreignWindowPaneId), true, 'the foreign window pane must survive cross-window teardown');
+        assert.equal(tmuxSessionExists(sessionName, fixture.serverName), true, 'the leader session must survive with a preserved user pane');
+        assert.equal(tmuxSessionExists(foreignSessionName, fixture.serverName), true, 'the foreign session must survive cross-window teardown');
+        assert.equal(fixture.sessionExists(), true, 'the private fixture session must survive cross-window teardown');
+      });
+    } finally {
+      await cleanupDetachedWorkdir(wd);
+    }
+  });
+
+  it('removes the proven HUD from a non-current window without harming an impostor pane in another window', async (t) => {
+    if (!skipUnlessTmux(t)) return;
+    await withTempTmuxSession(async (fixture) => {
+      const ownerId = 'cross-window-impostor-owner';
+      const expected = createOwnedHud(fixture, ownerId);
+      // Create an impostor pane in another window carrying the same operation
+      // marker text and the same owner tag but none of the proof's pane
+      // identity: it must not become an authority match, must not be harmed,
+      // and must not stop the exact proof from authorizing the real HUD.
+      const impostorWindowPaneId = fixture.run([
+        'new-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${fixture.sessionName}:`,
+        `env OMX_DETACHED_HUD_OPERATION=${expected.operationMarker} sleep 120`,
+      ]);
+      fixture.run(['set-option', '-pq', '-t', impostorWindowPaneId, '@omx_hud_owner', ownerId]);
+      fixture.run(['select-window', '-t', `${fixture.sessionName}:1`]);
+      assert.equal(
+        fixture.run(['display-message', '-p', '-t', fixture.sessionName, '#{window_id}']),
+        fixture.run(['display-message', '-p', '-t', impostorWindowPaneId, '#{window_id}']),
+        'the selected window must be the impostor window, not the HUD window',
+      );
+      assert.equal(cleanupDetachedHudPane(expected, ownerId), true, 'the exact proof must still authorize the real HUD');
+      await poll('proven HUD removal', () => !paneExists(fixture, expected.paneId) ? true : undefined);
+      assert.equal(paneExists(fixture, impostorWindowPaneId), true, 'the impostor pane in the other window must be preserved');
+    });
+  });
+
   it('applies only a matching finalized terminal exit status', () => {
     const wd = mkdtempSync(join(tmpdir(), 'omx-detached-exit-status-'));
     const path = join(wd, 'marker.release');
