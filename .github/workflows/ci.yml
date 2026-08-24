@@ -5,6 +5,12 @@ on:
     branches: [main, dev, experimental/dev]
   pull_request:
     branches: [main, dev, experimental/dev]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Immutable release tag to publish via npm trusted publishing, e.g. v0.21.0'
+        required: false
+        type: string
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -792,3 +798,85 @@ jobs:
             exit 1
           fi
           echo "All required CI checks passed for active lanes"
+
+  publish-npm-trusted:
+    name: Publish npm (trusted publishing)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Validate release tag shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::refusing to publish: release_tag must be an immutable semver tag like v0.21.0, got '$RELEASE_TAG'"
+            exit 1
+          fi
+      - name: Check out the exact release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Verify tag resolves to the current default branch head
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse "$RELEASE_TAG^{}")" != "$(git rev-parse refs/remotes/origin/main)" ]]; then
+            echo "::error::refusing to publish: $RELEASE_TAG does not resolve to the main branch head"
+            exit 1
+          fi
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify npm supports tokenless trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+          node -e "
+            const [major, minor] = require('node:child_process')
+              .execSync('npm --version')
+              .toString()
+              .trim()
+              .split('.')
+              .map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) {
+              console.error('npm >= 11.5.0 is required for tokenless trusted publishing');
+              process.exit(1);
+            }
+          "
+      - run: npm ci
+      - name: Verify tag/package version and registry absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+          if npm view "oh-my-codex@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::oh-my-codex@$VERSION already exists on npm; refusing blind retry"
+            exit 1
+          fi
+      - run: npm pack --dry-run
+      - name: Publish to npm via trusted publishing (OIDC, no token)
+        shell: bash
+        run: npm publish --access public --provenance
+      - name: Verify npm publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          for i in $(seq 1 20); do
+            if [ "$(npm view "oh-my-codex@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+              npm view oh-my-codex version dist-tags --json
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "npm did not expose oh-my-codex@$VERSION in time" >&2
+          exit 1
