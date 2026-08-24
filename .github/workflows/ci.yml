@@ -5,6 +5,12 @@ on:
     branches: [main, dev, experimental/dev]
   pull_request:
     branches: [main, dev, experimental/dev]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Immutable release tag to publish via npm trusted publishing, e.g. v0.21.0'
+        required: false
+        type: string
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -792,3 +798,156 @@ jobs:
             exit 1
           fi
           echo "All required CI checks passed for active lanes"
+
+  publish-npm-trusted:
+    name: Publish npm (trusted publishing)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - name: Validate release tag shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::refusing to publish: release_tag must be an immutable semver tag like v0.21.0, got '$RELEASE_TAG'"
+            exit 1
+          fi
+      - name: Check out the exact release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+      - name: Verify tag is an ancestor of origin/main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main
+          TAG_COMMIT=$(git rev-parse "$RELEASE_TAG^{}")
+          MAIN_COMMIT=$(git rev-parse refs/remotes/origin/main)
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
+            echo "::error::refusing to publish: $RELEASE_TAG ($TAG_COMMIT) is not an ancestor of origin/main ($MAIN_COMMIT)"
+            exit 1
+          fi
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify Node and npm support tokenless trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node <<'NODE'
+          const { execSync } = require('node:child_process');
+
+          function nodeMeetsTrustedPublish(version) {
+            const [major, minor] = String(version).trim().replace(/^v/, '').split('.').map(Number);
+            if (![major, minor].every(Number.isFinite)) return false;
+            return major > 22 || (major === 22 && minor >= 14);
+          }
+
+          function npmMeetsTrustedPublish(version) {
+            const [major, minor, patch] = String(version).trim().replace(/^v/, '').split('.').map(Number);
+            if (![major, minor, patch].every(Number.isFinite)) return false;
+            return major > 11 || (major === 11 && minor > 5) || (major === 11 && minor === 5 && patch >= 1);
+          }
+
+          const nodeVersion = process.versions.node;
+          if (!nodeMeetsTrustedPublish(nodeVersion)) {
+            console.error(`Node >= 22.14.0 is required for tokenless trusted publishing, got ${nodeVersion}`);
+            process.exit(1);
+          }
+
+          let npmVersion = execSync('npm --version', { encoding: 'utf8' }).trim();
+          if (!npmMeetsTrustedPublish(npmVersion)) {
+            execSync('npm install -g npm@^11.5.1', { stdio: 'inherit' });
+            npmVersion = execSync('npm --version', { encoding: 'utf8' }).trim();
+          }
+          if (!npmMeetsTrustedPublish(npmVersion)) {
+            console.error(`npm >= 11.5.1 is required for tokenless trusted publishing, got ${npmVersion}`);
+            process.exit(1);
+          }
+          console.log(`trusted-publish toolchain: node ${nodeVersion}, npm ${npmVersion}`);
+          NODE
+      - run: npm ci
+      - name: Verify tag/package version and registry absence
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+          VIEW_FILE=$(mktemp)
+          trap 'rm -f "$VIEW_FILE"' EXIT
+          set +e
+          npm view "oh-my-codex@$VERSION" version --json >"$VIEW_FILE" 2>&1
+          VIEW_STATUS=$?
+          set -e
+          VIEW_STATUS="$VIEW_STATUS" VERSION="$VERSION" VIEW_FILE="$VIEW_FILE" node <<'NODE'
+          const fs = require('node:fs');
+
+          function classifyNpmViewResult(status, output) {
+            if (Number(status) === 0) return 'exists';
+            const text = String(output ?? '');
+            let code = '';
+            try {
+              const parsed = JSON.parse(text);
+              const extracted = parsed?.error?.code ?? parsed?.code ?? '';
+              if (String(extracted).trim() !== '') code = String(extracted).trim();
+            } catch {
+              const match = text.match(/"code"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
+              if (match) code = match[1];
+            }
+            if (!code) {
+              const match = text.match(/(?:^|\n)npm error code ([A-Z][A-Z0-9_]+)\b/);
+              if (match) code = match[1];
+            }
+            if (code) {
+              return code === 'E404' ? 'absent' : 'error';
+            }
+            if (
+              /(?:^|\n)npm error 404 Not Found(?:\s|-|$)/.test(text) ||
+              /(?:^|\n)npm error 404\s+'[^'\n]+' is not in this registry\./.test(text)
+            ) {
+              return 'absent';
+            }
+            return 'error';
+          }
+
+          const output = fs.readFileSync(process.env.VIEW_FILE, 'utf8');
+          const result = classifyNpmViewResult(process.env.VIEW_STATUS, output);
+          if (result === 'exists') {
+            console.error(`::error::oh-my-codex@${process.env.VERSION} already exists on npm; refusing blind retry`);
+            process.exit(1);
+          }
+          if (result === 'error') {
+            console.error('::error::npm view failed with a non-404 registry error; refusing to publish (fail closed)');
+            console.error(output);
+            process.exit(1);
+          }
+          NODE
+      - run: npm pack --dry-run
+      - name: Publish to npm via trusted publishing (OIDC, no token)
+        shell: bash
+        run: npm publish --access public --provenance
+      - name: Verify npm publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          for i in $(seq 1 20); do
+            if [ "$(npm view "oh-my-codex@$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+              npm view oh-my-codex version dist-tags --json
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "npm did not expose oh-my-codex@$VERSION in time" >&2
+          exit 1
