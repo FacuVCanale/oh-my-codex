@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 function readCiWorkflow(): string {
   const workflowPath = join(process.cwd(), '.github', 'workflows', 'ci.yml');
@@ -18,6 +20,32 @@ function jobBlock(workflow: string, jobName: string): string {
   const nextJobOffset = workflow.slice(afterJobHeader).search(/\n  [a-z0-9-]+:\n/);
   const end = nextJobOffset === -1 ? workflow.length : afterJobHeader + nextJobOffset;
   return workflow.slice(start, end);
+}
+
+function extractNamedFunction(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `missing function ${name}`);
+  const brace = source.indexOf('{', start);
+  assert.ok(brace >= 0, `missing body for ${name}`);
+  let depth = 0;
+  for (let i = brace; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  assert.fail(`unclosed function ${name}`);
+}
+
+function loadFunction<T>(source: string, name: string): T {
+  const fnSource = extractNamedFunction(source, name);
+  return new Function(`${fnSource}\nreturn ${name};`)() as T;
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
 
 const PUBLISH_JOB = 'publish-npm-trusted';
@@ -76,22 +104,116 @@ describe('CI npm trusted publishing contract', () => {
 
     // Tag shape gate before any checkout.
     assert.match(publishJob, /\^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/);
-    // Checkout is pinned to the input tag, never the dispatch branch.
-    assert.match(publishJob, /uses: actions\/checkout@v7\n\s+with:\n\s+ref: \$\{\{ inputs\.release_tag \}\}/);
-    // Tag must resolve to the default branch head: no arbitrary commit publishing.
+    // Checkout is pinned to the input tag with full history so origin/main can be fetched.
+    assert.match(
+      publishJob,
+      /uses: actions\/checkout@v7\n\s+with:\n\s+ref: \$\{\{ inputs\.release_tag \}\}\n\s+fetch-depth: 0\n/,
+    );
+    assert.match(publishJob, /git fetch --no-tags origin \+refs\/heads\/main:refs\/remotes\/origin\/main/);
+    assert.match(publishJob, /git rev-parse --verify refs\/remotes\/origin\/main/);
     assert.match(publishJob, /git rev-parse "\$RELEASE_TAG\^\{\}"/);
-    assert.match(publishJob, /git rev-parse refs\/remotes\/origin\/main/);
+    assert.match(publishJob, /git merge-base --is-ancestor "\$TAG_COMMIT" "\$MAIN_COMMIT"/);
+    // Historical annotated tags on main must be publishable after main advances.
+    assert.doesNotMatch(publishJob, /does not resolve to the main branch head/);
+    assert.doesNotMatch(
+      publishJob,
+      /git rev-parse "\$RELEASE_TAG\^\{\}"\)" != "\$\(git rev-parse refs\/remotes\/origin\/main\)"/,
+    );
     // Package version must equal the tag.
     assert.match(publishJob, /test "\$RELEASE_TAG" = "v\$VERSION"/);
+  });
+
+  it('treats an immutable tag on historical main as an ancestor, not current-head equality', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'omx-trusted-publish-ancestry-'));
+    try {
+      git(cwd, ['init', '-b', 'main']);
+      git(cwd, ['config', 'user.email', 'trusted-publish@example.test']);
+      git(cwd, ['config', 'user.name', 'trusted-publish']);
+      writeFileSync(join(cwd, 'README'), 'first\n');
+      git(cwd, ['add', 'README']);
+      git(cwd, ['commit', '-m', 'first']);
+      const tagged = git(cwd, ['rev-parse', 'HEAD']);
+      git(cwd, ['tag', '-a', 'v0.21.0', '-m', 'v0.21.0']);
+      writeFileSync(join(cwd, 'README'), 'first\nsecond\n');
+      git(cwd, ['add', 'README']);
+      git(cwd, ['commit', '-m', 'second']);
+      const mainHead = git(cwd, ['rev-parse', 'HEAD']);
+      const peeledTag = git(cwd, ['rev-parse', 'v0.21.0^{}']);
+
+      assert.equal(peeledTag, tagged);
+      assert.notEqual(peeledTag, mainHead);
+      git(cwd, ['merge-base', '--is-ancestor', peeledTag, mainHead]);
+
+      git(cwd, ['checkout', '-q', '-b', 'unmerged']);
+      writeFileSync(join(cwd, 'README'), 'first\nsecond\nside\n');
+      git(cwd, ['add', 'README']);
+      git(cwd, ['commit', '-m', 'side']);
+      const side = git(cwd, ['rev-parse', 'HEAD']);
+      assert.throws(() => git(cwd, ['merge-base', '--is-ancestor', side, mainHead]));
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('enforces npm >= 11.5.1 and Node >= 22.14.0, rejecting 11.5.0', () => {
+    const publishJob = jobBlock(readCiWorkflow(), PUBLISH_JOB);
+    assert.match(publishJob, /node-version: 24/);
+    assert.match(publishJob, /npm install -g npm@\^11\.5\.1/);
+    assert.match(publishJob, /npm >= 11\.5\.1 is required for tokenless trusted publishing/);
+    assert.match(publishJob, /Node >= 22\.14\.0 is required for tokenless trusted publishing/);
+    assert.doesNotMatch(publishJob, /npm >= 11\.5\.0 is required/);
+
+    const nodeMeetsTrustedPublish = loadFunction<(version: string) => boolean>(
+      publishJob,
+      'nodeMeetsTrustedPublish',
+    );
+    const npmMeetsTrustedPublish = loadFunction<(version: string) => boolean>(
+      publishJob,
+      'npmMeetsTrustedPublish',
+    );
+
+    assert.equal(npmMeetsTrustedPublish('11.5.0'), false);
+    assert.equal(npmMeetsTrustedPublish('11.4.2'), false);
+    assert.equal(npmMeetsTrustedPublish('11.5.1'), true);
+    assert.equal(npmMeetsTrustedPublish('11.6.0'), true);
+    assert.equal(npmMeetsTrustedPublish('12.0.0'), true);
+    assert.equal(nodeMeetsTrustedPublish('20.19.0'), false);
+    assert.equal(nodeMeetsTrustedPublish('22.13.1'), false);
+    assert.equal(nodeMeetsTrustedPublish('22.14.0'), true);
+    assert.equal(nodeMeetsTrustedPublish('24.4.0'), true);
   });
 
   it('verifies the version is absent from the registry before publishing and refuses blind retries', () => {
     const publishJob = jobBlock(readCiWorkflow(), PUBLISH_JOB);
 
-    assert.match(publishJob, /if npm view "oh-my-codex@\$VERSION" version >\/dev\/null 2>&1; then/);
+    assert.match(publishJob, /npm view "oh-my-codex@\$VERSION" version --json/);
     assert.match(publishJob, /already exists on npm; refusing blind retry/);
+    assert.match(publishJob, /npm view failed with a non-404 registry error; refusing to publish \(fail closed\)/);
+    assert.doesNotMatch(publishJob, /if npm view "oh-my-codex@\$VERSION" version >\/dev\/null 2>&1; then/);
     // Pack is a dry run only: no artifact publication outside npm publish.
     assert.match(publishJob, /run: npm pack --dry-run\n/);
+
+    const classifyNpmViewResult = loadFunction<(status: number | string, output: string) => string>(
+      publishJob,
+      'classifyNpmViewResult',
+    );
+
+    assert.equal(classifyNpmViewResult(0, '"0.21.0"'), 'exists');
+    assert.equal(
+      classifyNpmViewResult(1, JSON.stringify({ error: { code: 'E404', summary: 'Not Found' } })),
+      'absent',
+    );
+    assert.equal(
+      classifyNpmViewResult(
+        1,
+        "npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/oh-my-codex/0.21.0\nnpm error 404  'oh-my-codex@0.21.0' is not in this registry.\n",
+      ),
+      'absent',
+    );
+    assert.equal(classifyNpmViewResult(1, 'npm error code EAI_AGAIN\nnpm error request to https://registry.npmjs.org failed'), 'error');
+    assert.equal(classifyNpmViewResult(1, 'npm error code E401\nnpm error Unable to authenticate'), 'error');
+    assert.equal(classifyNpmViewResult(1, 'npm error code ETIMEDOUT'), 'error');
+    assert.equal(classifyNpmViewResult(2, 'ENOTFOUND registry.npmjs.org'), 'error');
   });
 
   it('verifies registry publication with bounded retries after publishing', () => {
