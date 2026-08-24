@@ -899,16 +899,22 @@ jobs:
             let code = '';
             try {
               const parsed = JSON.parse(text);
-              code = String(parsed?.error?.code ?? parsed?.code ?? '');
+              const extracted = parsed?.error?.code ?? parsed?.code ?? '';
+              if (String(extracted).trim() !== '') code = String(extracted).trim();
             } catch {
-              const match = text.match(/"code"\s*:\s*"([^"]+)"/);
+              const match = text.match(/"code"\s*:\s*"([A-Z][A-Z0-9_]+)"/);
               if (match) code = match[1];
             }
+            if (!code) {
+              const match = text.match(/(?:^|\n)npm error code ([A-Z][A-Z0-9_]+)\b/);
+              if (match) code = match[1];
+            }
+            if (code) {
+              return code === 'E404' ? 'absent' : 'error';
+            }
             if (
-              code === 'E404' ||
-              /\bE404\b/.test(text) ||
-              /404 Not Found/i.test(text) ||
-              /is not in this registry/i.test(text)
+              /(?:^|\n)npm error 404 Not Found(?:\s|-|$)/.test(text) ||
+              /(?:^|\n)npm error 404\s+'[^'\n]+' is not in this registry\./.test(text)
             ) {
               return 'absent';
             }

@@ -189,7 +189,9 @@ describe('CI npm trusted publishing contract', () => {
     assert.match(publishJob, /npm view "oh-my-codex@\$VERSION" version --json/);
     assert.match(publishJob, /already exists on npm; refusing blind retry/);
     assert.match(publishJob, /npm view failed with a non-404 registry error; refusing to publish \(fail closed\)/);
+    assert.match(publishJob, /if \(code\) \{\n\s+return code === 'E404' \? 'absent' : 'error';/);
     assert.doesNotMatch(publishJob, /if npm view "oh-my-codex@\$VERSION" version >\/dev\/null 2>&1; then/);
+    assert.doesNotMatch(publishJob, /code === 'E404' \|\|/);
     // Pack is a dry run only: no artifact publication outside npm publish.
     assert.match(publishJob, /run: npm pack --dry-run\n/);
 
@@ -210,10 +212,33 @@ describe('CI npm trusted publishing contract', () => {
       ),
       'absent',
     );
+    assert.equal(
+      classifyNpmViewResult(
+        1,
+        "npm error 404 Not Found - GET https://registry.npmjs.org/oh-my-codex/0.21.0\nnpm error 404  'oh-my-codex@0.21.0' is not in this registry.\n",
+      ),
+      'absent',
+    );
+    assert.equal(
+      classifyNpmViewResult(1, JSON.stringify({ error: { code: 'E401', summary: '404 Not Found' } })),
+      'error',
+    );
+    assert.equal(
+      classifyNpmViewResult(1, 'npm error code E401\nnpm error 404 Not Found - GET https://registry.npmjs.org/oh-my-codex/0.21.0'),
+      'error',
+    );
+    assert.equal(
+      classifyNpmViewResult(
+        1,
+        'npm error code E403\nnpm error 404  \'oh-my-codex@0.21.0\' is not in this registry.\n',
+      ),
+      'error',
+    );
     assert.equal(classifyNpmViewResult(1, 'npm error code EAI_AGAIN\nnpm error request to https://registry.npmjs.org failed'), 'error');
     assert.equal(classifyNpmViewResult(1, 'npm error code E401\nnpm error Unable to authenticate'), 'error');
     assert.equal(classifyNpmViewResult(1, 'npm error code ETIMEDOUT'), 'error');
     assert.equal(classifyNpmViewResult(2, 'ENOTFOUND registry.npmjs.org'), 'error');
+    assert.equal(classifyNpmViewResult(1, 'HTTP 404 Not Found from a proxy during E401'), 'error');
   });
 
   it('verifies registry publication with bounded retries after publishing', () => {
