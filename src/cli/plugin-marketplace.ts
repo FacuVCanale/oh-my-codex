@@ -1,5 +1,5 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
-import { cp, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, writeFile, type FileHandle } from "fs/promises";
+import { cp, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
@@ -97,53 +97,201 @@ async function readPluginManifest(
 
 function directoryFdPath(fd: number): string | null {
 	if (process.platform === "linux") return `/proc/self/fd/${fd}`;
-	if (process.platform === "darwin") return `/dev/fd/${fd}`;
 	return null;
 }
 
 function isDirectoryDescriptorPath(path: string): boolean {
-	return /^\/(?:proc\/self\/fd|dev\/fd)\/\d+$/.test(path);
+	return /^\/proc\/self\/fd\/\d+$/.test(path);
 }
 
 function directoryOpenFlags(path: string, directoryFlags: number, noFollowFlags: number): number {
 	return fsConstants.O_RDONLY | directoryFlags | (isDirectoryDescriptorPath(path) ? 0 : noFollowFlags);
 }
 
-async function syncRegularFile(path: string): Promise<void> {
-	const noFollowFlags = fsConstants.O_NOFOLLOW;
-	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
-	const handle = await open(path, fsConstants.O_RDONLY | noFollowFlags);
-	try {
-		await handle.sync();
-	} finally {
-		await handle.close();
+interface DirectoryRef {
+	handle: FileHandle;
+	path: string;
+	operationPath: string;
+}
+
+function directoryOperationPath(handle: FileHandle, path: string): string | null {
+	return directoryFdPath(handle.fd) ?? resolve(path);
+}
+
+function childOperationPath(parent: DirectoryRef, name: string): string {
+	if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+		throw new Error(`invalid descriptor-relative child name: ${name}`);
+	}
+	return join(parent.operationPath, name);
+}
+
+async function assertDirectoryRef(parent: DirectoryRef, operation: string): Promise<void> {
+	const descriptorStats = await parent.handle.stat();
+	const visibleStats = await lstat(parent.path);
+	if (
+		!descriptorStats.isDirectory() ||
+		!visibleStats.isDirectory() ||
+		visibleStats.isSymbolicLink() ||
+		descriptorStats.dev !== visibleStats.dev ||
+		descriptorStats.ino !== visibleStats.ino
+	) {
+		throw new Error(`descriptor-bound ${operation} parent was replaced: ${parent.path}`);
 	}
 }
 
-async function syncDirectory(path: string): Promise<void> {
+async function openDirectoryRef(path: string): Promise<DirectoryRef> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	const directoryFlags = fsConstants.O_DIRECTORY;
 	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
-		throw new Error("directory durability flags are unavailable");
+		throw new Error("directory anchoring flags are unavailable");
 	}
-	const handle = await open(path, directoryOpenFlags(path, directoryFlags, noFollowFlags));
+	const visiblePath = resolve(path);
+	const handle = await open(visiblePath, directoryOpenFlags(visiblePath, directoryFlags, noFollowFlags));
+	const operationPath = directoryOperationPath(handle, visiblePath);
+	if (!operationPath) {
+		await handle.close();
+		throw new Error("platform cannot expose a descriptor-relative directory operation path");
+	}
+	const ref = { handle, path: visiblePath, operationPath };
+	try {
+		await assertDirectoryRef(ref, "open");
+		return ref;
+	} catch (error) {
+		await handle.close();
+		throw error;
+	}
+}
+
+async function openDirectoryChild(parent: DirectoryRef, name: string): Promise<DirectoryRef> {
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	const directoryFlags = fsConstants.O_DIRECTORY;
+	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+		throw new Error("directory anchoring flags are unavailable");
+	}
+	const operationPath = childOperationPath(parent, name);
+	const visiblePath = join(parent.path, name);
+	await assertDirectoryRef(parent, "open");
+	const handle = await open(operationPath, directoryOpenFlags(operationPath, directoryFlags, noFollowFlags));
+	const childOperation = directoryOperationPath(handle, visiblePath);
+	if (!childOperation) {
+		await handle.close();
+		throw new Error("platform cannot expose a descriptor-relative directory operation path");
+	}
+	const child = { handle, path: visiblePath, operationPath: childOperation };
+	try {
+		await assertDirectoryRef(parent, "open");
+		await assertDirectoryRef(child, "open");
+		return child;
+	} catch (error) {
+		await handle.close();
+		throw error;
+	}
+}
+
+async function mkdirDirectoryChild(parent: DirectoryRef, name: string): Promise<void> {
+	const operationPath = childOperationPath(parent, name);
+	await assertDirectoryRef(parent, "mkdir");
+	try {
+		await mkdir(operationPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+	await assertDirectoryRef(parent, "mkdir");
+}
+
+async function mkdirDirectoryChildExclusive(parent: DirectoryRef, name: string): Promise<void> {
+	const operationPath = childOperationPath(parent, name);
+	await assertDirectoryRef(parent, "exclusive mkdir");
+	await mkdir(operationPath);
+	await assertDirectoryRef(parent, "exclusive mkdir");
+}
+
+async function openRegularFileChild(parent: DirectoryRef, name: string, flags: number, mode?: number): Promise<FileHandle> {
+	const operationPath = childOperationPath(parent, name);
+	await assertDirectoryRef(parent, "file open");
+	const handle = await open(operationPath, flags, mode);
+	try {
+		await assertDirectoryRef(parent, "file open");
+		return handle;
+	} catch (error) {
+		await handle.close();
+		throw error;
+	}
+}
+
+async function syncRegularFileChild(parent: DirectoryRef, name: string): Promise<void> {
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
+	const handle = await openRegularFileChild(parent, name, fsConstants.O_RDONLY | noFollowFlags);
 	try {
 		await handle.sync();
 	} finally {
 		await handle.close();
 	}
+	await assertDirectoryRef(parent, "file sync");
 }
 
-async function syncDirectoryTree(path: string, directoryHandle?: FileHandle): Promise<void> {
-	const entries = await readdir(path, { withFileTypes: true });
-	for (const entry of entries) {
-		const childPath = join(path, entry.name);
-		if (entry.isSymbolicLink()) throw new Error(`cannot sync symlinked cache entry: ${childPath}`);
-		if (entry.isDirectory()) await syncDirectoryTree(childPath);
-		else await syncRegularFile(childPath);
+async function writeRegularFileChild(parent: DirectoryRef, name: string, content: string): Promise<void> {
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
+	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | noFollowFlags, 0o600);
+	try {
+		await handle.writeFile(content);
+		await handle.sync();
+	} finally {
+		await handle.close();
 	}
-	if (directoryHandle) await directoryHandle.sync();
-	else await syncDirectory(path);
+	await assertDirectoryRef(parent, "file write");
+}
+
+async function createExclusiveFileChild(parent: DirectoryRef, name: string, content: string): Promise<void> {
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
+	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags, 0o600);
+	try {
+		await handle.writeFile(content);
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await assertDirectoryRef(parent, "exclusive file create");
+}
+
+async function removeChild(parent: DirectoryRef, name: string, options: { recursive?: boolean; force?: boolean } = {}): Promise<void> {
+	const operationPath = childOperationPath(parent, name);
+	await assertDirectoryRef(parent, "remove");
+	await rm(operationPath, options);
+	await assertDirectoryRef(parent, "remove");
+}
+
+async function renameChild(sourceParent: DirectoryRef, sourceName: string, destinationParent: DirectoryRef, destinationName: string): Promise<void> {
+	const sourcePath = childOperationPath(sourceParent, sourceName);
+	const destinationPath = childOperationPath(destinationParent, destinationName);
+	await assertDirectoryRef(sourceParent, "rename");
+	await assertDirectoryRef(destinationParent, "rename");
+	await rename(sourcePath, destinationPath);
+	await assertDirectoryRef(sourceParent, "rename");
+	await assertDirectoryRef(destinationParent, "rename");
+}
+
+async function syncDirectoryTree(directory: DirectoryRef): Promise<void> {
+	await assertDirectoryRef(directory, "directory sync");
+	const entries = await readdir(directory.operationPath, { withFileTypes: true });
+	for (const entry of entries) {
+		if (entry.isSymbolicLink()) throw new Error(`cannot sync symlinked cache entry: ${join(directory.path, entry.name)}`);
+		if (entry.isDirectory()) {
+			const child = await openDirectoryChild(directory, entry.name);
+			try {
+				await syncDirectoryTree(child);
+			} finally {
+				await child.handle.close();
+			}
+		} else {
+			await syncRegularFileChild(directory, entry.name);
+		}
+	}
+	await assertDirectoryRef(directory, "directory sync");
+	await directory.handle.sync();
 }
 
 export async function readOmxPluginCacheFileNoFollow(
@@ -315,15 +463,15 @@ function isProcessAlive(pid: number): boolean {
 }
 
 async function claimPublicationLock(
-	cacheBaseFdPath: string,
+	cacheBaseRef: DirectoryRef,
 	cacheBase: string,
 	noFollowFlags: number,
 ): Promise<FileHandle> {
-	const lockPath = join(cacheBaseFdPath, ".omx-publish.lock");
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
-			const lockHandle = await open(
-				lockPath,
+			const lockHandle = await openRegularFileChild(
+				cacheBaseRef,
+				".omx-publish.lock",
 				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags,
 				0o600,
 			);
@@ -332,13 +480,22 @@ async function claimPublicationLock(
 				await lockHandle.sync();
 			} catch (error) {
 				try { await lockHandle.close(); } catch { /* preserve the primary failure */ }
-				try { await rm(lockPath, { force: true }); } catch { /* preserve the primary failure */ }
+				try { await removeChild(cacheBaseRef, ".omx-publish.lock", { force: true }); } catch { /* preserve the primary failure */ }
 				throw error;
 			}
 			return lockHandle;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 0) throw error;
-			const lockBytes = await readOmxPluginCacheFileNoFollow(lockPath, { anchorDir: cacheBaseFdPath });
+			const lockPath = join(cacheBaseRef.path, ".omx-publish.lock");
+			let lockBefore: Stats;
+			try { lockBefore = await lstat(lockPath); } catch { continue; }
+			if (!lockBefore.isFile() || lockBefore.isSymbolicLink() || typeof lockBefore.dev !== "number" || typeof lockBefore.ino !== "number") {
+				throw new Error(`another OMX plugin cache publication is active at ${cacheBase}; refusing concurrent publication`);
+			}
+			const lockBytes = await readOmxPluginCacheFileNoFollow(lockPath, { anchorDir: cacheBaseRef.path });
+			let lockAfter: Stats;
+			try { lockAfter = await lstat(lockPath); } catch { continue; }
+			if (lockAfter.dev !== lockBefore.dev || lockAfter.ino !== lockBefore.ino) continue;
 			let stale = false;
 			if (lockBytes !== null) {
 				try {
@@ -351,7 +508,9 @@ async function claimPublicationLock(
 			if (!stale) {
 				throw new Error(`another OMX plugin cache publication is active at ${cacheBase}; refusing concurrent publication`);
 			}
-			await rm(lockPath, { force: true });
+			const unlinkBefore = await lstat(lockPath);
+			if (unlinkBefore.dev !== lockBefore.dev || unlinkBefore.ino !== lockBefore.ino) continue;
+			await removeChild(cacheBaseRef, ".omx-publish.lock", { force: true });
 		}
 	}
 	throw new Error(`cannot recover stale OMX plugin cache publication lock at ${cacheBase}`);
@@ -554,7 +713,7 @@ async function openManagedCacheNamespace(
 	cacheBase: string,
 	codexHomeDir: string,
 	options: { create: boolean },
-): Promise<{ handle: FileHandle; fdPath: string; handles: FileHandle[] } | null> {
+): Promise<{ handle: FileHandle; fdPath: string; path: string; handles: FileHandle[] } | null> {
 	const managedNamespace = relative(resolve(codexHomeDir), resolve(cacheBase));
 	if (!managedNamespace || managedNamespace.startsWith("..") || isAbsolute(managedNamespace)) {
 		throw new Error(`Refusing to access an OMX plugin cache outside the Codex home: ${resolve(cacheBase)}`);
@@ -574,37 +733,13 @@ async function openManagedCacheNamespace(
 	}
 	const handles: FileHandle[] = [];
 	try {
-		const homeHandle = await open(homeRealpath, directoryOpenFlags(homeRealpath, directoryFlags, noFollowFlags));
-		handles.push(homeHandle);
-		let parentPath = process.platform === "darwin" ? homeRealpath : directoryFdPath(homeHandle.fd);
-		let actualParentPath = homeRealpath;
-		if (!parentPath) throw new Error("platform cannot expose a Codex home directory descriptor");
+		const homeRef = await openDirectoryRef(homeRealpath);
+		handles.push(homeRef.handle);
+		let parentRef = homeRef;
 		for (const component of managedNamespace.split(sep).filter(Boolean)) {
-			const childPath = join(parentPath, component);
-			const actualChildPath = join(actualParentPath, component);
-			const childOpenPath = process.platform === "darwin" ? actualChildPath : childPath;
-			const openChild = async (): Promise<FileHandle> => {
-				if (process.platform === "darwin") {
-					const parentStats = await handles.at(-1)!.stat();
-					const visibleParentStats = await lstat(actualParentPath);
-					if (parentStats.dev !== visibleParentStats.dev || parentStats.ino !== visibleParentStats.ino || !visibleParentStats.isDirectory() || visibleParentStats.isSymbolicLink()) {
-						throw new Error(`Refusing to access OMX plugin cache through a replaced namespace parent: ${actualParentPath}`);
-					}
-				}
-				const openedChild = await open(childOpenPath, directoryOpenFlags(childOpenPath, directoryFlags, noFollowFlags));
-				if (process.platform === "darwin") {
-					const parentStats = await handles.at(-1)!.stat();
-					const visibleParentStats = await lstat(actualParentPath);
-					if (parentStats.dev !== visibleParentStats.dev || parentStats.ino !== visibleParentStats.ino || !visibleParentStats.isDirectory() || visibleParentStats.isSymbolicLink()) {
-						await openedChild.close();
-						throw new Error(`Refusing to access OMX plugin cache through a replaced namespace parent: ${actualParentPath}`);
-					}
-				}
-				return openedChild;
-			};
-			let childHandle: FileHandle;
+			let childRef: DirectoryRef;
 			try {
-				childHandle = await openChild();
+				childRef = await openDirectoryChild(parentRef, component);
 			} catch (error) {
 				if (!isMissingPathError(error) || !options.create) {
 					if (isMissingPathError(error) && !options.create) {
@@ -613,36 +748,29 @@ async function openManagedCacheNamespace(
 					}
 					const code = (error as NodeJS.ErrnoException).code;
 					if (code === "ELOOP" || code === "ENOTDIR") {
-						throw new Error(`Refusing to access OMX plugin cache through a symbolic link or non-directory namespace component: ${childPath}`);
+						throw new Error(`Refusing to access OMX plugin cache through a symbolic link or non-directory namespace component: ${join(parentRef.path, component)}`);
 					}
 					throw error;
 				}
 				try {
-					const parentStats = await handles.at(-1)!.stat();
-					const visibleParentStats = await lstat(actualParentPath);
-					if (parentStats.dev !== visibleParentStats.dev || parentStats.ino !== visibleParentStats.ino || !visibleParentStats.isDirectory() || visibleParentStats.isSymbolicLink()) {
-						throw new Error(`Refusing to create OMX plugin cache through a replaced namespace parent: ${actualParentPath}`);
-					}
-					await mkdir(actualChildPath);
+					await mkdirDirectoryChild(parentRef, component);
 				} catch (mkdirError) {
 					if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
 				}
 				try {
-					childHandle = await openChild();
+					childRef = await openDirectoryChild(parentRef, component);
 				} catch (retryError) {
 					const code = (retryError as NodeJS.ErrnoException).code;
 					if (code === "ELOOP" || code === "ENOTDIR") {
-						throw new Error(`Refusing to access OMX plugin cache through a symbolic link or non-directory namespace component: ${childPath}`);
+						throw new Error(`Refusing to access OMX plugin cache through a symbolic link or non-directory namespace component: ${join(parentRef.path, component)}`);
 					}
 					throw retryError;
 				}
 			}
-			handles.push(childHandle);
-			parentPath = process.platform === "darwin" ? actualChildPath : directoryFdPath(childHandle.fd);
-			actualParentPath = actualChildPath;
-			if (!parentPath) throw new Error("platform cannot expose an OMX plugin cache directory descriptor");
+			handles.push(childRef.handle);
+			parentRef = childRef;
 		}
-		return { handle: handles.at(-1)!, fdPath: parentPath, handles };
+		return { handle: parentRef.handle, fdPath: parentRef.operationPath, path: parentRef.path, handles };
 	} catch (error) {
 		for (const handle of handles.reverse()) {
 			try { await handle.close(); } catch { /* preserve the primary failure */ }
@@ -676,27 +804,40 @@ async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "director
 }
 
 async function stageCompletePluginSnapshot(
-	stagingParent: string,
+	stagingParent: DirectoryRef,
 	packagedMarketplace: PackagedOmxMarketplace,
 	version: string,
 	teamMode: SetupTeamMode | undefined,
-): Promise<string> {
-	const snapshotDir = join(stagingParent, "snapshot");
-	await cp(packagedMarketplace.pluginRoot, snapshotDir, { recursive: true });
-	await applyTeamModeToPluginCache(snapshotDir, teamMode);
-	await writePinnedHookLauncher(snapshotDir, packagedMarketplace);
-	const manifest = await readPluginManifest(join(snapshotDir, ".codex-plugin", "plugin.json"));
-	if (
-		manifest?.name !== OMX_PLUGIN_NAME ||
-		manifest.version !== version ||
-		manifest.skills !== "./skills/" ||
-		manifest.hooks !== "./hooks/hooks.json" ||
-		!(await pathIsDirectory(join(snapshotDir, "hooks"))) ||
-		!(await pathIsDirectory(join(snapshotDir, "skills")))
-	) {
-		throw new Error(`Packaged OMX plugin snapshot is incomplete or has invalid provenance: ${snapshotDir}`);
+): Promise<DirectoryRef> {
+	await assertDirectoryRef(stagingParent, "snapshot staging");
+	await mkdirDirectoryChildExclusive(stagingParent, "snapshot");
+	const snapshot = await openDirectoryChild(stagingParent, "snapshot");
+	try {
+		await cp(packagedMarketplace.pluginRoot, snapshot.path, { recursive: true });
+		await assertDirectoryRef(snapshot, "snapshot staging");
+		await applyTeamModeToPluginCache(snapshot, teamMode);
+		const hooksDir = await openDirectoryChild(snapshot, "hooks");
+		try {
+			await writePinnedHookLauncher(hooksDir, packagedMarketplace);
+		} finally {
+			await hooksDir.handle.close();
+		}
+		const manifest = await readRegularOmxPluginCacheManifest(snapshot.path, snapshot.path);
+		const skillsDir = await openDirectoryChild(snapshot, "skills");
+		await skillsDir.handle.close();
+		if (
+			manifest?.name !== OMX_PLUGIN_NAME ||
+			manifest.version !== version ||
+			manifest.skills !== "./skills/" ||
+			manifest.hooks !== "./hooks/hooks.json"
+		) {
+			throw new Error(`Packaged OMX plugin snapshot is incomplete or has invalid provenance: ${snapshot.path}`);
+		}
+		return snapshot;
+	} catch (error) {
+		await snapshot.handle.close();
+		throw error;
 	}
-	return snapshotDir;
 }
 
 export async function discoverOmxPluginCacheDirs(
@@ -938,30 +1079,34 @@ async function pinnedHookLauncherMatchesPackaged(
 }
 
 async function writePinnedHookLauncher(
-	cacheDir: string,
+	hooksDir: DirectoryRef,
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<void> {
-	await writeFile(
-		join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
+	await writeRegularFileChild(
+		hooksDir,
+		OMX_PLUGIN_HOOK_LAUNCHER_FILE,
 		buildPinnedHookLauncherContent(packagedMarketplace),
 	);
 }
 
-async function pathIsDirectory(path: string): Promise<boolean> {
-	try {
-		return (await lstat(path)).isDirectory();
-	} catch {
-		return false;
-	}
-}
-
 async function applyTeamModeToPluginCache(
-	cacheDir: string,
+	cacheDir: DirectoryRef,
 	teamMode: SetupTeamMode | undefined,
 ): Promise<void> {
 	if (teamModeEnabled(teamMode)) return;
-	for (const skillName of TEAM_MODE_PLUGIN_SKILL_NAMES) {
-		await rm(join(cacheDir, "skills", skillName), { recursive: true, force: true });
+	let skillsDir: DirectoryRef;
+	try {
+		skillsDir = await openDirectoryChild(cacheDir, "skills");
+	} catch (error) {
+		if (isMissingPathError(error)) return;
+		throw error;
+	}
+	try {
+		for (const skillName of TEAM_MODE_PLUGIN_SKILL_NAMES) {
+			await removeChild(skillsDir, skillName, { recursive: true, force: true });
+		}
+	} finally {
+		await skillsDir.handle.close();
 	}
 }
 
@@ -1098,45 +1243,43 @@ export async function getPinnedLauncherIncompatibilityReason(
 async function retireUnpinnedManagedSnapshots(
 	codexHomeDir: string,
 	currentVersion: string,
-	anchoredCacheBasePath?: string,
+	anchoredCacheBaseRef?: DirectoryRef,
 ): Promise<string[]> {
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
-	const managedBase = anchoredCacheBasePath ?? cacheBase;
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	const directoryFlags = fsConstants.O_DIRECTORY;
 	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
 		throw new Error("platform cannot provide no-follow directory anchoring for cache retirement");
 	}
-	let baseHandle: FileHandle | undefined;
-	const candidateHandles: FileHandle[] = [];
+	let baseRef = anchoredCacheBaseRef;
+	let ownsBaseRef = false;
+	const candidateRefs: DirectoryRef[] = [];
 	try {
-		baseHandle = await open(managedBase, directoryOpenFlags(managedBase, directoryFlags, noFollowFlags));
-		const baseFdPath = directoryFdPath(baseHandle.fd);
-		if (!baseFdPath) throw new Error("platform cannot expose an anchored cache directory descriptor for cache retirement");
-		const entries = await readdir(baseFdPath, { withFileTypes: true });
-		const managed: Array<{ path: string; managedPath: string; version: string; mtimeMs: number; handle: FileHandle; stats: Stats }> = [];
+		if (!baseRef) {
+			baseRef = await openDirectoryRef(cacheBase);
+			ownsBaseRef = true;
+		}
+		const entries = await readdir(baseRef.operationPath, { withFileTypes: true });
+		const managed: Array<{ path: string; version: string; mtimeMs: number; ref: DirectoryRef; stats: Stats }> = [];
 		for (const entry of entries) {
 			if (!entry.isDirectory() || entry.name === currentVersion) continue;
-			const path = join(baseFdPath, entry.name);
-			let candidateHandle: FileHandle;
+			let candidateRef: DirectoryRef;
 			try {
-				candidateHandle = await open(path, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
+				candidateRef = await openDirectoryChild(baseRef, entry.name);
 			} catch {
 				continue;
 			}
-			const candidateStats = await candidateHandle.stat();
+			const candidateStats = await candidateRef.handle.stat();
 			if (!candidateStats.isDirectory() || candidateStats.isSymbolicLink()) {
-				await candidateHandle.close();
+				await candidateRef.handle.close();
 				continue;
 			}
-			candidateHandles.push(candidateHandle);
-			const candidateFdPath = directoryFdPath(candidateHandle.fd);
-			if (!candidateFdPath) continue;
-			const manifest = await readRegularOmxPluginCacheManifest(candidateFdPath, candidateFdPath);
+			candidateRefs.push(candidateRef);
+			const manifest = await readRegularOmxPluginCacheManifest(candidateRef.path, candidateRef.path);
 			if (manifest?.name !== OMX_PLUGIN_NAME || manifest.version !== entry.name) continue;
-			if (!(await hasRegularPublicationMarker(candidateFdPath, ".omx-complete")) || await hasRegularPublicationMarker(candidateFdPath, ".omx-incomplete")) continue;
-			if (await readOmxPluginCacheFileNoFollow(join(candidateFdPath, ".omx-live-pin"), { anchorDir: candidateFdPath }) !== null) continue;
-			managed.push({ path: join(cacheBase, entry.name), managedPath: path, version: entry.name, mtimeMs: candidateStats.mtimeMs, handle: candidateHandle, stats: candidateStats });
+			if (!(await hasRegularPublicationMarker(candidateRef.path, ".omx-complete")) || await hasRegularPublicationMarker(candidateRef.path, ".omx-incomplete")) continue;
+			if (await readOmxPluginCacheFileNoFollow(join(candidateRef.path, ".omx-live-pin"), { anchorDir: candidateRef.path }) !== null) continue;
+			managed.push({ path: join(cacheBase, entry.name), version: entry.name, mtimeMs: candidateStats.mtimeMs, ref: candidateRef, stats: candidateStats });
 		}
 		managed.sort((left, right) =>
 			right.version.localeCompare(left.version, undefined, { numeric: true }) ||
@@ -1144,17 +1287,18 @@ async function retireUnpinnedManagedSnapshots(
 		);
 		const retired: string[] = [];
 		for (const candidate of managed.slice(1)) {
-			const currentStats = await lstat(candidate.managedPath);
+			await assertDirectoryRef(baseRef, "retirement");
+			const currentStats = await lstat(candidate.ref.path);
 			if (!currentStats.isDirectory() || currentStats.isSymbolicLink() || currentStats.dev !== candidate.stats.dev || currentStats.ino !== candidate.stats.ino) {
 				throw new Error(`managed cache retirement target changed before removal: ${candidate.path}`);
 			}
-			await rm(candidate.managedPath, { recursive: true, force: true });
+			await removeChild(baseRef, candidate.version, { recursive: true, force: true });
 			retired.push(candidate.path);
 		}
 		return retired;
 	} finally {
-		for (const candidateHandle of candidateHandles.reverse()) await candidateHandle.close();
-		if (baseHandle) await baseHandle.close();
+		for (const candidateRef of candidateRefs.reverse()) await candidateRef.handle.close();
+		if (ownsBaseRef && baseRef) await baseRef.handle.close();
 	}
 }
 
@@ -1162,7 +1306,7 @@ interface MaterializePackagedOmxPluginCacheOptions {
 	dryRun?: boolean;
 	teamMode?: SetupTeamMode;
 	onCacheDirPrepared?: (cacheDir: string) => void | Promise<void>;
-	anchoredCacheBasePath?: string;
+	anchoredCacheBaseRef?: DirectoryRef;
 	anchoredCacheDir?: string;
 	cacheDirOverride?: string;
 }
@@ -1187,7 +1331,7 @@ async function materializePackagedOmxPluginCacheImpl(
 			version,
 			retiredDirs: options.dryRun
 				? []
-				: await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+				: await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 		};
 	}
 	// Same-version directory exists but is not byte-identical: distinguish immutable-preserved vs dead/provenance-incompatible launcher.
@@ -1200,7 +1344,7 @@ async function materializePackagedOmxPluginCacheImpl(
 			version,
 			reason: `OMX plugin cache root at ${cacheDir} is a symlink or non-directory entry; managed snapshots must be regular immutable directories; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
 			launcherTarget: undefined,
-			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 		};
 	}
 	if (rootState === "directory") {
@@ -1212,7 +1356,7 @@ async function materializePackagedOmxPluginCacheImpl(
 				version,
 				reason: incompat.reason,
 				launcherTarget: incompat.target,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
 		}
 		const snapshotProvenanceReason = await omxPluginCacheProvenanceReason(
@@ -1228,7 +1372,7 @@ async function materializePackagedOmxPluginCacheImpl(
 				version,
 				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
 				launcherTarget: undefined,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
 		}
 		const assetProvenanceReason = await omxPluginCacheExecutedAssetProvenanceReason(inspectedCacheDir);
@@ -1239,14 +1383,14 @@ async function materializePackagedOmxPluginCacheImpl(
 				version,
 				reason: `${assetProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
 				launcherTarget: undefined,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 			};
 		}
 		return {
 			status: "unchanged",
 			cacheDir,
 			version,
-			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 		};
 	}
 	if (rootState === "foreign") {
@@ -1266,29 +1410,18 @@ async function materializePackagedOmxPluginCacheImpl(
 				retiredDirs: [],
 			};
 		}
-		let cacheBaseHandle;
-		let cacheBaseFdPath: string | null | undefined = options.anchoredCacheBasePath;
-		if (!cacheBaseFdPath) {
-			cacheBaseHandle = await open(cacheBase, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
-			cacheBaseFdPath = directoryFdPath(cacheBaseHandle.fd);
+		let cacheBaseRef = options.anchoredCacheBaseRef;
+		let ownsCacheBaseRef = false;
+		if (!cacheBaseRef) {
+			cacheBaseRef = await openDirectoryRef(cacheBase);
+			ownsCacheBaseRef = true;
 		}
-		if (!cacheBaseFdPath) {
-			if (cacheBaseHandle) await cacheBaseHandle.close();
-			return {
-				status: "stale-launcher",
-				cacheDir,
-				version,
-				reason: "platform cannot expose an anchored cache directory descriptor for immutable publication",
-				launcherTarget: undefined,
-				retiredDirs: [],
-			};
-		}
-		const lockPath = join(cacheBaseFdPath, ".omx-publish.lock");
+		const lockPath = childOperationPath(cacheBaseRef, ".omx-publish.lock");
 		let lockHandle: FileHandle;
 		try {
-			lockHandle = await claimPublicationLock(cacheBaseFdPath, cacheBase, noFollowFlags);
+			lockHandle = await claimPublicationLock(cacheBaseRef, cacheBase, noFollowFlags);
 		} catch (error) {
-			if (cacheBaseHandle) await cacheBaseHandle.close();
+			if (ownsCacheBaseRef) await cacheBaseRef.handle.close();
 			return {
 				status: "stale-launcher",
 				cacheDir,
@@ -1298,7 +1431,9 @@ async function materializePackagedOmxPluginCacheImpl(
 				retiredDirs: [],
 			};
 		}
-		let tempDir: string | undefined;
+		let tempName: string | undefined;
+		let tempRef: DirectoryRef | undefined;
+		let snapshotRef: DirectoryRef | undefined;
 		let outcome: OmxPluginCacheMaterializeResult = {
 			status: "materialized",
 			cacheDir,
@@ -1307,51 +1442,47 @@ async function materializePackagedOmxPluginCacheImpl(
 		};
 		let cleanupError: unknown = null;
 		let lockIdentity: Stats | undefined;
-		let finalHandle: FileHandle | undefined;
+		let finalRef: DirectoryRef | undefined;
 		try {
 			lockIdentity = await lockHandle.stat();
-			tempDir = await mkdtemp(join(cacheBaseFdPath, `.omx-plugin-${version}-`));
-			const snapshotDir = await stageCompletePluginSnapshot(
-				tempDir,
-				packagedMarketplace,
-				version,
-				options.teamMode,
-			);
-			await syncDirectoryTree(snapshotDir);
-			const finalPath = join(cacheBaseFdPath, version);
+			await assertDirectoryRef(cacheBaseRef, "temporary staging");
+			const tempDir = await mkdtemp(join(cacheBaseRef.path, `.omx-plugin-${version}-`));
+			await assertDirectoryRef(cacheBaseRef, "temporary staging");
+			tempName = tempDir.slice(cacheBaseRef.path.length + 1);
+			if (!tempName || tempName.includes("/")) throw new Error("temporary staging directory escaped the anchored cache namespace");
+			tempRef = await openDirectoryChild(cacheBaseRef, tempName);
+			snapshotRef = await stageCompletePluginSnapshot(tempRef, packagedMarketplace, version, options.teamMode);
+			await syncDirectoryTree(snapshotRef);
 			await options.onCacheDirPrepared?.(cacheDir);
 			try {
-				await mkdir(finalPath);
-				finalHandle = await open(finalPath, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
-				const finalFdPath = directoryFdPath(finalHandle.fd);
-				if (!finalFdPath) throw new Error("platform cannot expose an anchored publication directory descriptor");
-				await writeFile(join(finalFdPath, ".omx-incomplete"), `${process.pid}\n`);
-				await syncRegularFile(join(finalFdPath, ".omx-incomplete"));
-				const stagedEntries = await readdir(snapshotDir, { withFileTypes: true });
+				await mkdirDirectoryChildExclusive(cacheBaseRef, version);
+				finalRef = await openDirectoryChild(cacheBaseRef, version);
+				await createExclusiveFileChild(finalRef, ".omx-incomplete", `${process.pid}\n`);
+				const stagedEntries = await readdir(snapshotRef.operationPath, { withFileTypes: true });
 				for (const entry of stagedEntries) {
 					if (entry.isSymbolicLink()) throw new Error(`refusing to publish symlinked cache entry: ${entry.name}`);
-					await rename(join(snapshotDir, entry.name), join(finalFdPath, entry.name));
+					await renameChild(snapshotRef, entry.name, finalRef, entry.name);
 				}
-				await syncDirectoryTree(finalFdPath, finalHandle);
-				await writeFile(join(finalFdPath, ".omx-complete"), `${process.pid}\n`);
-				await syncRegularFile(join(finalFdPath, ".omx-complete"));
-				await rm(join(finalFdPath, ".omx-incomplete"), { force: true });
-				await syncDirectory(finalFdPath);
-				const finalPathStats = await lstat(finalPath);
-				const finalDescriptorStats = await finalHandle.stat();
+				await syncDirectoryTree(finalRef);
+				await createExclusiveFileChild(finalRef, ".omx-complete", `${process.pid}\n`);
+				await removeChild(finalRef, ".omx-incomplete", { force: true });
+				await finalRef.handle.sync();
+				await assertDirectoryRef(finalRef, "publication validation");
+				const finalPathStats = await lstat(finalRef.path);
+				const finalDescriptorStats = await finalRef.handle.stat();
 				if (!finalPathStats.isDirectory() || finalPathStats.isSymbolicLink() || finalPathStats.dev !== finalDescriptorStats.dev || finalPathStats.ino !== finalDescriptorStats.ino) {
 					throw new Error(`published cache directory changed before validation: ${cacheDir}`);
 				}
-				if (!options.anchoredCacheBasePath) await syncDirectory(cacheBase);
+				await cacheBaseRef.handle.sync();
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "EEXIST") {
 					outcome = {
-						status: "stale-launcher",
-						cacheDir,
-						version,
-						reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
-						launcherTarget: undefined,
-						retiredDirs: [],
+					status: "stale-launcher",
+					cacheDir,
+					version,
+					reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
+					launcherTarget: undefined,
+					retiredDirs: [],
 					};
 				} else {
 					throw error;
@@ -1359,48 +1490,31 @@ async function materializePackagedOmxPluginCacheImpl(
 			}
 		} catch (error) {
 			outcome = {
-				status: "stale-launcher",
-				cacheDir,
-				version,
-				reason: `immutable OMX plugin cache publication failed closed: ${(error as Error).message}`,
-				launcherTarget: undefined,
-				retiredDirs: [],
-			};
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: `immutable OMX plugin cache publication failed closed: ${(error as Error).message}`,
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
 		} finally {
-			try {
-				if (finalHandle) await finalHandle.close();
-			} catch (error) {
-				cleanupError ??= error;
-			}
-			try {
-				if (tempDir) await rm(tempDir, { recursive: true, force: true });
-			} catch (error) {
-				cleanupError = error;
-			}
-			try {
-				await lockHandle.close();
-			} catch (error) {
-				cleanupError ??= error;
-			}
+			try { if (finalRef) await finalRef.handle.close(); } catch (error) { cleanupError ??= error; }
+			try { if (snapshotRef) await snapshotRef.handle.close(); } catch (error) { cleanupError ??= error; }
+			try { if (tempRef) await tempRef.handle.close(); } catch (error) { cleanupError ??= error; }
+			try { if (tempName) await removeChild(cacheBaseRef, tempName, { recursive: true, force: true }); } catch (error) { cleanupError = error; }
+			try { await lockHandle.close(); } catch (error) { cleanupError ??= error; }
 			try {
 				if (!lockIdentity) throw new Error(`publication lock identity unavailable at ${cacheBase}`);
 				const currentLockStats = await lstat(lockPath);
-				if (currentLockStats.dev !== lockIdentity.dev || currentLockStats.ino !== lockIdentity.ino) {
-					throw new Error(`publication lock changed before cleanup at ${cacheBase}`);
-				}
-				await rm(lockPath, { force: true });
-				if (!options.anchoredCacheBasePath) await syncDirectory(cacheBase);
-			} catch (error) {
-				cleanupError ??= error;
-			}
-			if (cacheBaseHandle) {
-				try {
-					await cacheBaseHandle.close();
-				} catch (error) {
-					cleanupError ??= error;
-				}
+				if (currentLockStats.dev !== lockIdentity.dev || currentLockStats.ino !== lockIdentity.ino) throw new Error(`publication lock changed before cleanup at ${cacheBase}`);
+				await removeChild(cacheBaseRef, ".omx-publish.lock", { force: true });
+				await cacheBaseRef.handle.sync();
+			} catch (error) { cleanupError ??= error; }
+			if (ownsCacheBaseRef) {
+				try { await cacheBaseRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			}
 		}
+
 		if (cleanupError) {
 			return {
 				status: "stale-launcher",
@@ -1416,7 +1530,7 @@ async function materializePackagedOmxPluginCacheImpl(
 				outcome.retiredDirs = await retireUnpinnedManagedSnapshots(
 					codexHomeDir,
 					version,
-					options.anchoredCacheBasePath,
+					options.anchoredCacheBaseRef,
 				);
 			} catch (error) {
 				return {
@@ -1437,7 +1551,7 @@ async function materializePackagedOmxPluginCacheImpl(
 		version,
 		retiredDirs: options.dryRun
 			? []
-			: await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
+			: await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBaseRef),
 	};
 }
 
@@ -1463,7 +1577,7 @@ export async function materializePackagedOmxPluginCache(
 			retiredDirs: [],
 		};
 	}
-	let namespace: { handle: FileHandle; fdPath: string; handles: FileHandle[] } | null;
+	let namespace: { handle: FileHandle; fdPath: string; path: string; handles: FileHandle[] } | null;
 	try {
 		namespace = await openManagedCacheNamespace(cacheBase, codexHomeDir, { create: !options.dryRun });
 	} catch (error) {
@@ -1491,8 +1605,12 @@ export async function materializePackagedOmxPluginCache(
 			packagedMarketplace,
 			{
 				...options,
-				anchoredCacheBasePath: cacheBaseFdPath,
-				anchoredCacheDir: join(cacheBaseFdPath, version),
+				anchoredCacheBaseRef: {
+					handle: namespace.handle,
+					path: namespace.path,
+					operationPath: cacheBaseFdPath,
+				},
+				anchoredCacheDir: join(namespace.path, version),
 			},
 		);
 	} catch (error) {

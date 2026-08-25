@@ -2424,7 +2424,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks are enabled, but the expected Codex plugin cache manifest is missing at ${join(expectedCacheDir, ".codex-plugin", "plugin.json")}; ${setupHooksPathDescription}; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks are enabled, but the expected Codex plugin cache manifest is missing at ${join(expectedCacheDir, ".codex-plugin", "plugin.json")}; ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -2433,7 +2433,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks are enabled, but the Codex plugin cache manifest points hooks to ${String(state.hooksPointer)} instead of ./hooks/hooks.json at ${expectedHooksPath}; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks are enabled, but the Codex plugin cache manifest points hooks to ${String(state.hooksPointer)} instead of ./hooks/hooks.json at ${expectedHooksPath}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -2454,7 +2454,7 @@ async function checkPluginScopedNativeHooks(
 				name: "Native hooks",
 				status: "warn",
 				message:
-					`plugin-scoped hooks are enabled, but expected plugin hook file is missing at ${expectedPath}; ${setupHooksPathDescription}; run "omx setup --plugin" to refresh the plugin cache`,
+					`plugin-scoped hooks are enabled, but expected plugin hook file is missing at ${expectedPath}; ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 			};
 		}
 	}
@@ -2473,7 +2473,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher in ${expectedCacheDir} do not match the packaged plugin; ${setupHooksPathDescription}; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher in ${expectedCacheDir} do not match the packaged plugin; ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -2501,7 +2501,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks.json at ${expectedHooksPath} is missing OMX native coverage for one or more events; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks.json at ${expectedHooksPath} is missing OMX native coverage for one or more events; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 

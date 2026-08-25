@@ -23,6 +23,7 @@ import {
   readOmxPluginCacheFileNoFollow,
   omxPluginCacheProvenanceReason,
   omxPluginCacheExecutedAssetProvenanceReason,
+  omxPluginCacheBase,
   pluginHookCacheMatchesPackaged,
   readOmxPluginCacheState,
   discoverOmxPluginCacheDirs,
@@ -44,6 +45,16 @@ async function withIsolatedUserHome<T>(
   } finally {
     if (previousHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousHome;
+  }
+}
+
+async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T>): Promise<T> {
+  const original = process.platform;
+  Object.defineProperty(process, "platform", { configurable: true, value: platform });
+  try {
+    return await fn();
+  } finally {
+    Object.defineProperty(process, "platform", { configurable: true, value: original });
   }
 }
 
@@ -103,6 +114,41 @@ async function seedRegularSnapshot(codexHomeDir: string): Promise<string> {
 }
 
 describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
+  it("publishes, validates, and retires snapshots without descendant /dev/fd paths", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-darwin-publication-"));
+    try {
+      await withPlatform("darwin", async () => {
+        await withIsolatedUserHome(wd, async (codexHomeDir) => {
+          const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+          assert.ok(packaged);
+          const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(first.status, "materialized", JSON.stringify(first));
+          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+
+          const oldVersions = ["0.0.1", "0.0.2"];
+          for (const oldVersion of oldVersions) {
+            const oldDir = join(omxPluginCacheBase(codexHomeDir), oldVersion);
+            await mkdir(dirname(oldDir), { recursive: true });
+            await cp(join(packageRoot, "plugins", "oh-my-codex"), oldDir, { recursive: true });
+            const oldManifestPath = join(oldDir, ".codex-plugin", "plugin.json");
+            const oldManifest = JSON.parse(await readFile(oldManifestPath, "utf-8")) as Record<string, unknown>;
+            await writeFile(oldManifestPath, `${JSON.stringify({ ...oldManifest, version: oldVersion })}\n`);
+            await writeFile(join(oldDir, "hooks", "omx-command.json"), await pinnedLauncherContent());
+            await writeFile(join(oldDir, ".omx-complete"), "fixture\n");
+          }
+
+          const second = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(second.status, "unchanged", JSON.stringify(second));
+          assert.deepEqual(second.retiredDirs, [join(omxPluginCacheBase(codexHomeDir), "0.0.1")]);
+          assert.equal(existsSync(join(omxPluginCacheBase(codexHomeDir), "0.0.1")), false);
+          assert.equal(existsSync(join(first.cacheDir!, ".omx-incomplete")), false);
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("control: regular immutable snapshot stays unchanged and hook-matching", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-control-"));
     try {

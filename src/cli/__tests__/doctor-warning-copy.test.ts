@@ -892,6 +892,10 @@ command = "node"
 				res.stdout,
 				/Plugin versions: expected cache directory .* is not materialized with packaged plugin manifest version .*; run "omx setup --plugin --force" to refresh the plugin cache/,
 			);
+			assert.match(
+				res.stdout,
+				/Native hooks: plugin-scoped hooks are enabled, but the expected Codex plugin cache manifest is missing .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin/,
+			);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
