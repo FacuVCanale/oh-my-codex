@@ -3565,7 +3565,7 @@ async function checkPluginVersionDiagnostics(
 		return {
 			name: "Plugin versions",
 			status: "warn",
-			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run "omx setup --plugin --force" to refresh the plugin cache`,
+			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run \`${PLUGIN_LAUNCHER_RECOVERY_HINT}\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 	if (stamp?.install_channel === "dev") {

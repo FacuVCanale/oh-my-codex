@@ -689,7 +689,7 @@ command = "node"
 			assert.match(
 				res.stdout,
 				new RegExp(
-					`Plugin versions: expected cache directory .*${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not materialized with packaged plugin manifest version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run "omx setup --plugin --force" to refresh the plugin cache`,
+					`Plugin versions: expected cache directory .*${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not materialized with packaged plugin manifest version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin`,
 				),
 			);
 		} finally {
@@ -890,7 +890,7 @@ command = "node"
 			);
 			assert.match(
 				res.stdout,
-				/Plugin versions: expected cache directory .* is not materialized with packaged plugin manifest version .*; run "omx setup --plugin --force" to refresh the plugin cache/,
+				/Plugin versions: expected cache directory .* is not materialized with packaged plugin manifest version .*; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin/,
 			);
 			assert.match(
 				res.stdout,
