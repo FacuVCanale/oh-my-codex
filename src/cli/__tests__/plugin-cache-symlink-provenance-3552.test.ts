@@ -431,4 +431,79 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  const companionCases = [".mcp.json", ".app.json"] as const;
+  for (const companion of companionCases) {
+    it(`${companion} content drift is rejected before unchanged acceptance`, async () => {
+      const wd = await mkdtemp(join(tmpdir(), `omx-3552-${companion.slice(1)}-drift-`));
+      try {
+        await withIsolatedUserHome(wd, async (codexHomeDir) => {
+          const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+          assert.ok(packaged);
+          const cacheDir = await seedRegularSnapshot(codexHomeDir);
+          const cachedPath = join(cacheDir, companion);
+          const sentinel = `{"attacker":"${companion}"}\n`;
+          await writeFile(cachedPath, sentinel);
+
+          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+          const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+          assert.match(r.reason!, /companion file content differs/);
+          assert.equal(await readFile(cachedPath, "utf-8"), sentinel);
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it(`${companion} symlink with canonical external content is rejected and preserved`, async () => {
+      const wd = await mkdtemp(join(tmpdir(), `omx-3552-${companion.slice(1)}-symlink-`));
+      try {
+        await withIsolatedUserHome(wd, async (codexHomeDir) => {
+          const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+          assert.ok(packaged);
+          const cacheDir = await seedRegularSnapshot(codexHomeDir);
+          const cachedPath = join(cacheDir, companion);
+          const externalPath = join(wd, "external", companion);
+          await mkdir(dirname(externalPath), { recursive: true });
+          await rename(cachedPath, externalPath);
+          await symlink(externalPath, cachedPath);
+
+          assert.equal((await lstat(cachedPath)).isSymbolicLink(), true);
+          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+          const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+          assert.match(r.reason!, /companion file .*symlink/);
+          assert.equal((await lstat(cachedPath)).isSymbolicLink(), true);
+          await writeFile(externalPath, "{\"attacker\":true}\n");
+          const r2 = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(r2.status, "stale-launcher", JSON.stringify(r2));
+          assert.equal(await readFile(cachedPath, "utf-8"), "{\"attacker\":true}\n");
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+
+    it(`${companion} non-regular entry is rejected fail-closed`, async () => {
+      const wd = await mkdtemp(join(tmpdir(), `omx-3552-${companion.slice(1)}-nonregular-`));
+      try {
+        await withIsolatedUserHome(wd, async (codexHomeDir) => {
+          const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+          assert.ok(packaged);
+          const cacheDir = await seedRegularSnapshot(codexHomeDir);
+          const cachedPath = join(cacheDir, companion);
+          await rm(cachedPath, { force: true });
+          await mkdir(cachedPath);
+
+          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+          const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+          assert.match(r.reason!, /companion file .*not a regular file/);
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    });
+  }
 });

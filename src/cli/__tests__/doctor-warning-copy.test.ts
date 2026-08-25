@@ -696,6 +696,83 @@ command = "node"
 		}
 	});
 
+	it("warns when a regular cached SKILL.md is mutated", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-cache-skill-drift-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--force"],
+				{ HOME: home, CODEX_HOME: codexDir },
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+			const version = await packagedPluginVersion();
+			const skillPath = join(
+				codexDir,
+				"plugins",
+				"cache",
+				"oh-my-codex-local",
+				"oh-my-codex",
+				version,
+				"skills",
+				"worker",
+				"SKILL.md",
+			);
+			await writeFile(skillPath, "# attacker-mutated skill\n");
+
+			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: expected skill file content differs/);
+			assert.match(res.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: expected skill file content differs/);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("warns with pointer-specific diagnostics when the cached manifest drifts", async () => {
+		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-cache-pointer-drift-"));
+		try {
+			const home = join(wd, "home");
+			const codexDir = join(home, ".codex");
+			await mkdir(codexDir, { recursive: true });
+			const setupRes = runOmx(
+				wd,
+				["setup", "--scope", "user", "--plugin", "--force"],
+				{ HOME: home, CODEX_HOME: codexDir },
+			);
+			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
+			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+			const version = await packagedPluginVersion();
+			const manifestPath = join(
+				codexDir,
+				"plugins",
+				"cache",
+				"oh-my-codex-local",
+				"oh-my-codex",
+				version,
+				".codex-plugin",
+				"plugin.json",
+			);
+			const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+			manifest.skills = "./attacker-skills/";
+			await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+			if (shouldSkipForSpawnPermissions(res.error)) return;
+			assert.equal(res.status, 0, res.stderr || res.stdout);
+			assert.match(res.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: plugin manifest skills pointer is not \.\/skills\//);
+			assert.match(res.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: plugin manifest skills pointer is not \.\/skills\//);
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
 	it("warns when plugin mode is configured but the Codex plugin cache is missing", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-doctor-plugin-cache-missing-"));
 		try {

@@ -522,6 +522,14 @@ describe("issue 3558 launcher provenance", () => {
             join(cacheDir, "skills"),
             { recursive: true },
           );
+          await cp(
+            join(packageRoot, "plugins", "oh-my-codex", ".mcp.json"),
+            join(cacheDir, ".mcp.json"),
+          );
+          await cp(
+            join(packageRoot, "plugins", "oh-my-codex", ".app.json"),
+            join(cacheDir, ".app.json"),
+          );
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             "{ malformed",
