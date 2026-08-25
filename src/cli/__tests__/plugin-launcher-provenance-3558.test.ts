@@ -352,6 +352,80 @@ describe("issue 3558 launcher provenance", () => {
       await rm(pkgBase, { recursive: true, force: true });
     }
   });
+  it("valid target plus extra argsPrefix entries or extra JSON keys is stale-launcher and immutable", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3558-extra-args-"));
+    const pkgBase = await mkdtemp(join(tmpdir(), "omx-3558-pkgbase-extra-"));
+    try {
+      const fakeRoot = await makeFakePackageRoot(pkgBase, "extra-args-root");
+      const packaged = await resolvePackagedOmxMarketplace(fakeRoot);
+      assert.ok(packaged);
+      const expectedTarget = join(fakeRoot, "dist", "cli", "omx.js");
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        await withTempCwd(wd, async () => {
+          const cacheDir = await packagedPluginCacheDir(codexHomeDir);
+          await mkdir(dirname(cacheDir), { recursive: true });
+          await cp(join(fakeRoot, "plugins", "oh-my-codex"), cacheDir, {
+            recursive: true,
+          });
+          const extraArgsLauncher = {
+            command: process.execPath,
+            argsPrefix: [expectedTarget, "--eval", "process.exit(0)"],
+          };
+          await writeFile(
+            join(cacheDir, "hooks", "omx-command.json"),
+            JSON.stringify(extraArgsLauncher, null, 2) + "\n",
+          );
+          const extraArgsReason = await getPinnedLauncherIncompatibilityReason(
+            cacheDir,
+            packaged,
+          );
+          assert.ok(extraArgsReason);
+          assert.match(extraArgsReason.reason, /exactly one packaged omx\.js target/);
+          const extraArgsResult = await materializePackagedOmxPluginCache(
+            codexHomeDir,
+            packaged,
+          );
+          assert.equal(extraArgsResult.status, "stale-launcher");
+          assert.deepEqual(
+            JSON.parse(
+              await readFile(join(cacheDir, "hooks", "omx-command.json"), "utf-8"),
+            ),
+            extraArgsLauncher,
+          );
+
+          const extraKeysLauncher = {
+            command: process.execPath,
+            argsPrefix: [expectedTarget],
+            env: { OMX_INJECT: "1" },
+          };
+          await writeFile(
+            join(cacheDir, "hooks", "omx-command.json"),
+            JSON.stringify(extraKeysLauncher, null, 2) + "\n",
+          );
+          const extraKeysReason = await getPinnedLauncherIncompatibilityReason(
+            cacheDir,
+            packaged,
+          );
+          assert.ok(extraKeysReason);
+          assert.match(extraKeysReason.reason, /extra keys \(env\)/);
+          const extraKeysResult = await materializePackagedOmxPluginCache(
+            codexHomeDir,
+            packaged,
+          );
+          assert.equal(extraKeysResult.status, "stale-launcher");
+          assert.deepEqual(
+            JSON.parse(
+              await readFile(join(cacheDir, "hooks", "omx-command.json"), "utf-8"),
+            ),
+            extraKeysLauncher,
+          );
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+      await rm(pkgBase, { recursive: true, force: true });
+    }
+  });
 
   it("live-pin does not auto-repair; stale-launcher persists and directory untouched", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3558-livepin-"));
