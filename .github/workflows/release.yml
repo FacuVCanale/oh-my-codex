@@ -25,6 +25,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Verify tag is an ancestor of origin/main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main
+          TAG_COMMIT=$(git rev-parse HEAD^{})
+          MAIN_COMMIT=$(git rev-parse refs/remotes/origin/main)
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
+            echo "::error::refusing to release: ${GITHUB_REF_NAME:-tag} ($TAG_COMMIT) is not an ancestor of origin/main ($MAIN_COMMIT)"
+            exit 1
+          fi
       - uses: actions/setup-node@v7
         with:
           node-version: 20
