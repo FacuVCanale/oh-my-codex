@@ -29,6 +29,8 @@ interface PluginManifest {
 	version?: unknown;
 	skills?: unknown;
 	hooks?: unknown;
+	mcpServers?: unknown;
+	apps?: unknown;
 }
 
 const OMX_PLUGIN_HOOK_LAUNCHER_FILE = "omx-command.json";
@@ -116,6 +118,22 @@ async function listRegularChildDirectoryNames(dir: string): Promise<string[] | n
 			.filter((entry) => entry.isDirectory())
 			.map((entry) => entry.name)
 			.sort();
+	} catch {
+		return null;
+	}
+}
+
+async function readRegularOmxPluginCacheManifest(
+	cacheDir: string,
+): Promise<PluginManifest | null> {
+	const manifestDir = join(cacheDir, ".codex-plugin");
+	const manifestPath = join(manifestDir, "plugin.json");
+	try {
+		const manifestDirStats = await lstat(manifestDir);
+		if (!manifestDirStats.isDirectory() || manifestDirStats.isSymbolicLink()) return null;
+		const manifestStats = await lstat(manifestPath);
+		if (!manifestStats.isFile() || manifestStats.isSymbolicLink()) return null;
+		return await readPluginManifest(manifestPath);
 	} catch {
 		return null;
 	}
@@ -231,6 +249,12 @@ async function omxPluginCacheManifestProvenanceReason(
 	if (manifest.hooks !== "./hooks/hooks.json") {
 		return `plugin manifest hooks pointer is not ./hooks/hooks.json at ${manifestPath}`;
 	}
+	if (manifest.mcpServers !== "./.mcp.json") {
+		return `plugin manifest mcpServers pointer is not ./.mcp.json at ${manifestPath}`;
+	}
+	if (manifest.apps !== "./.app.json") {
+		return `plugin manifest apps pointer is not ./.app.json at ${manifestPath}`;
+	}
 	return null;
 }
 
@@ -276,6 +300,45 @@ async function omxPluginCacheSkillsProvenanceReason(
 		}
 	}
 	return null;
+}
+
+async function omxPluginCacheCompanionMetadataProvenanceReason(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+): Promise<string | null> {
+	for (const [name, relativePath] of [["mcpServers", ".mcp.json"], ["apps", ".app.json"]] as const) {
+		const cachedPath = join(cacheDir, relativePath);
+		let stats;
+		try {
+			stats = await lstat(cachedPath);
+		} catch {
+			return `plugin manifest ${name} companion file is missing at ${cachedPath}`;
+		}
+		if (!stats.isFile() || stats.isSymbolicLink()) {
+			return `plugin manifest ${name} companion file at ${cachedPath} is a symlink or not a regular file`;
+		}
+		if (!(await fileContentsEqual(cachedPath, join(packagedMarketplace.pluginRoot, relativePath)))) {
+			return `plugin manifest ${name} companion file content differs at ${cachedPath}`;
+		}
+	}
+	return null;
+}
+
+export async function omxPluginCacheProvenanceReason(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+	expectedVersion?: string,
+	options: { teamMode?: SetupTeamMode } = {},
+): Promise<string | null> {
+	const manifestReason = await omxPluginCacheManifestProvenanceReason(cacheDir, expectedVersion);
+	if (manifestReason) return manifestReason;
+	const companionReason = await omxPluginCacheCompanionMetadataProvenanceReason(cacheDir, packagedMarketplace);
+	if (companionReason) return companionReason;
+	const expectedSkillNames = await expectedPackagedOmxSkillNames(packagedMarketplace, options);
+	if (!expectedSkillNames) return "packaged skill names are unavailable";
+	const skillsReason = await omxPluginCacheSkillsProvenanceReason(cacheDir, packagedMarketplace, expectedSkillNames);
+	if (skillsReason) return skillsReason;
+	return omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
 }
 
 /**
@@ -409,6 +472,8 @@ export interface OmxPluginCacheState {
 	skillsPointer: string | null;
 	skillNames: string[] | null;
 	hooksPointer: string | null;
+	mcpServersPointer: string | null;
+	appsPointer: string | null;
 	hookLauncherPinned: boolean;
 }
 
@@ -426,13 +491,9 @@ export async function readOmxPluginCacheState(
 	) {
 		return null;
 	}
-	if ((await omxPluginCacheManifestProvenanceReason(cacheDir, expectedVersion)) !== null) {
-		return null;
-	}
-	const manifest = await readPluginManifest(
-		join(cacheDir, ".codex-plugin", "plugin.json"),
-	);
+	const manifest = await readRegularOmxPluginCacheManifest(cacheDir);
 	if (manifest?.name !== OMX_PLUGIN_NAME) return null;
+	if (expectedVersion !== undefined && manifest.version !== expectedVersion) return null;
 	return {
 		cacheDir,
 		manifestVersion:
@@ -440,6 +501,8 @@ export async function readOmxPluginCacheState(
 		skillsPointer: typeof manifest.skills === "string" ? manifest.skills : null,
 		skillNames: await listRegularChildDirectoryNames(join(cacheDir, "skills")),
 		hooksPointer: typeof manifest.hooks === "string" ? manifest.hooks : null,
+		mcpServersPointer: typeof manifest.mcpServers === "string" ? manifest.mcpServers : null,
+		appsPointer: typeof manifest.apps === "string" ? manifest.apps : null,
 		hookLauncherPinned: existsSync(
 			join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
 		),
@@ -471,7 +534,7 @@ export async function hasExpectedOmxPluginCache(
 	) {
 		return false;
 	}
-	if (await omxPluginCacheSkillsProvenanceReason(state.cacheDir, packagedMarketplace, expectedSkillNames)) {
+	if (await omxPluginCacheProvenanceReason(state.cacheDir, packagedMarketplace, version, options)) {
 		return false;
 	}
 
@@ -745,22 +808,6 @@ export async function materializePackagedOmxPluginCache(
 		};
 	}
 	if (rootState === "directory") {
-		const manifestProvenanceReason = await omxPluginCacheManifestProvenanceReason(cacheDir, version);
-		const expectedSkillNames = await expectedPackagedOmxSkillNames(packagedMarketplace, options);
-		const skillsProvenanceReason = expectedSkillNames
-			? await omxPluginCacheSkillsProvenanceReason(cacheDir, packagedMarketplace, expectedSkillNames)
-			: "packaged skill names are unavailable";
-		const snapshotProvenanceReason = manifestProvenanceReason ?? skillsProvenanceReason;
-		if (snapshotProvenanceReason) {
-			return {
-				status: "stale-launcher",
-				cacheDir,
-				version,
-				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
-				launcherTarget: undefined,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
-			};
-		}
 		const incompat = await getPinnedLauncherIncompatibilityReason(cacheDir, packagedMarketplace);
 		if (incompat) {
 			return {
@@ -769,6 +816,22 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				reason: incompat.reason,
 				launcherTarget: incompat.target,
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+			};
+		}
+		const snapshotProvenanceReason = await omxPluginCacheProvenanceReason(
+			cacheDir,
+			packagedMarketplace,
+			version,
+			options,
+		);
+		if (snapshotProvenanceReason) {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				launcherTarget: undefined,
 				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
 			};
 		}

@@ -90,6 +90,7 @@ import {
 	expectedPackagedOmxSkillNames,
 	getPinnedLauncherIncompatibilityReason,
 	packagedOmxPluginVersion,
+	omxPluginCacheProvenanceReason,
 	pluginHookCacheMatchesPackaged,
 	readOmxPluginCacheState,
 	resolvePackagedOmxMarketplace,
@@ -3410,6 +3411,29 @@ async function checkPluginMarketplaceRegistration(
 		const cacheStates = (
 			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
 		).filter((state) => state !== null);
+		const expectedCacheDir = join(
+			codexHomeDir,
+			"plugins",
+			"cache",
+			OMX_LOCAL_MARKETPLACE_NAME,
+			"oh-my-codex",
+			packagedManifestVersion,
+		);
+		const currentCacheState = cacheStates.find((state) => state.cacheDir === expectedCacheDir);
+		if (currentCacheState?.manifestVersion === packagedManifestVersion) {
+			const provenanceReason = await omxPluginCacheProvenanceReason(
+				expectedCacheDir,
+				packagedMarketplace,
+				packagedManifestVersion,
+			);
+			if (provenanceReason) {
+				return {
+					name: "Skills",
+					status: "warn",
+					message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} cache provenance is invalid: ${provenanceReason}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+				};
+			}
+		}
 		const packagedManifestSummary = {
 			manifestVersion: packagedManifestVersion,
 			skillNames: expectedSkillNames,
@@ -3517,6 +3541,18 @@ async function checkPluginVersionDiagnostics(
 			name: "Plugin versions",
 			status: "warn",
 			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run "omx setup --plugin --force" to refresh the plugin cache`,
+		};
+	}
+	const provenanceReason = await omxPluginCacheProvenanceReason(
+		cacheDir,
+		packagedMarketplace,
+		manifestVersion,
+	);
+	if (provenanceReason) {
+		return {
+			name: "Plugin versions",
+			status: "warn",
+			message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run "omx setup --plugin --force" to refresh the plugin cache`,
 		};
 	}
 
