@@ -33,7 +33,7 @@ function flattenReleaseArtifacts(sourcePaths: string[]): string[] {
 
 
 describe('native release workflow', () => {
-  it('defines a unified tag workflow that publishes both Rust binaries before npm publish', () => {
+  it('defines a unified tag workflow that publishes native binaries without a token npm publisher', async () => {
     const workflowPath = join(process.cwd(), '.github', 'workflows', 'release.yml');
     assert.equal(existsSync(workflowPath), true, `missing workflow: ${workflowPath}`);
 
@@ -68,9 +68,11 @@ describe('native release workflow', () => {
     assert.match(workflow, /Publish Native Assets/);
     assert.match(workflow, /Smoke Verify Native Assets/);
     assert.match(workflow, /Smoke Test Packed Global Install/);
-    assert.match(workflow, /Publish npm Package/);
-    assert.match(workflow, /needs:\s*\[smoke-packed-install\]/);
-    assert.match(workflow, /npm publish --access public --provenance/);
+    assert.doesNotMatch(workflow, /Publish npm Package/);
+    assert.doesNotMatch(workflow, /publish-npm:/);
+    assert.doesNotMatch(workflow, /NODE_AUTH_TOKEN/);
+    assert.doesNotMatch(workflow, /NPM_TOKEN/);
+    assert.doesNotMatch(workflow, /npm publish/);
     assert.doesNotMatch(workflow, /Older Linux Runtime Proof/);
     assert.doesNotMatch(workflow, /node:20-bullseye/);
     assert.doesNotMatch(workflow, /docker run --rm/);
@@ -87,7 +89,7 @@ describe('native release workflow', () => {
     assert.match(workflow, /body_path:\s*RELEASE_BODY\.generated\.md/);
     assert.match(workflow, /smoke-verify-native:[\s\S]*npm run build[\s\S]*node dist\/scripts\/verify-native-release-assets\.js/);
     assert.match(workflow, /smoke-packed-install:[\s\S]*npm run build[\s\S]*Smoke test packed install boot \+ core commands[\s\S]*npm run smoke:packed-install/);
-    assert.match(workflow, /publish-npm:[\s\S]*Verify version sync against workspace crates[\s\S]*npm pack --dry-run/);
+    assert.doesNotMatch(workflow, /publish-npm:/);
 
     const manifestGeneration = workflow.indexOf('Generate release manifest from cargo-dist plan');
     const verification = workflow.indexOf('Verify release archives and manifest');

@@ -1499,6 +1499,51 @@ describe("omx setup install mode behavior", () => {
 			await rm(wd, { recursive: true, force: true });
 		}
 	});
+	it("rejects unchanged-path retirement through a symlinked plugins namespace", async () => {
+		if (process.platform === "win32") return;
+		const wd = await mkdtemp(join(tmpdir(), "omx-plugin-cache-unchanged-symlink-"));
+		try {
+			const codexHomeDir = join(wd, "codex-home");
+			const foreignPlugins = join(wd, "foreign-plugins");
+			const packagedMarketplace = await resolvePackagedOmxMarketplace(packageRoot);
+			assert.ok(packagedMarketplace);
+			const version = JSON.parse(
+				await readFile(join(packagedMarketplace.pluginRoot, ".codex-plugin", "plugin.json"), "utf-8"),
+			).version as string;
+			const cacheBase = join(foreignPlugins, "cache", "oh-my-codex-local", "oh-my-codex");
+			const currentDir = join(cacheBase, version);
+			const staleDir = join(cacheBase, "0.20.0");
+			await mkdir(codexHomeDir, { recursive: true });
+			await mkdir(staleDir, { recursive: true });
+			await cp(packagedMarketplace.pluginRoot, currentDir, { recursive: true });
+			await cp(packagedMarketplace.pluginRoot, staleDir, { recursive: true });
+			const staleManifestPath = join(staleDir, ".codex-plugin", "plugin.json");
+			const staleManifest = JSON.parse(await readFile(staleManifestPath, "utf-8")) as { version?: string };
+			staleManifest.version = "0.20.0";
+			await writeFile(staleManifestPath, `${JSON.stringify(staleManifest, null, 2)}\n`);
+			const sentinel = join(staleDir, "outside-namespace-sentinel.txt");
+			await writeFile(sentinel, "must-not-delete\n");
+			await writeFile(
+				join(currentDir, "hooks", "omx-command.json"),
+				`${JSON.stringify(
+					{
+						command: process.execPath,
+						argsPrefix: [join(packageRoot, "dist", "cli", "omx.js")],
+					},
+					null,
+					2,
+				)}\n`,
+			);
+			await symlink(foreignPlugins, join(codexHomeDir, "plugins"));
+			await assert.rejects(
+				materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace),
+				/symbolic link|non-directory namespace component/,
+			);
+			assert.equal(await readFile(sentinel, "utf-8"), "must-not-delete\n");
+		} finally {
+			await rm(wd, { recursive: true, force: true });
+		}
+	});
 
 	it("does not prompt for install mode during project-scoped setup", async () => {
 		const wd = await mkdtemp(join(tmpdir(), "omx-setup-install-mode-"));

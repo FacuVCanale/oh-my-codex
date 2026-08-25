@@ -59,6 +59,15 @@ describe('CI npm trusted publishing contract', () => {
     // The dispatch input is optional so ordinary CI events never treat it as set.
     assert.match(workflow, /release_tag:\n\s+description: 'Immutable release tag to publish via npm trusted publishing, e\.g\. v0\.21\.0'\n\s+required: false\n\s+type: string/);
   });
+  it('does not cancel a trusted-publish dispatch when ordinary CI shares main', () => {
+    const workflow = readCiWorkflow();
+    assert.match(
+      workflow,
+      /group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('ci-dispatch-\{0\}', github\.run_id\) \|\| format\('ci-\{0\}', github\.ref\) \}\}/,
+    );
+    assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name != 'workflow_dispatch' \}\}/);
+    assert.doesNotMatch(workflow, /^\s+cancel-in-progress:\s*true$/m);
+  });
 
   it('runs the publish job only on an explicit dispatch from main with a tag input', () => {
     const publishJob = jobBlock(readCiWorkflow(), PUBLISH_JOB);

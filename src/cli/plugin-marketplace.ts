@@ -515,9 +515,11 @@ export async function getPinnedLauncherIncompatibilityReason(
 }
 
 async function retireUnpinnedManagedSnapshots(
-	cacheBase: string,
+	codexHomeDir: string,
 	currentVersion: string,
 ): Promise<string[]> {
+	const cacheBase = omxPluginCacheBase(codexHomeDir);
+	await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
 	let entries;
 	try {
 		entries = await readdir(cacheBase, { withFileTypes: true });
@@ -561,7 +563,7 @@ export async function materializePackagedOmxPluginCache(
 			version,
 			retiredDirs: options.dryRun
 				? []
-				: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+				: await retireUnpinnedManagedSnapshots(codexHomeDir, version),
 		};
 	}
 	// Same-version directory exists but is not byte-identical: distinguish immutable-preserved vs dead/provenance-incompatible launcher.
@@ -576,14 +578,14 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				reason: incompat.reason,
 				launcherTarget: incompat.target,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
 			};
 		}
 		return {
 			status: "unchanged",
 			cacheDir,
 			version,
-			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
 		};
 	}
 	if (rootState === "foreign") {
@@ -611,7 +613,7 @@ export async function materializePackagedOmxPluginCache(
 		version,
 		retiredDirs: options.dryRun
 			? []
-			: await retireUnpinnedManagedSnapshots(omxPluginCacheBase(codexHomeDir), version),
+			: await retireUnpinnedManagedSnapshots(codexHomeDir, version),
 	};
 }
 
