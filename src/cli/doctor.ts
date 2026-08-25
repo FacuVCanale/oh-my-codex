@@ -86,6 +86,7 @@ import {
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
 	OMX_LOCAL_PLUGIN_CONFIG_KEY,
+	PLUGIN_LAUNCHER_RECOVERY_HINT,
 	discoverOmxPluginCacheDirs,
 	expectedPackagedOmxSkillNames,
 	getPinnedLauncherIncompatibilityReason,
@@ -2408,6 +2409,17 @@ async function checkPluginScopedNativeHooks(
 	const state = await readOmxPluginCacheState(expectedCacheDir);
 
 	if (!state) {
+		if (existsSync(join(expectedCacheDir, ".codex-plugin", "plugin.json"))) {
+			const launcherIncompat = await getPinnedLauncherIncompatibilityReason(expectedCacheDir, packagedMarketplace);
+			if (launcherIncompat) {
+				return {
+					name: "Native hooks",
+					status: "warn",
+					message:
+						`plugin-scoped hooks are enabled, but cached launcher in ${expectedCacheDir} is incompatible (${launcherIncompat.reason}); ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\``,
+				};
+			}
+		}
 		return {
 			name: "Native hooks",
 			status: "warn",
@@ -3430,7 +3442,7 @@ async function checkPluginMarketplaceRegistration(
 				return {
 					name: "Skills",
 					status: "warn",
-					message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} cache provenance is invalid: ${provenanceReason}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+					message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} cache provenance is invalid: ${provenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" so /skills can discover OMX plugin skills`,
 				};
 			}
 		}
@@ -3552,7 +3564,7 @@ async function checkPluginVersionDiagnostics(
 		return {
 			name: "Plugin versions",
 			status: "warn",
-			message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run "omx setup --plugin --force" to refresh the plugin cache`,
+			message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" to refresh the plugin cache`,
 		};
 	}
 

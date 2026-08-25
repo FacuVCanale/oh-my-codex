@@ -1,7 +1,6 @@
-import { existsSync } from "fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "fs/promises";
+import { constants as fsConstants, existsSync, type Stats } from "fs";
+import { cp, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, writeFile } from "fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "path";
-import { tmpdir } from "node:os";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
 
@@ -96,6 +95,110 @@ async function readPluginManifest(
 	}
 }
 
+function directoryFdPath(fd: number): string | null {
+	if (process.platform === "linux") return `/proc/self/fd/${fd}`;
+	if (process.platform === "darwin") return `/dev/fd/${fd}`;
+	return null;
+}
+
+async function syncRegularFile(path: string): Promise<void> {
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
+	const handle = await open(path, fsConstants.O_RDONLY | noFollowFlags);
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+async function syncDirectory(path: string): Promise<void> {
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	const directoryFlags = fsConstants.O_DIRECTORY;
+	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+		throw new Error("directory durability flags are unavailable");
+	}
+	const handle = await open(path, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+}
+
+export async function readOmxPluginCacheFileNoFollow(
+	path: string,
+	options: { requireSingleLink?: boolean; anchorDir?: string } = {},
+): Promise<Buffer | null> {
+	let handle;
+	let anchorHandle;
+	try {
+		const requireSingleLink = options.requireSingleLink ?? true;
+		const noFollowFlags = fsConstants.O_NOFOLLOW;
+		if (typeof noFollowFlags !== "number") return null;
+		let readPath = path;
+		let anchorBefore: Stats | null = null;
+		let anchoredRootParent = false;
+		if (options.anchorDir) {
+			const directoryFlags = fsConstants.O_DIRECTORY;
+			if (typeof directoryFlags !== "number") return null;
+			anchorHandle = await open(options.anchorDir, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
+			anchorBefore = await anchorHandle.stat();
+			if (!anchorBefore.isDirectory()) return null;
+			if (typeof anchorBefore.dev !== "number" || typeof anchorBefore.ino !== "number") return null;
+			const fdPath = directoryFdPath(anchorHandle.fd);
+			if (!fdPath) return null;
+			const relativePath = relative(resolve(options.anchorDir), resolve(path));
+			if (!relativePath || relativePath.startsWith("..")) return null;
+			anchoredRootParent = !relativePath.includes(sep);
+			readPath = join(fdPath, relativePath);
+		}
+		const parentBefore = anchoredRootParent ? anchorBefore! : await lstat(resolve(readPath, ".."));
+		if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink()) return null;
+		if (typeof parentBefore.dev !== "number" || typeof parentBefore.ino !== "number") return null;
+		const before = await lstat(readPath);
+		if (!before.isFile() || before.isSymbolicLink()) return null;
+		if (requireSingleLink && before.nlink !== 1) return null;
+		if (typeof before.dev !== "number" || typeof before.ino !== "number") return null;
+		handle = await open(readPath, fsConstants.O_RDONLY | noFollowFlags);
+		const descriptorStats = await handle.stat();
+		if (!descriptorStats.isFile()) return null;
+		if (requireSingleLink && descriptorStats.nlink !== 1) return null;
+		if (descriptorStats.dev !== before.dev || descriptorStats.ino !== before.ino) return null;
+		const bytes = await handle.readFile();
+		const after = await lstat(readPath);
+		const parentAfter = anchoredRootParent
+			? anchorHandle
+				? await anchorHandle.stat()
+				: null
+			: await lstat(resolve(readPath, ".."));
+		const anchorAfter = anchorHandle ? await anchorHandle.stat() : null;
+		if (!parentAfter) return null;
+		if (!after.isFile() || after.isSymbolicLink()) return null;
+		if (requireSingleLink && after.nlink !== 1) return null;
+		if (typeof after.dev !== "number" || typeof after.ino !== "number") return null;
+		if (after.dev !== before.dev || after.ino !== before.ino) return null;
+		if (!parentAfter.isDirectory() || parentAfter.isSymbolicLink()) return null;
+		if (typeof parentAfter.dev !== "number" || typeof parentAfter.ino !== "number" || parentAfter.dev !== parentBefore.dev || parentAfter.ino !== parentBefore.ino) return null;
+		if (anchorBefore && (!anchorAfter || typeof anchorAfter.dev !== "number" || typeof anchorAfter.ino !== "number" || !anchorAfter.isDirectory() || anchorAfter.dev !== anchorBefore.dev || anchorAfter.ino !== anchorBefore.ino)) return null;
+		return bytes;
+	} catch {
+		return null;
+	} finally {
+		if (handle) await handle.close();
+		if (anchorHandle) await anchorHandle.close();
+	}
+}
+
+async function readRegularFileTextNoFollow(path: string, options: { anchorDir?: string } = {}): Promise<string | null> {
+	const bytes = await readOmxPluginCacheFileNoFollow(path, options);
+	return bytes?.toString("utf-8") ?? null;
+}
+
+async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complete" | ".omx-incomplete"): Promise<boolean> {
+	return (await readOmxPluginCacheFileNoFollow(join(cacheDir, name), { anchorDir: cacheDir })) !== null;
+}
+
 async function listChildDirectoryNames(dir: string): Promise<string[] | null> {
 	try {
 		const entries = await readdir(dir, { withFileTypes: true });
@@ -125,6 +228,7 @@ async function listRegularChildDirectoryNames(dir: string): Promise<string[] | n
 
 async function readRegularOmxPluginCacheManifest(
 	cacheDir: string,
+	anchorDir = cacheDir,
 ): Promise<PluginManifest | null> {
 	const manifestDir = join(cacheDir, ".codex-plugin");
 	const manifestPath = join(manifestDir, "plugin.json");
@@ -133,7 +237,8 @@ async function readRegularOmxPluginCacheManifest(
 		if (!manifestDirStats.isDirectory() || manifestDirStats.isSymbolicLink()) return null;
 		const manifestStats = await lstat(manifestPath);
 		if (!manifestStats.isFile() || manifestStats.isSymbolicLink()) return null;
-		return await readPluginManifest(manifestPath);
+		const bytes = await readOmxPluginCacheFileNoFollow(manifestPath, { anchorDir });
+		return bytes ? JSON.parse(bytes.toString("utf-8")) as PluginManifest : null;
 	} catch {
 		return null;
 	}
@@ -187,6 +292,12 @@ function isMissingPathError(error: unknown): boolean {
 export async function omxPluginCacheExecutedAssetProvenanceReason(
 	cacheDir: string,
 ): Promise<string | null> {
+	if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete"))) {
+		return `cache snapshot publication marker is missing at ${cacheDir}`;
+	}
+	if (await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) {
+		return `cache snapshot publication is incomplete at ${cacheDir}`;
+	}
 	const expectations: Array<{ path: string; kind: "file" | "directory"; label: string }> = [
 		{ path: cacheDir, kind: "directory", label: "cache root" },
 		{ path: join(cacheDir, "hooks"), kind: "directory", label: "hooks directory" },
@@ -203,7 +314,7 @@ export async function omxPluginCacheExecutedAssetProvenanceReason(
 		}
 		const shapeOk = kind === "directory"
 			? stats.isDirectory() && !stats.isSymbolicLink()
-			: stats.isFile() && !stats.isSymbolicLink();
+			: stats.isFile() && !stats.isSymbolicLink() && stats.nlink === 1;
 		if (!shapeOk) {
 			return `${label} at ${path} is a symlink or not a ${kind === "directory" ? "directory" : "regular file"}`;
 		}
@@ -232,10 +343,16 @@ async function omxPluginCacheManifestProvenanceReason(
 	} catch {
 		return `plugin manifest is missing at ${manifestPath}`;
 	}
-	if (!manifestStats.isFile() || manifestStats.isSymbolicLink()) {
+	if (!manifestStats.isFile() || manifestStats.isSymbolicLink() || manifestStats.nlink !== 1) {
 		return `plugin manifest at ${manifestPath} is a symlink or not a regular file`;
 	}
-	const manifest = await readPluginManifest(manifestPath);
+	const manifestBytes = await readOmxPluginCacheFileNoFollow(manifestPath, { anchorDir: cacheDir });
+	let manifest: PluginManifest | null = null;
+	try {
+		manifest = manifestBytes ? JSON.parse(manifestBytes.toString("utf-8")) as PluginManifest : null;
+	} catch {
+		manifest = null;
+	}
 	if (!manifest) return `plugin manifest at ${manifestPath} is unreadable or invalid JSON`;
 	if (manifest.name !== OMX_PLUGIN_NAME) {
 		return `plugin manifest name is not ${OMX_PLUGIN_NAME} at ${manifestPath}`;
@@ -273,6 +390,19 @@ async function omxPluginCacheSkillsProvenanceReason(
 	if (!skillsStats.isDirectory() || skillsStats.isSymbolicLink()) {
 		return `skills directory at ${skillsDir} is a symlink or not a directory`;
 	}
+	let skillEntries;
+	try {
+		skillEntries = await readdir(skillsDir, { withFileTypes: true });
+	} catch {
+		return `skills directory at ${skillsDir} is unreadable`;
+	}
+	const actualSkillNames = skillEntries.map((entry) => entry.name).sort();
+	if (skillEntries.some((entry) => entry.isSymbolicLink() || !entry.isDirectory())) {
+		return `skills directory at ${skillsDir} contains a symlink or non-directory entry`;
+	}
+	if (JSON.stringify(actualSkillNames) !== JSON.stringify([...expectedSkillNames].sort())) {
+		return `skills directory contents differ at ${skillsDir}`;
+	}
 	for (const skillName of expectedSkillNames) {
 		const skillDir = join(skillsDir, skillName);
 		let skillDirStats;
@@ -292,10 +422,10 @@ async function omxPluginCacheSkillsProvenanceReason(
 		} catch {
 			return `expected skill file is missing at ${cachedSkill}`;
 		}
-		if (!cachedSkillStats.isFile() || cachedSkillStats.isSymbolicLink()) {
+		if (!cachedSkillStats.isFile() || cachedSkillStats.isSymbolicLink() || cachedSkillStats.nlink !== 1) {
 			return `expected skill file at ${cachedSkill} is a symlink or not a regular file`;
 		}
-		if (!(await fileContentsEqual(cachedSkill, packagedSkill))) {
+		if (!(await fileContentsEqual(cachedSkill, packagedSkill, cacheDir))) {
 			return `expected skill file content differs at ${cachedSkill}`;
 		}
 	}
@@ -314,10 +444,10 @@ async function omxPluginCacheCompanionMetadataProvenanceReason(
 		} catch {
 			return `plugin manifest ${name} companion file is missing at ${cachedPath}`;
 		}
-		if (!stats.isFile() || stats.isSymbolicLink()) {
+		if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
 			return `plugin manifest ${name} companion file at ${cachedPath} is a symlink or not a regular file`;
 		}
-		if (!(await fileContentsEqual(cachedPath, join(packagedMarketplace.pluginRoot, relativePath)))) {
+		if (!(await fileContentsEqual(cachedPath, join(packagedMarketplace.pluginRoot, relativePath), cacheDir))) {
 			return `plugin manifest ${name} companion file content differs at ${cachedPath}`;
 		}
 	}
@@ -370,7 +500,11 @@ async function ensureManagedCacheNamespace(
 			}
 		} catch (error) {
 			if (!isMissingPathError(error)) throw error;
-			await mkdir(current);
+			try {
+				await mkdir(current);
+			} catch (mkdirError) {
+				if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+			}
 			const stats = await lstat(current);
 			if (!stats.isDirectory() || stats.isSymbolicLink()) {
 				throw new Error(
@@ -387,7 +521,17 @@ async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "director
 			if (!stats.isDirectory() || stats.isSymbolicLink()) {
 				return "untrusted";
 			}
-			const manifest = await readPluginManifest(join(cacheDir, ".codex-plugin", "plugin.json"));
+			if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete")) || await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) return "untrusted";
+			const manifest = await readRegularOmxPluginCacheManifest(cacheDir);
+			if (!manifest) {
+				const manifestPath = join(cacheDir, ".codex-plugin", "plugin.json");
+				try {
+					const manifestStats = await lstat(manifestPath);
+					if (manifestStats.isSymbolicLink()) return "directory";
+				} catch {
+					// Treat missing or unreadable manifests as foreign cache entries.
+				}
+			}
 			return manifest?.name === OMX_PLUGIN_NAME ? "directory" : "foreign";
 		} catch (error) {
 			if (isMissingPathError(error)) return "missing";
@@ -423,7 +567,15 @@ export async function discoverOmxPluginCacheDirs(
 	codexHomeDir: string,
 ): Promise<string[]> {
 	const cacheRoot = join(codexHomeDir, "plugins", "cache");
-	if (!existsSync(cacheRoot)) return [];
+	let cacheRootIdentity: { dev: number; ino: number };
+	try {
+		const cacheRootStats = await lstat(cacheRoot);
+		if (!cacheRootStats.isDirectory() || cacheRootStats.isSymbolicLink()) return [];
+		if (typeof cacheRootStats.dev !== "number" || typeof cacheRootStats.ino !== "number") return [];
+		cacheRootIdentity = { dev: cacheRootStats.dev, ino: cacheRootStats.ino };
+	} catch {
+		return [];
+	}
 
 	const queue: Array<{ path: string; depth: number }> = [
 		{ path: cacheRoot, depth: 0 },
@@ -434,10 +586,9 @@ export async function discoverOmxPluginCacheDirs(
 	while (queue.length > 0) {
 		const current = queue.shift();
 		if (!current) break;
-
-		const manifestPath = join(current.path, ".codex-plugin", "plugin.json");
-		if (existsSync(manifestPath)) {
-			const manifest = await readPluginManifest(manifestPath);
+		if (current.depth >= 2) {
+			if (await hasRegularPublicationMarker(current.path, ".omx-incomplete")) continue;
+			const manifest = await readRegularOmxPluginCacheManifest(current.path, cacheRoot);
 			if (manifest?.name === OMX_PLUGIN_NAME) {
 				matches.push(current.path);
 				continue;
@@ -463,6 +614,12 @@ export async function discoverOmxPluginCacheDirs(
 		}
 	}
 
+	try {
+		const finalRootStats = await lstat(cacheRoot);
+		if (!finalRootStats.isDirectory() || finalRootStats.isSymbolicLink() || finalRootStats.dev !== cacheRootIdentity.dev || finalRootStats.ino !== cacheRootIdentity.ino) return [];
+	} catch {
+		return [];
+	}
 	return matches.sort();
 }
 
@@ -484,13 +641,9 @@ export async function readOmxPluginCacheState(
 	// #3552: never read cache state through a symlinked or non-directory snapshot root —
 	// readFile-based manifest reads would follow an external target before provenance checks.
 	// A missing pinned launcher is reported by the dedicated launcher checks, not here.
-	if (
-		(await omxPluginCacheExecutedAssetProvenanceReason(cacheDir))?.startsWith(
-			"cache root",
-		)
-	) {
-		return null;
-	}
+	const executedAssetReason = await omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
+	if (executedAssetReason) return null;
+	if (await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) return null;
 	const manifest = await readRegularOmxPluginCacheManifest(cacheDir);
 	if (manifest?.name !== OMX_PLUGIN_NAME) return null;
 	if (expectedVersion !== undefined && manifest.version !== expectedVersion) return null;
@@ -503,16 +656,14 @@ export async function readOmxPluginCacheState(
 		hooksPointer: typeof manifest.hooks === "string" ? manifest.hooks : null,
 		mcpServersPointer: typeof manifest.mcpServers === "string" ? manifest.mcpServers : null,
 		appsPointer: typeof manifest.apps === "string" ? manifest.apps : null,
-		hookLauncherPinned: existsSync(
-			join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
-		),
+		hookLauncherPinned: true,
 	};
 }
 
 export async function hasExpectedOmxPluginCache(
 	codexHomeDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
-	options: { teamMode?: SetupTeamMode } = {},
+	options: { teamMode?: SetupTeamMode; cacheDirOverride?: string } = {},
 ): Promise<boolean> {
 	const [version, expectedSkillNames] = await Promise.all([
 		packagedOmxPluginVersion(packagedMarketplace),
@@ -520,16 +671,15 @@ export async function hasExpectedOmxPluginCache(
 	]);
 	if (!version || !expectedSkillNames) return false;
 	const state = await readOmxPluginCacheState(
-		join(omxPluginCacheBase(codexHomeDir), version),
+		options.cacheDirOverride ?? join(omxPluginCacheBase(codexHomeDir), version),
 		version,
 	);
+	if (!state) return false;
 	if (
-		state?.manifestVersion !== version ||
+		state.manifestVersion !== version ||
 		state.skillsPointer !== "./skills/" ||
 		state.hooksPointer !== "./hooks/hooks.json" ||
 		!state.hookLauncherPinned ||
-		!existsSync(join(state.cacheDir, "hooks", "hooks.json")) ||
-		!existsSync(join(state.cacheDir, "hooks", "codex-native-hook.mjs")) ||
 		JSON.stringify(state.skillNames) !== JSON.stringify(expectedSkillNames)
 	) {
 		return false;
@@ -541,16 +691,12 @@ export async function hasExpectedOmxPluginCache(
 	return pluginHookCacheMatchesPackaged(state.cacheDir, packagedMarketplace);
 }
 
-async function fileContentsEqual(leftPath: string, rightPath: string): Promise<boolean> {
-	try {
-		const [left, right] = await Promise.all([
-			readFile(leftPath),
-			readFile(rightPath),
-		]);
-		return left.equals(right);
-	} catch {
-		return false;
-	}
+async function fileContentsEqual(leftPath: string, rightPath: string, anchorDir?: string): Promise<boolean> {
+	const [left, right] = await Promise.all([
+		readOmxPluginCacheFileNoFollow(leftPath, anchorDir ? { anchorDir } : {}),
+		readOmxPluginCacheFileNoFollow(rightPath, { requireSingleLink: false }),
+	]);
+	return left !== null && right !== null && left.equals(right);
 }
 
 
@@ -574,9 +720,11 @@ export async function pluginHookCacheMatchesPackaged(
 	return await fileContentsEqual(
 		join(cacheDir, "hooks", "hooks.json"),
 		join(packagedMarketplace.pluginRoot, "hooks", "hooks.json"),
+		cacheDir,
 	) && await fileContentsEqual(
 		join(cacheDir, "hooks", "codex-native-hook.mjs"),
 		join(packagedMarketplace.pluginRoot, "hooks", "codex-native-hook.mjs"),
+		cacheDir,
 	) && await pinnedHookLauncherMatchesPackaged(
 		cacheDir,
 		packagedMarketplace,
@@ -600,14 +748,10 @@ async function pinnedHookLauncherMatchesPackaged(
 	cacheDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<boolean> {
-	try {
-		return await readFile(
-			join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
-			"utf-8",
-		) === buildPinnedHookLauncherContent(packagedMarketplace);
-	} catch {
-		return false;
-	}
+	return await readRegularFileTextNoFollow(
+		join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
+		{ anchorDir: cacheDir },
+	) === buildPinnedHookLauncherContent(packagedMarketplace);
 }
 
 async function writePinnedHookLauncher(
@@ -659,20 +803,24 @@ async function canonicalRealpath(path: string): Promise<string | null> {
 
 export async function readPinnedLauncherRaw(cacheDir: string): Promise<{ raw: string | null; parsed: { command?: unknown; argsPrefix?: unknown } | null; error?: string }> {
 	const launcherPath = join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE);
-	try {
-		const raw = await readFile(launcherPath, "utf-8");
+	const raw = await readRegularFileTextNoFollow(launcherPath, { anchorDir: cacheDir });
+	if (raw === null) {
 		try {
-			const parsed = JSON.parse(raw) as { command?: unknown; argsPrefix?: unknown };
-			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				return { raw, parsed: null, error: `malformed pinned launcher JSON: expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}` };
-			}
-			return { raw, parsed, error: undefined };
+			await lstat(launcherPath);
+			return { raw: null, parsed: null, error: "cannot read pinned launcher" };
 		} catch (e) {
-			return { raw, parsed: null, error: `malformed pinned launcher JSON: ${(e as Error).message}` };
+			if (isMissingPathError(e)) return { raw: null, parsed: null, error: "missing pinned launcher" };
+			return { raw: null, parsed: null, error: `cannot read pinned launcher: ${(e as Error).message}` };
 		}
+	}
+	try {
+		const parsed = JSON.parse(raw) as { command?: unknown; argsPrefix?: unknown };
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return { raw, parsed: null, error: `malformed pinned launcher JSON: expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}` };
+		}
+		return { raw, parsed, error: undefined };
 	} catch (e) {
-		if (isMissingPathError(e)) return { raw: null, parsed: null, error: "missing pinned launcher" };
-		return { raw: null, parsed: null, error: `cannot read pinned launcher: ${(e as Error).message}` };
+		return { raw, parsed: null, error: `malformed pinned launcher JSON: ${(e as Error).message}` };
 	}
 }
 
@@ -680,13 +828,35 @@ export async function getPinnedLauncherIncompatibilityReason(
 	cacheDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<{ reason: string; target?: string } | null> {
-	const launcherPath = join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE);
-	let raw: string;
+	const hooksDir = join(cacheDir, "hooks");
 	try {
-		raw = await readFile(launcherPath, "utf-8");
+		const hooksStats = await lstat(hooksDir);
+		if (!hooksStats.isDirectory() || hooksStats.isSymbolicLink()) {
+			return { reason: `hooks directory at ${hooksDir} is a symlink or not a directory; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		}
+	} catch (e) {
+		if (isMissingPathError(e)) return { reason: `hooks directory missing at ${hooksDir}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		return { reason: `cannot read hooks directory at ${hooksDir}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	const launcherPath = join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE);
+	try {
+		const launcherStats = await lstat(launcherPath);
+		if (!launcherStats.isFile() || launcherStats.isSymbolicLink() || launcherStats.nlink !== 1) {
+			return { reason: `pinned launcher at ${launcherPath} is a symlink or not a regular file; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		}
 	} catch (e) {
 		if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
 		return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
+	const raw = await readRegularFileTextNoFollow(launcherPath, { anchorDir: cacheDir });
+	if (raw === null) {
+		try {
+			await lstat(launcherPath);
+			return { reason: `cannot read pinned launcher at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		} catch (e) {
+			if (isMissingPathError(e)) return { reason: `pinned launcher missing at ${launcherPath}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+			return { reason: `cannot read pinned launcher at ${launcherPath}: ${(e as Error).message}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+		}
 	}
 	let parsed: unknown;
 	try {
@@ -745,23 +915,26 @@ export async function getPinnedLauncherIncompatibilityReason(
 async function retireUnpinnedManagedSnapshots(
 	codexHomeDir: string,
 	currentVersion: string,
+	anchoredCacheBasePath?: string,
 ): Promise<string[]> {
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
 	await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
+	const managedBase = anchoredCacheBasePath ?? cacheBase;
 	let entries;
 	try {
-		entries = await readdir(cacheBase, { withFileTypes: true });
+		entries = await readdir(managedBase, { withFileTypes: true });
 	} catch {
 		return [];
 	}
-	const managed: Array<{ path: string; version: string; mtimeMs: number }> = [];
+	const managed: Array<{ path: string; managedPath: string; version: string; mtimeMs: number }> = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory() || entry.name === currentVersion) continue;
-		const path = join(cacheBase, entry.name);
-		const state = await readOmxPluginCacheState(path);
-		if (state?.manifestVersion !== entry.name) continue;
+		const path = join(managedBase, entry.name);
+		const manifest = await readRegularOmxPluginCacheManifest(path, path);
+		if (manifest?.name !== OMX_PLUGIN_NAME || manifest.version !== entry.name) continue;
+		if (!(await hasRegularPublicationMarker(path, ".omx-complete")) || await hasRegularPublicationMarker(path, ".omx-incomplete")) continue;
 		if (existsSync(join(path, ".omx-live-pin"))) continue;
-		managed.push({ path, version: entry.name, mtimeMs: (await lstat(path)).mtimeMs });
+		managed.push({ path: join(cacheBase, entry.name), managedPath: path, version: entry.name, mtimeMs: (await lstat(path)).mtimeMs });
 	}
 	managed.sort((left, right) =>
 		right.version.localeCompare(left.version, undefined, { numeric: true }) ||
@@ -769,34 +942,47 @@ async function retireUnpinnedManagedSnapshots(
 	);
 	const retired: string[] = [];
 	for (const candidate of managed.slice(1)) {
-		await rm(candidate.path, { recursive: true, force: true });
+		await rm(candidate.managedPath, { recursive: true, force: true });
 		retired.push(candidate.path);
 	}
 	return retired;
 }
 
-export async function materializePackagedOmxPluginCache(
+interface MaterializePackagedOmxPluginCacheOptions {
+	dryRun?: boolean;
+	teamMode?: SetupTeamMode;
+	onCacheDirPrepared?: (cacheDir: string) => void | Promise<void>;
+	anchoredCacheBasePath?: string;
+	anchoredCacheDir?: string;
+	cacheDirOverride?: string;
+}
+
+async function materializePackagedOmxPluginCacheImpl(
 	codexHomeDir: string,
 	packagedMarketplace: PackagedOmxMarketplace | null,
-	options: { dryRun?: boolean; teamMode?: SetupTeamMode; onCacheDirPrepared?: (cacheDir: string) => void | Promise<void> } = {},
+	options: MaterializePackagedOmxPluginCacheOptions = {},
 ): Promise<OmxPluginCacheMaterializeResult> {
 	if (!packagedMarketplace) return { status: "unavailable" };
 	const version = await packagedOmxPluginVersion(packagedMarketplace);
 	if (!version) return { status: "unavailable" };
 	const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
-	if (await hasExpectedOmxPluginCache(codexHomeDir, packagedMarketplace, options)) {
+	const inspectedCacheDir = options.anchoredCacheDir ?? cacheDir;
+	if (await hasExpectedOmxPluginCache(codexHomeDir, packagedMarketplace, {
+		...options,
+		cacheDirOverride: inspectedCacheDir,
+	})) {
 		return {
 			status: "unchanged",
 			cacheDir,
 			version,
 			retiredDirs: options.dryRun
 				? []
-				: await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+				: await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 		};
 	}
 	// Same-version directory exists but is not byte-identical: distinguish immutable-preserved vs dead/provenance-incompatible launcher.
 	// Preserve #3499 immutability: never rewrite an existing same-version directory in place.
-	const rootState = await inspectCacheRoot(cacheDir);
+	const rootState = await inspectCacheRoot(inspectedCacheDir);
 	if (rootState === "untrusted") {
 		return {
 			status: "stale-launcher",
@@ -804,11 +990,11 @@ export async function materializePackagedOmxPluginCache(
 			version,
 			reason: `OMX plugin cache root at ${cacheDir} is a symlink or non-directory entry; managed snapshots must be regular immutable directories; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
 			launcherTarget: undefined,
-			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 		};
 	}
 	if (rootState === "directory") {
-		const incompat = await getPinnedLauncherIncompatibilityReason(cacheDir, packagedMarketplace);
+		const incompat = await getPinnedLauncherIncompatibilityReason(inspectedCacheDir, packagedMarketplace);
 		if (incompat) {
 			return {
 				status: "stale-launcher",
@@ -816,11 +1002,11 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				reason: incompat.reason,
 				launcherTarget: incompat.target,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 			};
 		}
 		const snapshotProvenanceReason = await omxPluginCacheProvenanceReason(
-			cacheDir,
+			inspectedCacheDir,
 			packagedMarketplace,
 			version,
 			options,
@@ -832,10 +1018,10 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
 				launcherTarget: undefined,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 			};
 		}
-		const assetProvenanceReason = await omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
+		const assetProvenanceReason = await omxPluginCacheExecutedAssetProvenanceReason(inspectedCacheDir);
 		if (assetProvenanceReason) {
 			return {
 				status: "stale-launcher",
@@ -843,14 +1029,14 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				reason: `${assetProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
 				launcherTarget: undefined,
-				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 			};
 		}
 		return {
 			status: "unchanged",
 			cacheDir,
 			version,
-			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 		};
 	}
 	if (rootState === "foreign") {
@@ -859,18 +1045,164 @@ export async function materializePackagedOmxPluginCache(
 	if (!options.dryRun) {
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
 		await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
-		const tempDir = await mkdtemp(join(tmpdir(), `omx-plugin-${version}-`));
+		const noFollowFlags = fsConstants.O_NOFOLLOW;
+		const directoryFlags = fsConstants.O_DIRECTORY;
+		if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: "platform cannot provide no-follow directory anchoring for immutable cache publication",
+				launcherTarget: undefined,
+				retiredDirs: [],
+			};
+		}
+		let cacheBaseHandle;
+		let cacheBaseFdPath: string | null | undefined = options.anchoredCacheBasePath;
+		if (!cacheBaseFdPath) {
+			cacheBaseHandle = await open(cacheBase, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
+			cacheBaseFdPath = directoryFdPath(cacheBaseHandle.fd);
+		}
+		if (!cacheBaseFdPath) {
+			if (cacheBaseHandle) await cacheBaseHandle.close();
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: "platform cannot expose an anchored cache directory descriptor for immutable publication",
+				launcherTarget: undefined,
+				retiredDirs: [],
+			};
+		}
+		const lockPath = join(cacheBaseFdPath, ".omx-publish.lock");
+		let lockHandle;
 		try {
+			lockHandle = await open(
+				lockPath,
+				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags,
+				0o600,
+			);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+				if (cacheBaseHandle) await cacheBaseHandle.close();
+				return {
+					status: "stale-launcher",
+					cacheDir,
+					version,
+					reason: `another OMX plugin cache publication is active at ${cacheBase}; refusing concurrent publication`,
+					launcherTarget: undefined,
+					retiredDirs: [],
+				};
+			}
+			if (cacheBaseHandle) await cacheBaseHandle.close();
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `cannot claim immutable OMX plugin cache publication at ${cacheBase}: ${(error as Error).message}`,
+				launcherTarget: undefined,
+				retiredDirs: [],
+			};
+		}
+		let tempDir: string | undefined;
+		let outcome: OmxPluginCacheMaterializeResult = {
+			status: "materialized",
+			cacheDir,
+			version,
+			retiredDirs: [],
+		};
+		let cleanupError: unknown = null;
+		try {
+			tempDir = await mkdtemp(join(cacheBaseFdPath, `.omx-plugin-${version}-`));
 			const snapshotDir = await stageCompletePluginSnapshot(
 				tempDir,
 				packagedMarketplace,
 				version,
 				options.teamMode,
 			);
-			await rename(snapshotDir, cacheDir);
+			const completeMarker = join(snapshotDir, ".omx-complete");
+			await writeFile(completeMarker, `${process.pid}\n`);
+			await syncRegularFile(completeMarker);
+			await syncDirectory(snapshotDir);
+			const finalPath = join(cacheBaseFdPath, version);
+			try {
+				await lstat(finalPath);
+				outcome = {
+					status: "stale-launcher",
+					cacheDir,
+					version,
+					reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
+					launcherTarget: undefined,
+					retiredDirs: [],
+				};
+			} catch (error) {
+				if (!isMissingPathError(error)) throw error;
+				await rename(snapshotDir, finalPath);
+				if (!options.anchoredCacheBasePath) await syncDirectory(cacheBase);
+			}
+		} catch (error) {
+			outcome = {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `immutable OMX plugin cache publication failed closed: ${(error as Error).message}`,
+				launcherTarget: undefined,
+				retiredDirs: [],
+			};
 		} finally {
-			await rm(tempDir, { recursive: true, force: true });
+			try {
+				if (tempDir) await rm(tempDir, { recursive: true, force: true });
+			} catch (error) {
+				cleanupError = error;
+			}
+			try {
+				await lockHandle.close();
+			} catch (error) {
+				cleanupError ??= error;
+			}
+			try {
+				await rm(lockPath, { force: true });
+				if (!options.anchoredCacheBasePath) await syncDirectory(cacheBase);
+			} catch (error) {
+				cleanupError ??= error;
+			}
+			if (cacheBaseHandle) {
+				try {
+					await cacheBaseHandle.close();
+				} catch (error) {
+					cleanupError ??= error;
+				}
+			}
 		}
+		if (cleanupError) {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `immutable OMX plugin cache publication cleanup failed closed: ${(cleanupError as Error).message}`,
+				launcherTarget: undefined,
+				retiredDirs: [],
+			};
+		}
+		if (outcome.status === "materialized" && !options.dryRun) {
+			try {
+				outcome.retiredDirs = await retireUnpinnedManagedSnapshots(
+					codexHomeDir,
+					version,
+					options.anchoredCacheBasePath,
+				);
+			} catch (error) {
+				return {
+					status: "stale-launcher",
+					cacheDir,
+					version,
+					reason: `immutable OMX plugin cache retirement failed closed: ${(error as Error).message}`,
+					launcherTarget: undefined,
+					retiredDirs: [],
+				};
+			}
+		}
+		return outcome;
 	}
 	return {
 		status: "materialized",
@@ -878,8 +1210,93 @@ export async function materializePackagedOmxPluginCache(
 		version,
 		retiredDirs: options.dryRun
 			? []
-			: await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+			: await retireUnpinnedManagedSnapshots(codexHomeDir, version, options.anchoredCacheBasePath),
 	};
+}
+
+export async function materializePackagedOmxPluginCache(
+	codexHomeDir: string,
+	packagedMarketplace: PackagedOmxMarketplace | null,
+	options: MaterializePackagedOmxPluginCacheOptions = {},
+): Promise<OmxPluginCacheMaterializeResult> {
+	if (!packagedMarketplace) return { status: "unavailable" };
+	const version = await packagedOmxPluginVersion(packagedMarketplace);
+	if (!version) return { status: "unavailable" };
+	const cacheBase = omxPluginCacheBase(codexHomeDir);
+	const cacheDir = join(cacheBase, version);
+	await ensureManagedCacheNamespace(cacheBase, codexHomeDir);
+	const noFollowFlags = fsConstants.O_NOFOLLOW;
+	const directoryFlags = fsConstants.O_DIRECTORY;
+	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+		return {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: "platform cannot provide no-follow directory anchoring for immutable cache validation/publication",
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
+	}
+	let cacheBaseHandle;
+	try {
+		cacheBaseHandle = await open(cacheBase, fsConstants.O_RDONLY | directoryFlags | noFollowFlags);
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		return {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: `cannot anchor OMX plugin cache namespace at ${cacheBase}: ${code ?? "open failed"}; refusing to trust or publish cache contents`,
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
+	}
+	const cacheBaseFdPath = directoryFdPath(cacheBaseHandle.fd);
+	if (!cacheBaseFdPath) {
+		await cacheBaseHandle.close();
+		return {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: "platform cannot expose an anchored cache directory descriptor for immutable cache validation/publication",
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
+	}
+	let result: OmxPluginCacheMaterializeResult;
+	try {
+		result = await materializePackagedOmxPluginCacheImpl(
+			codexHomeDir,
+			packagedMarketplace,
+			{
+				...options,
+				anchoredCacheBasePath: cacheBaseFdPath,
+				anchoredCacheDir: join(cacheBaseFdPath, version),
+			},
+		);
+	} catch (error) {
+		result = {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: `anchored OMX plugin cache operation failed closed: ${(error as Error).message}`,
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
+	}
+	try {
+		await cacheBaseHandle.close();
+	} catch (error) {
+		return {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: `anchored OMX plugin cache descriptor close failed closed: ${(error as Error).message}`,
+			launcherTarget: undefined,
+			retiredDirs: [],
+		};
+	}
+	return result;
 }
 
 function marketplaceTableHeaderPattern(): RegExp {

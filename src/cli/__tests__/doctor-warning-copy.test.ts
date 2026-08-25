@@ -137,6 +137,7 @@ async function installPluginCacheFixture(codexDir: string): Promise<string> {
 			2,
 		)}\n`,
 	);
+	await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
 	return cacheDir;
 }
 
@@ -727,8 +728,8 @@ command = "node"
 			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
-			assert.match(res.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: expected skill file content differs/);
-			assert.match(res.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: expected skill file content differs/);
+			assert.match(res.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: expected skill file content differs.*codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun "omx setup --plugin"/);
+			assert.match(res.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: expected skill file content differs.*codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun "omx setup --plugin"/);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}
@@ -766,10 +767,92 @@ command = "node"
 			const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
-			assert.match(res.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: plugin manifest skills pointer is not \.\/skills\//);
-			assert.match(res.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: plugin manifest skills pointer is not \.\/skills\//);
+			assert.match(res.stdout, /Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: plugin manifest skills pointer is not \.\/skills\/.*codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun "omx setup --plugin"/);
+			assert.match(res.stdout, /Plugin versions: expected cache directory .* has invalid plugin cache provenance: plugin manifest skills pointer is not \.\/skills\/.*codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun "omx setup --plugin"/);
 		} finally {
 			await rm(wd, { recursive: true, force: true });
+		}
+	});
+
+	it("warns with pointer-specific diagnostics for companion metadata drift", async () => {
+		for (const [field, pointer] of [["mcpServers", "./attacker-mcp.json"], ["apps", "./attacker-app.json"]] as const) {
+			const wd = await mkdtemp(join(tmpdir(), `omx-doctor-plugin-cache-${field}-drift-`));
+			try {
+				const home = join(wd, "home");
+				const codexDir = join(home, ".codex");
+				await mkdir(codexDir, { recursive: true });
+				const setupRes = runOmx(
+					wd,
+					["setup", "--scope", "user", "--plugin", "--force"],
+					{ HOME: home, CODEX_HOME: codexDir },
+				);
+				if (shouldSkipForSpawnPermissions(setupRes.error)) continue;
+				assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+				const version = await packagedPluginVersion();
+				const manifestPath = join(
+					codexDir,
+					"plugins",
+					"cache",
+					"oh-my-codex-local",
+					"oh-my-codex",
+					version,
+					".codex-plugin",
+					"plugin.json",
+				);
+				const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+				manifest[field] = pointer;
+				await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+				const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+				if (shouldSkipForSpawnPermissions(res.error)) continue;
+				assert.equal(res.status, 0, res.stderr || res.stdout);
+				assert.match(res.stdout, new RegExp(`Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: plugin manifest ${field} pointer is not [^;]+; run codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun "omx setup --plugin"`));
+				assert.match(res.stdout, new RegExp(`Plugin versions: expected cache directory .* has invalid plugin cache provenance: plugin manifest ${field} pointer is not [^;]+; run codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun "omx setup --plugin"`));
+			} finally {
+				await rm(wd, { recursive: true, force: true });
+			}
+		}
+	});
+
+	it("warns with remediation when companion cache files mutate or symlink", async () => {
+		for (const companion of [".mcp.json", ".app.json"] as const) {
+			for (const mode of ["mutated", "symlinked"] as const) {
+				const wd = await mkdtemp(join(tmpdir(), `omx-doctor-plugin-cache-${companion.slice(1)}-${mode}-`));
+				try {
+					const home = join(wd, "home");
+					const codexDir = join(home, ".codex");
+					await mkdir(codexDir, { recursive: true });
+					const setupRes = runOmx(
+						wd,
+						["setup", "--scope", "user", "--plugin", "--force"],
+						{ HOME: home, CODEX_HOME: codexDir },
+					);
+					if (shouldSkipForSpawnPermissions(setupRes.error)) continue;
+					assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+
+					const version = await packagedPluginVersion();
+					const cachedPath = join(codexDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex", version, companion);
+					if (mode === "mutated") {
+						await writeFile(cachedPath, `{"attacker":"${companion}"}\n`);
+					} else {
+						const externalPath = join(wd, "external", companion);
+						await mkdir(dirname(externalPath), { recursive: true });
+						await rename(cachedPath, externalPath);
+						await symlink(externalPath, cachedPath);
+					}
+
+					const res = runOmx(wd, ["doctor"], { HOME: home, CODEX_HOME: codexDir });
+					if (shouldSkipForSpawnPermissions(res.error)) continue;
+					assert.equal(res.status, 0, res.stderr || res.stdout);
+					const reason = mode === "mutated" ? ".*companion file content differs" : ".*companion file .*symlink";
+					const guidance = "codex plugin remove oh-my-codex@oh-my-codex-local --json then rerun \\\"omx setup --plugin\\\"";
+					assert.match(res.stdout, new RegExp(`Skills: plugin marketplace oh-my-codex-local cache provenance is invalid: ${reason}.*${guidance}`));
+					assert.match(res.stdout, new RegExp(`Plugin versions: expected cache directory .* has invalid plugin cache provenance: ${reason}.*${guidance}`));
+				} finally {
+					await rm(wd, { recursive: true, force: true });
+				}
+			}
 		}
 	});
 

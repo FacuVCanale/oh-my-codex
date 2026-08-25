@@ -140,6 +140,7 @@ async function seedCurrentLauncher(codexHomeDir: string): Promise<string> {
   await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
     recursive: true,
   });
+  await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
   await writeFile(
     join(cacheDir, "hooks", "omx-command.json"),
     JSON.stringify(
@@ -302,6 +303,7 @@ describe("issue 3558 launcher provenance", () => {
           await cp(join(fakeRoot, "plugins", "oh-my-codex"), cacheDir, {
             recursive: true,
           });
+          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             JSON.stringify(
@@ -437,6 +439,7 @@ describe("issue 3558 launcher provenance", () => {
           await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
             recursive: true,
           });
+          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             JSON.stringify(
@@ -530,6 +533,7 @@ describe("issue 3558 launcher provenance", () => {
             join(packageRoot, "plugins", "oh-my-codex", ".app.json"),
             join(cacheDir, ".app.json"),
           );
+          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             "{ malformed",
@@ -646,6 +650,7 @@ describe("issue 3558 launcher provenance", () => {
           await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
             recursive: true,
           });
+          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             JSON.stringify(
@@ -711,6 +716,7 @@ describe("issue 3558 launcher provenance", () => {
           const cacheDir = await packagedPluginCacheDir(codexHomeDir);
           await mkdir(dirname(cacheDir), { recursive: true });
           await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, { recursive: true });
+          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await rm(join(cacheDir, "hooks", "omx-command.json"), { force: true });
           const packaged = await resolvePackagedOmxMarketplace(packageRoot);
           assert.ok(packaged);

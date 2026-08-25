@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import {
   cp,
   lstat,
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -19,6 +20,8 @@ import {
   PLUGIN_LAUNCHER_RECOVERY_HINT,
   hasExpectedOmxPluginCache,
   materializePackagedOmxPluginCache,
+  readOmxPluginCacheFileNoFollow,
+  omxPluginCacheProvenanceReason,
   omxPluginCacheExecutedAssetProvenanceReason,
   pluginHookCacheMatchesPackaged,
   readOmxPluginCacheState,
@@ -94,6 +97,7 @@ async function seedRegularSnapshot(codexHomeDir: string): Promise<string> {
     join(cacheDir, "hooks", "omx-command.json"),
     await pinnedLauncherContent(),
   );
+  await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
   return cacheDir;
 }
 
@@ -117,6 +121,94 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         );
         const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
         assert.equal(r.status, "unchanged");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the committed publication marker is removed", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-marker-loss-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(first.status, "materialized");
+        await rm(join(first.cacheDir!, ".omx-complete"), { force: true });
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(result.status, "stale-launcher");
+        assert.match(result.reason ?? "", /managed snapshots|publication marker|codex plugin remove/);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects extra skill directories from immutable provenance", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-extra-skill-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        await mkdir(join(cacheDir, "skills", "attacker"), { recursive: true });
+        await writeFile(join(cacheDir, "skills", "attacker", "SKILL.md"), "attacker\n");
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(result.status, "stale-launcher");
+        assert.match(result.reason ?? "", /skills directory contents differ/);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed at the state boundary for missing managed assets", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-state-boundary-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        await rm(join(cacheDir, "hooks", "hooks.json"), { force: true });
+        assert.equal(await readOmxPluginCacheState(cacheDir), null);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an anchored parent replacement before reading a managed asset", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-parent-barrier-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const hooksDir = join(cacheDir, "hooks");
+        const externalDir = join(wd, "external-hooks");
+        await rename(hooksDir, externalDir);
+        await symlink(externalDir, hooksDir);
+        const bytes = await readOmxPluginCacheFileNoFollow(
+          join(cacheDir, "hooks", "hooks.json"),
+          { anchorDir: cacheDir },
+        );
+        assert.equal(bytes, null);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an interrupted publication without a committed marker", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-publication-interrupt-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        await rm(join(cacheDir, ".omx-complete"), { force: true });
+        await writeFile(join(cacheDir, ".omx-incomplete"), "interrupted\n");
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        assert.equal(await readOmxPluginCacheState(cacheDir), null);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -506,4 +598,123 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       }
     });
   }
+
+  it("rejects companion symlink swaps during descriptor-bound provenance validation", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-companion-toctou-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        for (const companion of companionCases) {
+          const cachedPath = join(cacheDir, companion);
+          const externalPath = join(wd, "external", companion);
+          const canonical = await readFile(cachedPath);
+          await mkdir(dirname(externalPath), { recursive: true });
+			await writeFile(externalPath, `{"attacker":"${companion}"}\n`);
+			for (let iteration = 0; iteration < 2000; iteration += 1) {
+				await rm(cachedPath, { force: true });
+				await symlink(externalPath, cachedPath);
+				const reason = await omxPluginCacheProvenanceReason(cacheDir, packaged);
+				assert.match(reason ?? "", /companion file .*symlink/);
+				await rm(cachedPath, { force: true });
+				await writeFile(cachedPath, canonical);
+			}
+          assert.equal(await readFile(externalPath, "utf-8"), `{"attacker":"${companion}"}\n`);
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replace a same-version cache claimed concurrently", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-cache-claim-race-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const results = await Promise.all([
+          materializePackagedOmxPluginCache(codexHomeDir, packaged),
+          materializePackagedOmxPluginCache(codexHomeDir, packaged),
+        ]);
+        assert.ok(results.every((result) => result.status !== "unavailable"));
+        assert.ok(results.some((result) => result.status === "materialized" || result.status === "unchanged"));
+        const cacheDir = results.find((result) => result.cacheDir)?.cacheDir;
+        assert.ok(cacheDir);
+        assert.equal(existsSync(join(cacheDir, ".omx-incomplete")), false);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+      });
+    } finally {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not accept attacker bytes after companion replacement", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-companion-concurrent-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        for (const companion of companionCases) {
+          const cachedPath = join(cacheDir, companion);
+          const externalPath = join(wd, "external", companion);
+          const canonical = await readFile(cachedPath);
+          await mkdir(dirname(externalPath), { recursive: true });
+          await writeFile(externalPath, canonical);
+          for (let iteration = 0; iteration < 2000; iteration += 1) {
+            await rm(cachedPath, { force: true });
+            await symlink(externalPath, cachedPath);
+            await writeFile(externalPath, `{"attacker":"${companion}"}\n`);
+            const rejected = await readOmxPluginCacheFileNoFollow(cachedPath);
+            assert.equal(rejected, null, `${companion} accepted attacker-controlled symlink bytes`);
+            await rm(cachedPath, { force: true });
+            await writeFile(cachedPath, canonical);
+            await writeFile(externalPath, canonical);
+          }
+          assert.equal((await readFile(externalPath)).equals(canonical), true);
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects hard-linked cache provenance files across shared surfaces", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-hardlink-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const surfaces = [
+          ".mcp.json",
+          ".app.json",
+          ".codex-plugin/plugin.json",
+          "skills/worker/SKILL.md",
+          "hooks/hooks.json",
+          "hooks/codex-native-hook.mjs",
+          "hooks/omx-command.json",
+        ];
+        for (const surface of surfaces) {
+          const cacheDir = await seedRegularSnapshot(codexHomeDir);
+          const cachedPath = join(cacheDir, surface);
+          const externalPath = join(wd, "hardlinks", surface.replaceAll("/", "-"));
+          await mkdir(dirname(externalPath), { recursive: true });
+          await link(cachedPath, externalPath);
+          await rm(cachedPath, { force: true });
+          await link(externalPath, cachedPath);
+
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.notEqual(result.status, "unchanged", `${surface} hardlink was trusted`);
+          assert.equal((await lstat(cachedPath)).nlink > 1, true);
+          assert.equal((await readFile(externalPath)).equals(await readFile(cachedPath)), true);
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
