@@ -11,9 +11,13 @@ on:
         description: 'Immutable release tag to publish via npm trusted publishing, e.g. v0.21.0'
         required: false
         type: string
+      release_sha:
+        description: 'Exact peeled commit SHA the immutable release_tag must resolve to'
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && format('ci-dispatch-{0}', github.run_id) || format('ci-{0}', github.ref) }}
+  group: ${{ github.event_name == 'workflow_dispatch' && format('ci-dispatch-{0}', github.event.inputs.release_tag || github.run_id) || format('ci-{0}', github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
@@ -801,7 +805,7 @@ jobs:
 
   publish-npm-trusted:
     name: Publish npm (trusted publishing)
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_tag != ''
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.release_tag != '' && inputs.release_sha != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -809,6 +813,7 @@ jobs:
       id-token: write
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
     steps:
       - name: Validate release tag shape
         shell: bash
@@ -830,6 +835,15 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git rev-parse --verify refs/remotes/origin/main
           TAG_COMMIT=$(git rev-parse "$RELEASE_TAG^{}")
+          EXPECTED_SHA=$(printf '%s' "$RELEASE_SHA" | tr 'A-F' 'a-f')
+          if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::refusing to publish: release_sha must be a 40-character commit SHA, got '$RELEASE_SHA'"
+            exit 1
+          fi
+          if [[ "$TAG_COMMIT" != "$EXPECTED_SHA" ]]; then
+            echo "::error::refusing to publish: $RELEASE_TAG peels to $TAG_COMMIT, not the bound release_sha $EXPECTED_SHA"
+            exit 1
+          fi
           MAIN_COMMIT=$(git rev-parse refs/remotes/origin/main)
           if ! git merge-base --is-ancestor "$TAG_COMMIT" "$MAIN_COMMIT"; then
             echo "::error::refusing to publish: $RELEASE_TAG ($TAG_COMMIT) is not an ancestor of origin/main ($MAIN_COMMIT)"

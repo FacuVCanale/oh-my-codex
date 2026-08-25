@@ -84,6 +84,9 @@ describe('native release workflow', () => {
     assert.doesNotMatch(workflow, /--require-no-fallback/);
 
     assert.match(workflow, /verify-version-sync:[\s\S]*Verify version sync against workspace crates[\s\S]*node --input-type=module/);
+    assert.match(workflow, /Verify tag is an ancestor of origin\/main/);
+    assert.match(workflow, /git merge-base --is-ancestor "\$TAG_COMMIT" "\$MAIN_COMMIT"/);
+    assert.match(workflow, /git fetch --no-tags origin \+refs\/heads\/main:refs\/remotes\/origin\/main/);
     assert.match(workflow, /publish-native-assets:[\s\S]*npm run build[\s\S]*node dist\/scripts\/generate-native-release-manifest\.js/);
     assert.match(workflow, /publish-native-assets:[\s\S]*Generate release body[\s\S]*node dist\/scripts\/generate-release-body\.js --template RELEASE_BODY\.md --out RELEASE_BODY\.generated\.md/);
     assert.match(workflow, /body_path:\s*RELEASE_BODY\.generated\.md/);

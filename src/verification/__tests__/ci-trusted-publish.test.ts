@@ -52,18 +52,19 @@ const PUBLISH_JOB = 'publish-npm-trusted';
 
 describe('CI npm trusted publishing contract', () => {
 
-  it('exposes a manual dispatch input for an immutable release tag only', () => {
+  it('exposes dispatch inputs for an immutable release tag and bound commit SHA', () => {
     const workflow = readCiWorkflow();
 
     assert.match(workflow, /workflow_dispatch:\n\s+inputs:\n\s+release_tag:/);
-    // The dispatch input is optional so ordinary CI events never treat it as set.
     assert.match(workflow, /release_tag:\n\s+description: 'Immutable release tag to publish via npm trusted publishing, e\.g\. v0\.21\.0'\n\s+required: false\n\s+type: string/);
+    assert.match(workflow, /release_sha:\n\s+description: 'Exact peeled commit SHA the immutable release_tag must resolve to'\n\s+required: false\n\s+type: string/);
   });
+
   it('does not cancel a trusted-publish dispatch when ordinary CI shares main', () => {
     const workflow = readCiWorkflow();
     assert.match(
       workflow,
-      /group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('ci-dispatch-\{0\}', github\.run_id\) \|\| format\('ci-\{0\}', github\.ref\) \}\}/,
+      /group: \$\{\{ github\.event_name == 'workflow_dispatch' && format\('ci-dispatch-\{0\}', github\.event\.inputs\.release_tag \|\| github\.run_id\) \|\| format\('ci-\{0\}', github\.ref\) \}\}/,
     );
     assert.match(workflow, /cancel-in-progress: \$\{\{ github\.event_name != 'workflow_dispatch' \}\}/);
     assert.doesNotMatch(workflow, /^\s+cancel-in-progress:\s*true$/m);
@@ -75,7 +76,7 @@ describe('CI npm trusted publishing contract', () => {
     // Ordinary push and pull_request CI must never run the publish job.
     assert.match(
       publishJob,
-      /if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.release_tag != ''/,
+      /if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.release_tag != '' && inputs\.release_sha != ''/,
     );
     // The publish job must not be reachable through the shared lane outputs.
     assert.doesNotMatch(publishJob, /needs\.changes/);
@@ -121,6 +122,9 @@ describe('CI npm trusted publishing contract', () => {
     assert.match(publishJob, /git fetch --no-tags origin \+refs\/heads\/main:refs\/remotes\/origin\/main/);
     assert.match(publishJob, /git rev-parse --verify refs\/remotes\/origin\/main/);
     assert.match(publishJob, /git rev-parse "\$RELEASE_TAG\^\{\}"/);
+    assert.match(publishJob, /RELEASE_SHA: \$\{\{ inputs\.release_sha \}\}/);
+    assert.match(publishJob, /EXPECTED_SHA=\$\(printf '%s' "\$RELEASE_SHA" \| tr 'A-F' 'a-f'\)/);
+    assert.match(publishJob, /TAG_COMMIT" != "\$EXPECTED_SHA"/);
     assert.match(publishJob, /git merge-base --is-ancestor "\$TAG_COMMIT" "\$MAIN_COMMIT"/);
     // Historical annotated tags on main must be publishable after main advances.
     assert.doesNotMatch(publishJob, /does not resolve to the main branch head/);
@@ -271,9 +275,11 @@ describe('CI npm trusted publishing contract', () => {
     const publishMentions = workflow.match(/npm publish[^\n]*/g) ?? [];
     assert.deepEqual(publishMentions, ['npm publish --access public --provenance']);
 
-    // No job outside the publish block may reference the dispatch input.
+    // No job outside the publish block may reference dispatch inputs.
     const withoutPublishJob = workflow.replace(jobBlock(workflow, PUBLISH_JOB), '');
-    assert.doesNotMatch(withoutPublishJob, /inputs\.release_tag/);
+    const jobsOnly = withoutPublishJob.slice(withoutPublishJob.indexOf('\njobs:'));
+    assert.doesNotMatch(jobsOnly, /inputs\.release_tag/);
+    assert.doesNotMatch(jobsOnly, /inputs\.release_sha/);
     assert.doesNotMatch(withoutPublishJob, /npm publish/);
   });
 });
