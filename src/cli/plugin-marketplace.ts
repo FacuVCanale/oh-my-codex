@@ -141,6 +141,44 @@ function isMissingPathError(error: unknown): boolean {
 }
 
 /**
+ * #3552: executed assets Codex loads from the plugin cache must be regular files inside a
+ * regular `hooks/` directory inside a regular snapshot root. `readFile`/content equality
+ * follow symlinks to their external targets before any provenance check, so a symlinked
+ * `<version>` cache root or a symlinked executed asset (hooks/hooks.json,
+ * hooks/codex-native-hook.mjs, hooks/omx-command.json) with byte-identical external
+ * content could satisfy the unchanged fast paths while the executed bytes stayed
+ * attacker-writable outside the managed namespace. Returns a human-readable reason when
+ * provenance is broken (missing/symlinked/non-regular root, hooks dir, or asset), or
+ * null when the snapshot's provenance is intact. Callers treat non-null as fail-closed.
+ */
+export async function omxPluginCacheExecutedAssetProvenanceReason(
+	cacheDir: string,
+): Promise<string | null> {
+	const expectations: Array<{ path: string; kind: "file" | "directory"; label: string }> = [
+		{ path: cacheDir, kind: "directory", label: "cache root" },
+		{ path: join(cacheDir, "hooks"), kind: "directory", label: "hooks directory" },
+		{ path: join(cacheDir, "hooks", "hooks.json"), kind: "file", label: "executed cache asset" },
+		{ path: join(cacheDir, "hooks", "codex-native-hook.mjs"), kind: "file", label: "executed cache asset" },
+		{ path: join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE), kind: "file", label: "executed cache asset" },
+	];
+	for (const { path, kind, label } of expectations) {
+		let stats;
+		try {
+			stats = await lstat(path);
+		} catch {
+			return `${label} is missing at ${path}`;
+		}
+		const shapeOk = kind === "directory"
+			? stats.isDirectory() && !stats.isSymbolicLink()
+			: stats.isFile() && !stats.isSymbolicLink();
+		if (!shapeOk) {
+			return `${label} at ${path} is a symlink or not a ${kind === "directory" ? "directory" : "regular file"}`;
+		}
+	}
+	return null;
+}
+
+/**
  * Only the namespace OMX owns below the Codex home is required to be free of symlinks; a symlinked
  * `plugins/` (or any component under the home) can redirect writes and is refused. Everything above
  * the home belongs to the platform or the user — macOS resolves TMPDIR through `/var -> /private/var`,
@@ -180,11 +218,11 @@ async function ensureManagedCacheNamespace(
 	}
 }
 
-async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "directory" | "foreign"> {
+async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "directory" | "foreign" | "untrusted"> {
 		try {
 			const stats = await lstat(cacheDir);
 			if (!stats.isDirectory() || stats.isSymbolicLink()) {
-				throw new Error(`Refusing to mutate non-directory OMX plugin cache root: ${cacheDir}`);
+				return "untrusted";
 			}
 			const manifest = await readPluginManifest(join(cacheDir, ".codex-plugin", "plugin.json"));
 			return manifest?.name === OMX_PLUGIN_NAME ? "directory" : "foreign";
@@ -277,6 +315,16 @@ export interface OmxPluginCacheState {
 export async function readOmxPluginCacheState(
 	cacheDir: string,
 ): Promise<OmxPluginCacheState | null> {
+	// #3552: never read cache state through a symlinked or non-directory snapshot root —
+	// readFile-based manifest reads would follow an external target before provenance checks.
+	// A missing pinned launcher is reported by the dedicated launcher checks, not here.
+	if (
+		(await omxPluginCacheExecutedAssetProvenanceReason(cacheDir))?.startsWith(
+			"cache root",
+		)
+	) {
+		return null;
+	}
 	const manifest = await readPluginManifest(
 		join(cacheDir, ".codex-plugin", "plugin.json"),
 	);
@@ -334,15 +382,24 @@ async function fileContentsEqual(leftPath: string, rightPath: string): Promise<b
 	}
 }
 
+
 /**
  * Compares only plugin-scoped hook assets that Codex executes from the cache.
  * Manifest pointers and skill lists are validated by callers before using this
  * as a hook/launcher freshness predicate.
+ *
+ * #3552: the comparison is fail-closed about provenance — every executed asset
+ * is lstat-validated as a regular file before it is read, so a symlinked asset
+ * with byte-identical external content can no longer satisfy the unchanged
+ * fast paths. `false` here means "do not trust this cache snapshot".
  */
 export async function pluginHookCacheMatchesPackaged(
 	cacheDir: string,
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<boolean> {
+	if ((await omxPluginCacheExecutedAssetProvenanceReason(cacheDir)) !== null) {
+		return false;
+	}
 	return await fileContentsEqual(
 		join(cacheDir, "hooks", "hooks.json"),
 		join(packagedMarketplace.pluginRoot, "hooks", "hooks.json"),
@@ -569,6 +626,16 @@ export async function materializePackagedOmxPluginCache(
 	// Same-version directory exists but is not byte-identical: distinguish immutable-preserved vs dead/provenance-incompatible launcher.
 	// Preserve #3499 immutability: never rewrite an existing same-version directory in place.
 	const rootState = await inspectCacheRoot(cacheDir);
+	if (rootState === "untrusted") {
+		return {
+			status: "stale-launcher",
+			cacheDir,
+			version,
+			reason: `OMX plugin cache root at ${cacheDir} is a symlink or non-directory entry; managed snapshots must be regular immutable directories; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+			launcherTarget: undefined,
+			retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+		};
+	}
 	if (rootState === "directory") {
 		const incompat = await getPinnedLauncherIncompatibilityReason(cacheDir, packagedMarketplace);
 		if (incompat) {
@@ -578,6 +645,17 @@ export async function materializePackagedOmxPluginCache(
 				version,
 				reason: incompat.reason,
 				launcherTarget: incompat.target,
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+			};
+		}
+		const assetProvenanceReason = await omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
+		if (assetProvenanceReason) {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `${assetProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				launcherTarget: undefined,
 				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
 			};
 		}
