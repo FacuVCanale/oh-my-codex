@@ -25,6 +25,7 @@ import {
   omxPluginCacheExecutedAssetProvenanceReason,
   pluginHookCacheMatchesPackaged,
   readOmxPluginCacheState,
+  discoverOmxPluginCacheDirs,
   resolvePackagedOmxMarketplace,
 } from "../plugin-marketplace.js";
 
@@ -178,6 +179,37 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("fails closed when state surfaces have invalid pointers, companions, skills, or launcher", async () => {
+    const cases = [
+      ["pointer", async (cacheDir: string) => {
+        const manifestPath = join(cacheDir, ".codex-plugin", "plugin.json");
+        const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+        await writeFile(manifestPath, JSON.stringify({ ...manifest, skills: "./attacker-skills/" }));
+      }],
+      ["companion", async (cacheDir: string) => {
+        await writeFile(join(cacheDir, ".mcp.json"), "not-json\n");
+      }],
+      ["skill", async (cacheDir: string) => {
+        await rm(join(cacheDir, "skills", "worker", "SKILL.md"), { force: true });
+      }],
+      ["launcher", async (cacheDir: string) => {
+        await writeFile(join(cacheDir, "hooks", "omx-command.json"), "{}\n");
+      }],
+    ] as const;
+    for (const [label, mutate] of cases) {
+      const wd = await mkdtemp(join(tmpdir(), `omx-3552-state-${label}-`));
+      try {
+        await withIsolatedUserHome(wd, async (codexHomeDir) => {
+          const cacheDir = await seedRegularSnapshot(codexHomeDir);
+          await mutate(cacheDir);
+          assert.equal(await readOmxPluginCacheState(cacheDir), null, `${label} state failure was trusted`);
+        });
+      } finally {
+        await rm(wd, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("rejects an anchored parent replacement before reading a managed asset", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-parent-barrier-"));
     try {
@@ -198,6 +230,28 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("rejects a symlinked intermediate skills directory during descriptor-bound reads", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-intermediate-skills-symlink-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const skillsDir = join(cacheDir, "skills");
+        const externalSkills = join(wd, "external-skills");
+        await rename(skillsDir, externalSkills);
+        await symlink(externalSkills, skillsDir);
+        assert.equal(
+          await readOmxPluginCacheFileNoFollow(
+            join(cacheDir, "skills", "worker", "SKILL.md"),
+            { anchorDir: cacheDir },
+          ),
+          null,
+        );
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("rejects an interrupted publication without a committed marker", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-publication-interrupt-"));
     try {
@@ -209,6 +263,19 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         await writeFile(join(cacheDir, ".omx-incomplete"), "interrupted\n");
         assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
         assert.equal(await readOmxPluginCacheState(cacheDir), null);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not discover a manifest without a committed publication marker", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-discovery-marker-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        await rm(join(cacheDir, ".omx-complete"), { force: true });
+        assert.deepEqual(await discoverOmxPluginCacheDirs(codexHomeDir), []);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -647,6 +714,72 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       });
     } finally {
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a same-version directory claimed at the publication barrier", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-publication-barrier-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(
+          codexHomeDir,
+          "plugins",
+          "cache",
+          "oh-my-codex-local",
+          "oh-my-codex",
+          version,
+        );
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          onCacheDirPrepared: async (preparedCacheDir) => {
+            assert.equal(preparedCacheDir, cacheDir);
+            await mkdir(preparedCacheDir, { recursive: true });
+            await writeFile(join(preparedCacheDir, "attacker-sentinel"), "preserve\n");
+          },
+        });
+        assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        assert.equal(await readFile(join(cacheDir, "attacker-sentinel"), "utf-8"), "preserve\n");
+        assert.equal(existsSync(join(cacheDir, ".omx-complete")), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a publication lock owned by a dead process", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-stale-publication-lock-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = join(codexHomeDir, "plugins", "cache", "oh-my-codex-local", "oh-my-codex");
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        await writeFile(lockPath, JSON.stringify({ pid: 99999999, createdAt: Date.now() - 60_000 }));
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(result.status, "materialized", JSON.stringify(result));
+        assert.equal(existsSync(lockPath), false);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps direct materialization dry-run read-only when the cache namespace is absent", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-dry-run-read-only-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, { dryRun: true });
+        assert.equal(result.status, "materialized", JSON.stringify(result));
+        assert.equal(existsSync(join(codexHomeDir, "plugins")), false);
+      });
+    } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });

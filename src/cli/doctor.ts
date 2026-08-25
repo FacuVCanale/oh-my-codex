@@ -3420,9 +3420,6 @@ async function checkPluginMarketplaceRegistration(
 				message: `packaged ${OMX_LOCAL_MARKETPLACE_NAME} plugin has no skills mirror; reinstall oh-my-codex`,
 			};
 		}
-		const cacheStates = (
-			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
-		).filter((state) => state !== null);
 		const expectedCacheDir = join(
 			codexHomeDir,
 			"plugins",
@@ -3431,14 +3428,13 @@ async function checkPluginMarketplaceRegistration(
 			"oh-my-codex",
 			packagedManifestVersion,
 		);
-		const currentCacheState = cacheStates.find((state) => state.cacheDir === expectedCacheDir);
-		if (currentCacheState?.manifestVersion === packagedManifestVersion) {
+		if (existsSync(expectedCacheDir)) {
 			const provenanceReason = await omxPluginCacheProvenanceReason(
 				expectedCacheDir,
 				packagedMarketplace,
 				packagedManifestVersion,
 			);
-			if (provenanceReason) {
+			if (provenanceReason && !provenanceReason.startsWith("plugin manifest version is not ")) {
 				return {
 					name: "Skills",
 					status: "warn",
@@ -3446,6 +3442,9 @@ async function checkPluginMarketplaceRegistration(
 				};
 			}
 		}
+		const cacheStates = (
+			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
+		).filter((state) => state !== null);
 		const packagedManifestSummary = {
 			manifestVersion: packagedManifestVersion,
 			skillNames: expectedSkillNames,
@@ -3547,6 +3546,20 @@ async function checkPluginVersionDiagnostics(
 		"oh-my-codex",
 		manifestVersion,
 	);
+	if (existsSync(cacheDir)) {
+		const provenanceReason = await omxPluginCacheProvenanceReason(
+			cacheDir,
+			packagedMarketplace,
+			manifestVersion,
+		);
+		if (provenanceReason && !provenanceReason.startsWith("plugin manifest version is not ")) {
+			return {
+				name: "Plugin versions",
+				status: "warn",
+				message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" to refresh the plugin cache`,
+			};
+		}
+	}
 	const cacheState = await readOmxPluginCacheState(cacheDir);
 	if (cacheState?.manifestVersion !== manifestVersion) {
 		return {
@@ -3555,19 +3568,6 @@ async function checkPluginVersionDiagnostics(
 			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run "omx setup --plugin --force" to refresh the plugin cache`,
 		};
 	}
-	const provenanceReason = await omxPluginCacheProvenanceReason(
-		cacheDir,
-		packagedMarketplace,
-		manifestVersion,
-	);
-	if (provenanceReason) {
-		return {
-			name: "Plugin versions",
-			status: "warn",
-			message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" to refresh the plugin cache`,
-		};
-	}
-
 	if (stamp?.install_channel === "dev") {
 		const devDisplay = stamp.dev_base_version && stamp.install_revision
 			? `v${stamp.dev_base_version}-dev-${stamp.install_revision}`
