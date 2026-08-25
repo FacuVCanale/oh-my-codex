@@ -470,11 +470,15 @@ export async function getPinnedLauncherIncompatibilityReason(
 		return { reason: `pinned launcher at ${launcherPath} is malformed JSON (expected object but got ${Array.isArray(parsed) ? "array" : String(parsed)}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
 	}
 	const obj = parsed as { command?: unknown; argsPrefix?: unknown };
+	const extraKeys = Object.keys(obj).filter((key) => key !== "command" && key !== "argsPrefix");
+	if (extraKeys.length > 0) {
+		return { reason: `pinned launcher at ${launcherPath} has extra keys (${extraKeys.sort().join(", ")}); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	}
 	if (typeof obj.command !== "string" || obj.command.trim() === "") {
 		return { reason: `pinned launcher at ${launcherPath} has invalid command; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
 	}
-	if (!Array.isArray(obj.argsPrefix) || obj.argsPrefix.length === 0 || !obj.argsPrefix.every((v) => typeof v === "string")) {
-		return { reason: `pinned launcher at ${launcherPath} has invalid argsPrefix; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
+	if (!Array.isArray(obj.argsPrefix) || obj.argsPrefix.length !== 1 || typeof obj.argsPrefix[0] !== "string" || obj.argsPrefix[0].trim() === "") {
+		return { reason: `pinned launcher at ${launcherPath} has invalid argsPrefix (expected exactly one packaged omx.js target); run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin` };
 	}
 	const command = obj.command.trim();
 	const target = (obj.argsPrefix as string[])[0]!;
