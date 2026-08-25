@@ -106,6 +106,21 @@ async function listChildDirectoryNames(dir: string): Promise<string[] | null> {
 	}
 }
 
+async function listRegularChildDirectoryNames(dir: string): Promise<string[] | null> {
+	try {
+		const stats = await lstat(dir);
+		if (!stats.isDirectory() || stats.isSymbolicLink()) return null;
+		const entries = await readdir(dir, { withFileTypes: true });
+		if (entries.some((entry) => entry.isSymbolicLink())) return null;
+		return entries
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return null;
+	}
+}
+
 export async function packagedOmxPluginVersion(
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<string | null> {
@@ -173,6 +188,91 @@ export async function omxPluginCacheExecutedAssetProvenanceReason(
 			: stats.isFile() && !stats.isSymbolicLink();
 		if (!shapeOk) {
 			return `${label} at ${path} is a symlink or not a ${kind === "directory" ? "directory" : "regular file"}`;
+		}
+	}
+	return null;
+}
+
+async function omxPluginCacheManifestProvenanceReason(
+	cacheDir: string,
+	expectedVersion?: string,
+): Promise<string | null> {
+	const manifestDir = join(cacheDir, ".codex-plugin");
+	const manifestPath = join(manifestDir, "plugin.json");
+	let manifestDirStats;
+	try {
+		manifestDirStats = await lstat(manifestDir);
+	} catch {
+		return `plugin manifest directory is missing at ${manifestDir}`;
+	}
+	if (!manifestDirStats.isDirectory() || manifestDirStats.isSymbolicLink()) {
+		return `plugin manifest directory at ${manifestDir} is a symlink or not a directory`;
+	}
+	let manifestStats;
+	try {
+		manifestStats = await lstat(manifestPath);
+	} catch {
+		return `plugin manifest is missing at ${manifestPath}`;
+	}
+	if (!manifestStats.isFile() || manifestStats.isSymbolicLink()) {
+		return `plugin manifest at ${manifestPath} is a symlink or not a regular file`;
+	}
+	const manifest = await readPluginManifest(manifestPath);
+	if (!manifest) return `plugin manifest at ${manifestPath} is unreadable or invalid JSON`;
+	if (manifest.name !== OMX_PLUGIN_NAME) {
+		return `plugin manifest name is not ${OMX_PLUGIN_NAME} at ${manifestPath}`;
+	}
+	if (typeof manifest.version !== "string" || (expectedVersion !== undefined && manifest.version !== expectedVersion)) {
+		return `plugin manifest version is not ${expectedVersion ?? "a valid string"} at ${manifestPath}`;
+	}
+	if (manifest.skills !== "./skills/") {
+		return `plugin manifest skills pointer is not ./skills/ at ${manifestPath}`;
+	}
+	if (manifest.hooks !== "./hooks/hooks.json") {
+		return `plugin manifest hooks pointer is not ./hooks/hooks.json at ${manifestPath}`;
+	}
+	return null;
+}
+
+async function omxPluginCacheSkillsProvenanceReason(
+	cacheDir: string,
+	packagedMarketplace: PackagedOmxMarketplace,
+	expectedSkillNames: string[],
+): Promise<string | null> {
+	const skillsDir = join(cacheDir, "skills");
+	let skillsStats;
+	try {
+		skillsStats = await lstat(skillsDir);
+	} catch {
+		return `skills directory is missing at ${skillsDir}`;
+	}
+	if (!skillsStats.isDirectory() || skillsStats.isSymbolicLink()) {
+		return `skills directory at ${skillsDir} is a symlink or not a directory`;
+	}
+	for (const skillName of expectedSkillNames) {
+		const skillDir = join(skillsDir, skillName);
+		let skillDirStats;
+		try {
+			skillDirStats = await lstat(skillDir);
+		} catch {
+			return `expected skill directory is missing at ${skillDir}`;
+		}
+		if (!skillDirStats.isDirectory() || skillDirStats.isSymbolicLink()) {
+			return `expected skill directory at ${skillDir} is a symlink or not a directory`;
+		}
+		const cachedSkill = join(skillDir, "SKILL.md");
+		const packagedSkill = join(packagedMarketplace.pluginRoot, "skills", skillName, "SKILL.md");
+		let cachedSkillStats;
+		try {
+			cachedSkillStats = await lstat(cachedSkill);
+		} catch {
+			return `expected skill file is missing at ${cachedSkill}`;
+		}
+		if (!cachedSkillStats.isFile() || cachedSkillStats.isSymbolicLink()) {
+			return `expected skill file at ${cachedSkill} is a symlink or not a regular file`;
+		}
+		if (!(await fileContentsEqual(cachedSkill, packagedSkill))) {
+			return `expected skill file content differs at ${cachedSkill}`;
 		}
 	}
 	return null;
@@ -314,6 +414,7 @@ export interface OmxPluginCacheState {
 
 export async function readOmxPluginCacheState(
 	cacheDir: string,
+	expectedVersion?: string,
 ): Promise<OmxPluginCacheState | null> {
 	// #3552: never read cache state through a symlinked or non-directory snapshot root —
 	// readFile-based manifest reads would follow an external target before provenance checks.
@@ -325,6 +426,9 @@ export async function readOmxPluginCacheState(
 	) {
 		return null;
 	}
+	if ((await omxPluginCacheManifestProvenanceReason(cacheDir, expectedVersion)) !== null) {
+		return null;
+	}
 	const manifest = await readPluginManifest(
 		join(cacheDir, ".codex-plugin", "plugin.json"),
 	);
@@ -334,7 +438,7 @@ export async function readOmxPluginCacheState(
 		manifestVersion:
 			typeof manifest.version === "string" ? manifest.version : null,
 		skillsPointer: typeof manifest.skills === "string" ? manifest.skills : null,
-		skillNames: await listChildDirectoryNames(join(cacheDir, "skills")),
+		skillNames: await listRegularChildDirectoryNames(join(cacheDir, "skills")),
 		hooksPointer: typeof manifest.hooks === "string" ? manifest.hooks : null,
 		hookLauncherPinned: existsSync(
 			join(cacheDir, "hooks", OMX_PLUGIN_HOOK_LAUNCHER_FILE),
@@ -354,6 +458,7 @@ export async function hasExpectedOmxPluginCache(
 	if (!version || !expectedSkillNames) return false;
 	const state = await readOmxPluginCacheState(
 		join(omxPluginCacheBase(codexHomeDir), version),
+		version,
 	);
 	if (
 		state?.manifestVersion !== version ||
@@ -364,6 +469,9 @@ export async function hasExpectedOmxPluginCache(
 		!existsSync(join(state.cacheDir, "hooks", "codex-native-hook.mjs")) ||
 		JSON.stringify(state.skillNames) !== JSON.stringify(expectedSkillNames)
 	) {
+		return false;
+	}
+	if (await omxPluginCacheSkillsProvenanceReason(state.cacheDir, packagedMarketplace, expectedSkillNames)) {
 		return false;
 	}
 
@@ -637,6 +745,22 @@ export async function materializePackagedOmxPluginCache(
 		};
 	}
 	if (rootState === "directory") {
+		const manifestProvenanceReason = await omxPluginCacheManifestProvenanceReason(cacheDir, version);
+		const expectedSkillNames = await expectedPackagedOmxSkillNames(packagedMarketplace, options);
+		const skillsProvenanceReason = expectedSkillNames
+			? await omxPluginCacheSkillsProvenanceReason(cacheDir, packagedMarketplace, expectedSkillNames)
+			: "packaged skill names are unavailable";
+		const snapshotProvenanceReason = manifestProvenanceReason ?? skillsProvenanceReason;
+		if (snapshotProvenanceReason) {
+			return {
+				status: "stale-launcher",
+				cacheDir,
+				version,
+				reason: `${snapshotProvenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+				launcherTarget: undefined,
+				retiredDirs: options.dryRun ? [] : await retireUnpinnedManagedSnapshots(codexHomeDir, version),
+			};
+		}
 		const incompat = await getPinnedLauncherIncompatibilityReason(cacheDir, packagedMarketplace);
 		if (incompat) {
 			return {

@@ -325,4 +325,110 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("manifest pointer drift is rejected before an existing snapshot can return unchanged", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-manifest-drift-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const manifestPath = join(cacheDir, ".codex-plugin", "plugin.json");
+        const manifest = JSON.parse(await readFile(manifestPath, "utf-8")) as Record<string, unknown>;
+        await writeFile(
+          manifestPath,
+          JSON.stringify({ ...manifest, skills: "./attacker-skills/", hooks: "./attacker-hooks/hooks.json" }),
+        );
+
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+        assert.match(r.reason!, /manifest (skills|hooks) pointer/);
+        assert.match(r.reason!, new RegExp(PLUGIN_LAUNCHER_RECOVERY_HINT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        assert.match(await readFile(manifestPath, "utf-8"), /attacker-skills/);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("symlinked manifest is rejected even when its external content is canonical", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-manifest-symlink-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const manifestPath = join(cacheDir, ".codex-plugin", "plugin.json");
+        const externalManifest = join(wd, "external", "plugin.json");
+        await mkdir(dirname(externalManifest), { recursive: true });
+        await rename(manifestPath, externalManifest);
+        await symlink(externalManifest, manifestPath);
+
+        assert.equal((await lstat(manifestPath)).isSymbolicLink(), true);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+        assert.match(r.reason!, /plugin manifest .*symlink/);
+        assert.equal((await lstat(manifestPath)).isSymbolicLink(), true);
+        assert.equal(await readFile(externalManifest, "utf-8"), await readFile(join(packaged.pluginRoot, ".codex-plugin", "plugin.json"), "utf-8"));
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("skills directory symlink with matching names and attacker content is rejected and preserved", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-skills-symlink-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const skillsPath = join(cacheDir, "skills");
+        const externalSkills = join(wd, "external", "skills");
+        await mkdir(dirname(externalSkills), { recursive: true });
+        await rename(skillsPath, externalSkills);
+        await writeFile(join(externalSkills, "worker", "SKILL.md"), "# attacker-controlled skill\n");
+        await symlink(externalSkills, skillsPath);
+
+        assert.equal((await lstat(skillsPath)).isSymbolicLink(), true);
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+        assert.match(r.reason!, /skills directory .*symlink/);
+        assert.equal((await lstat(skillsPath)).isSymbolicLink(), true);
+        assert.equal(await readFile(join(externalSkills, "worker", "SKILL.md"), "utf-8"), "# attacker-controlled skill\n");
+
+        await writeFile(join(externalSkills, "worker", "SKILL.md"), "# attacker mutation\n");
+        const r2 = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(r2.status, "stale-launcher", JSON.stringify(r2));
+        assert.equal(await readFile(join(skillsPath, "worker", "SKILL.md"), "utf-8"), "# attacker mutation\n");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("regular attacker-mutated SKILL.md content is rejected before unchanged acceptance", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-skill-content-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheDir = await seedRegularSnapshot(codexHomeDir);
+        const skillPath = join(cacheDir, "skills", "worker", "SKILL.md");
+        const sentinel = "# attacker-mutated regular skill\n";
+        await writeFile(skillPath, sentinel);
+
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false);
+        const r = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(r.status, "stale-launcher", JSON.stringify(r));
+        assert.match(r.reason!, /expected skill file content differs/);
+        assert.equal(await readFile(skillPath, "utf-8"), sentinel);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
