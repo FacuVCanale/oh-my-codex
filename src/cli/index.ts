@@ -1030,8 +1030,7 @@ async function copyFilePreservingTimestamps(
       throw new Error(`history staging path is not a regular file: ${temporary}`);
     }
     if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
-    await rm(destination, { recursive: true, force: true });
-    await rename(temporary, destination);
+    await publishHistoryReplacement(temporary, destination, false);
   } finally {
     await destinationHandle?.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
@@ -1078,9 +1077,8 @@ async function writeHistoryFileAtomically(
     await destinationHandle.chmod(destinationMode);
     await destinationHandle.close();
     destinationHandle = undefined;
-    await rm(destination, { recursive: true, force: true });
     if (canonicalDestinationRoot) await assertHistoryDestinationParentWithin(destination, canonicalDestinationRoot);
-    await rename(temporary, destination);
+    await publishHistoryReplacement(temporary, destination, false);
   } finally {
     await destinationHandle?.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
@@ -1173,6 +1171,29 @@ async function chmodHistoryDestination(
     if (tolerateForeignOwner && (error as NodeJS.ErrnoException).code === "EPERM") return;
     throw error;
   }
+}
+
+async function publishHistoryReplacement(
+  temporary: string,
+  destination: string,
+  recursive: boolean,
+): Promise<void> {
+  try {
+    await rename(temporary, destination);
+    return;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EEXIST" && code !== "EPERM" && code !== "ENOTEMPTY") throw error;
+  }
+  const backup = `${destination}.omx-history-backup-${randomUUID()}`;
+  await rename(destination, backup);
+  try {
+    await rename(temporary, destination);
+  } catch (error) {
+    await rename(backup, destination).catch(() => undefined);
+    throw error;
+  }
+  await rm(backup, { recursive, force: true }).catch(() => undefined);
 }
 
 function isUnresolvableHistoryLinkError(error: unknown): boolean {
@@ -1296,6 +1317,7 @@ export async function acquireHistoryPersistenceLock(
   root: string,
   options: HistoryPersistenceLockOptions = {},
 ): Promise<HistoryPersistenceLockLease> {
+  root = await realpath(root);
   const lockPath = join(root, ".omx-history.lock");
   const ownerPath = join(lockPath, "owner.json");
   const timeoutMs = options.timeoutMs ?? HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS;
@@ -1625,7 +1647,6 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
       continue;
     }
     try {
-      await rm(destination, { recursive: true, force: true });
       const sourceStat = sourceInspection.targetStat;
       if (!sourceStat) continue;
       const sourcePath = sourceInspection.targetRealpath ?? source;
@@ -1768,9 +1789,7 @@ async function replaceProjectLaunchRuntimeHistoryDirectory(
       throw new Error(`history staging path is not a directory: ${temporary}`);
     }
     await assertHistoryDestinationParentWithin(destination, destinationRoot);
-    await rm(destination, { recursive: true, force: true });
-    await assertHistoryDestinationParentWithin(destination, destinationRoot);
-    await rename(temporary, destination);
+    await publishHistoryReplacement(temporary, destination, true);
   } finally {
     await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
   }
