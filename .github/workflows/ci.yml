@@ -394,7 +394,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Upload prebuilt dist artifact
         uses: actions/upload-artifact@v4
@@ -551,7 +551,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Run Windows history materialization regressions
         run: node dist/scripts/run-test-files.js dist/cli/__tests__/index.test.js dist/cli/__tests__/resume.test.js
@@ -715,7 +715,7 @@ jobs:
           BUILD_DIST_RESULT: ${{ needs.build-dist.result }}
           RALPLAN_PREFLIGHT_MACOS_RESULT: ${{ needs.ralplan-preflight-macos.result }}
           TEST_RESULT: ${{ needs.test.result }}
-          WINDOWS_JS_RESULT: ${{ needs.test-windows-js.result }}
+          TEST_WINDOWS_JS_RESULT: ${{ needs.test-windows-js.result }}
           COVERAGE_TEAM_CRITICAL_RESULT: ${{ needs.coverage-team-critical.result }}
           RALPH_PERSISTENCE_GATE_RESULT: ${{ needs.ralph-persistence-gate.result }}
           BUILD_RESULT: ${{ needs.build.result }}
@@ -772,7 +772,7 @@ jobs:
           echo "  build-dist: $BUILD_DIST_RESULT"
           echo "  ralplan-preflight-macos: $RALPLAN_PREFLIGHT_MACOS_RESULT"
           echo "  test: $TEST_RESULT"
-          echo "  test-windows-js: $WINDOWS_JS_RESULT"
+          echo "  test-windows-js: $TEST_WINDOWS_JS_RESULT"
           echo "  coverage-team-critical: $COVERAGE_TEAM_CRITICAL_RESULT"
           echo "  ralph-persistence-gate: $RALPH_PERSISTENCE_GATE_RESULT"
           echo "  build: $BUILD_RESULT"
@@ -804,7 +804,7 @@ jobs:
           check_job build-dist "$BUILD_DIST_RESULT" "$dist_active"
           check_job ralplan-preflight-macos "$RALPLAN_PREFLIGHT_MACOS_RESULT" "$ts_active"
           check_job test "$TEST_RESULT" "$ts_active"
-          check_job test-windows-js "$WINDOWS_JS_RESULT" "$ts_active"
+          check_job test-windows-js "$TEST_WINDOWS_JS_RESULT" "$ts_active"
           check_job coverage-team-critical "$COVERAGE_TEAM_CRITICAL_RESULT" "$ts_active"
           check_job ralph-persistence-gate "$RALPH_PERSISTENCE_GATE_RESULT" "$ts_active"
           check_job native-cache-integrity "$NATIVE_CACHE_INTEGRITY_RESULT" "$native_cache_integrity_active"
