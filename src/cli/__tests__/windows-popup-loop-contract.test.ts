@@ -52,7 +52,7 @@ describe('detached tmux authority contract', () => {
     assert.match(cliIndex, /detachedHudAuthority = runDetachedLeaderSplit\(authority, step\.args\)/);
     assert.match(cliIndex, /if \(targetsHudPane\) runDetachedHudMutation\(authority, detachedHudAuthority, guardDetachedHudDeferredMutation\(authority, detachedHudAuthority, finalizeStep\.args\)\)/);
     assert.match(cliIndex, /publishDetachedReleaseMarker\(releaseMarkerPath, detachedLaunchNonce, sessionId, sessionName, detachedLeaderPid, detachedHudAuthority \?\? undefined\)/);
-    assert.match(cliIndex, /runDetachedLeaderMutation\(detachedLeaderAuthority, step\.args\)/);
+    assert.match(cliIndex, /runDetachedLeaderMutation\(leaderAuthority, step\.args\)/);
     assert.match(cliIndex, /function removeDetachedHudPaneIfAuthorized[\s\S]*?if-shell[\s\S]*?detachedHudAuthorityCondition\(authority, true, ownerId\)[\s\S]*?kill-pane/);
     assert.ok(cliIndex.includes('splitArgs[commandIndex] = `env OMX_DETACHED_HUD_OPERATION=${operationMarker} ${splitArgs[commandIndex]}`;'));
   });

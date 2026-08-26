@@ -9,6 +9,7 @@ import {
   cleanupDetachedPreReportSessionForTest,
   detachedLeaderFailureErrorForTest,
   DetachedLaunchSafetyError,
+  isDetachedReadyReportAuthorized,
   isDetachedSessionPointerAbortCarried,
   reportDetachedSessionPointerGuidance,
   type DetachedBootstrapReport,
@@ -225,7 +226,7 @@ describe('#3578 detached launch diagnostics', () => {
         );
         const foreignSessionName = `${sessionName}-foreign`;
         fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
-        cleanupDetachedPreReportSession(authority);
+        cleanupDetachedPreReportSession(authority, true);
         await new Promise((resolve) => setTimeout(resolve, 300));
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), false, 'the exact pre-tag session must be destroyed');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'the unrelated session must survive');
@@ -245,7 +246,7 @@ describe('#3578 detached launch diagnostics', () => {
         // session is still in the pre-tag owner-unset state.
         fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
         assert.throws(
-          () => cleanupDetachedPreReportSession(authority),
+          () => cleanupDetachedPreReportSession(authority, true),
           /topology changed before cleanup/,
           'a name-reusing replacement session must never be killed',
         );
@@ -273,6 +274,30 @@ describe('#3578 detached launch diagnostics', () => {
         // The HUD-only session is deliberately preserved: identity could not be proven.
         const survivors = fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).trim().split('\n').filter(Boolean);
         assert.equal(survivors.length > 0, true, 'the unproven session must be preserved');
+      });
+    });
+
+    it('refuses cleanup when a tagged session loses ownership before rollback (post-tag unset)', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-post-tag-unset';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'post-tag-owner');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        await new Promise((resolve) => setTimeout(resolve, 5_500));
+        fixture.run(['set-option', '-u', '-t', sessionName, '@omx_instance_id']);
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+        assert.throws(
+          () => cleanupDetachedPreReportSession(authority),
+          /topology changed before cleanup/,
+          'an owner tag removed after tag-session must not be treated as pre-tag state',
+        );
+        const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
+        assert.equal(sessions.includes(sessionName), true, 'the unowned exact session must survive');
+        assert.equal(sessions.includes(foreignSessionName), true, 'the unrelated session must survive');
       });
     });
 
@@ -339,6 +364,64 @@ describe('#3578 detached launch diagnostics', () => {
         assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(authority.paneId), true, 'leader pane must survive race');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'HUD session must survive race');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive race');
+      });
+    });
+
+    it('preserves the session when authenticated readiness arrives at the destructive boundary', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-ready-handoff-race';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'ready-handoff-owner');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        await new Promise((resolve) => setTimeout(resolve, 5_500));
+        assert.equal(fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']), '1');
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+        let lateReadyReport: {
+          version: 1;
+          kind: 'ready';
+          nonce: string;
+          sessionId: string;
+          sessionName: string;
+          paneId: string;
+          leaderPid: number;
+        } | undefined;
+        const expected = {
+          nonce: 'ready-handoff-nonce',
+          sessionId: authority.sessionId,
+          sessionName,
+          shouldAttach: false,
+          leaderPaneId: authority.paneId,
+          leaderPanePid: authority.panePid,
+        };
+        assert.throws(
+          () => cleanupDetachedPreReportSessionForTest(
+            authority,
+            () => {
+              // Deterministic completion-timeout/rollback barrier: the valid
+              // ready report is published only after topology probing and
+              // before the destructive session sink.
+              lateReadyReport = {
+                version: 1,
+                kind: 'ready',
+                nonce: expected.nonce,
+                sessionId: expected.sessionId,
+                sessionName: expected.sessionName,
+                paneId: authority.paneId,
+                leaderPid: authority.panePid,
+              };
+            },
+            false,
+            () => isDetachedReadyReportAuthorized(lateReadyReport, expected),
+          ),
+          /became ready or terminal before pre-report cleanup/,
+          'late authenticated readiness must suppress rollback cleanup',
+        );
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'ready session must survive');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive');
       });
     });
 
