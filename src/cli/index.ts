@@ -2583,6 +2583,7 @@ function runDetachedLeaderMutation(
 function detachedPreReportSessionCleanupCondition(
   authority: DetachedLeaderAuthority,
   allowUnownedPreTag: boolean,
+  requireCapturedDeadPane: boolean,
 ): string {
   // The tag-session step is the first mutation after new-session. A bootstrap
   // failure can therefore leave a retained dead leader pane in a session whose
@@ -2600,6 +2601,17 @@ function detachedPreReportSessionCleanupCondition(
     `#{==:#{session_created},${authority.sessionCreated}}`,
     owner,
   ];
+  if (requireCapturedDeadPane) {
+    // The session target resolves the active pane without using a pane target.
+    // If the captured dead pane was respawned, its PID or liveness changes and
+    // this single queued tmux predicate refuses the destructive sink. If a
+    // different pane is active, preserving is the only safe result.
+    conditions.push(
+      `#{==:#{pane_id},${authority.paneId}}`,
+      `#{==:#{pane_pid},${authority.panePid}}`,
+      "#{==:#{pane_dead},1}",
+    );
+  }
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
 
@@ -2652,7 +2664,7 @@ function cleanupDetachedPreReportSessionInternal(
   }
   if (paneState === "live") return;
   const sessionScoped = execTmuxFileSync([
-    "if-shell", "-F", "-t", sessionTarget, detachedPreReportSessionCleanupCondition(authority, allowUnownedPreTag),
+    "if-shell", "-F", "-t", sessionTarget, detachedPreReportSessionCleanupCondition(authority, allowUnownedPreTag, paneState === "dead"),
     success, "display-message -p ''",
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");

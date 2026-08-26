@@ -423,6 +423,72 @@ describe('#3578 detached launch diagnostics', () => {
       });
     });
 
+    it('preserves a respawned leader when its pane is revived after the dead-pane probe', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-respawn-race';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'respawn-race-owner');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        await new Promise((resolve) => setTimeout(resolve, 5_500));
+        assert.equal(fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']), '1');
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+        let lateReadyReport: {
+          version: 1;
+          kind: 'ready';
+          nonce: string;
+          sessionId: string;
+          sessionName: string;
+          paneId: string;
+          leaderPid: number;
+        } | undefined;
+        const expected = {
+          nonce: 'respawn-race-nonce',
+          sessionId: authority.sessionId,
+          sessionName,
+          shouldAttach: false,
+          leaderPaneId: authority.paneId,
+          leaderPanePid: authority.panePid,
+        };
+        assert.throws(
+          () => cleanupDetachedPreReportSessionForTest(
+            authority,
+            () => {
+              // respawn-pane retains the captured pane id but changes its
+              // process identity only after the non-atomic dead-pane probe.
+              fixture.run(['respawn-pane', '-k', '-t', authority.paneId, 'sleep 300']);
+            },
+            false,
+            () => {
+              assert.equal(lateReadyReport, undefined);
+              return false;
+            },
+            () => {
+              const respawnedPid = Number(fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_pid}']));
+              lateReadyReport = {
+                version: 1,
+                kind: 'ready',
+                nonce: expected.nonce,
+                sessionId: expected.sessionId,
+                sessionName: expected.sessionName,
+                paneId: authority.paneId,
+                leaderPid: respawnedPid,
+              };
+            },
+          ),
+          /topology changed before cleanup/,
+          'a respawned pane with a changed PID must fail closed',
+        );
+        assert.equal(isDetachedReadyReportAuthorized(lateReadyReport, expected), true, 'the respawned ready report must still be pane-authenticated');
+        const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
+        assert.equal(sessions.includes(sessionName), true, 'the respawned live session must survive');
+        assert.equal(sessions.includes(foreignSessionName), true, 'the unrelated session must survive');
+      });
+    });
+
     it('preserves a replacement session when the captured leader disappears and its name is reused after the probe', async (t) => {
       if (!skipUnlessTmux(t)) return;
       await withTempTmuxSession(async (fixture) => {
