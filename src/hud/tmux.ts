@@ -1676,6 +1676,21 @@ export function resizeTmuxPane(
   }
 }
 
+/** Clears scrollback for an OMX-owned HUD pane after a height reflow. */
+export function clearTmuxPaneHistory(
+  paneId: string,
+  execTmuxSync: TmuxExecSync = defaultExecTmuxSync,
+): boolean {
+  const canonicalPaneId = parseCanonicalTmuxPaneId(paneId);
+  if (!canonicalPaneId) return false;
+  try {
+    execTmuxSync(['clear-history', '-t', canonicalPaneId]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function registerHudResizeHook(
   hudPaneId: string,
   leaderPaneId: string | undefined,

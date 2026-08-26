@@ -26,6 +26,7 @@ import {
   OMX_TMUX_HUD_LEADER_PANE_ENV,
   readActiveTmuxPaneId,
   registerHudResizeHook,
+  clearTmuxPaneHistory,
   resizeTmuxPane,
 } from './tmux.js';
 import { OMX_TMUX_HUD_OWNER_ENV, reconcileHudForPromptSubmit } from './reconcile.js';
@@ -79,6 +80,7 @@ interface RunWatchModeDependencies {
   renderHudFn: (ctx: HudRenderContext, preset: HudPreset, options?: { maxWidth?: number; maxLines?: number }) => string;
   runAuthorityTickFn: (options: { cwd: string }) => Promise<void>;
   resizeTmuxPaneFn: (paneId: string, heightLines: number) => boolean;
+  clearTmuxPaneHistoryFn: (paneId: string) => boolean;
   registerHudResizeHookFn: (hudPaneId: string, leaderPaneId: string | undefined, heightLines: number) => boolean;
   writeStdout: (text: string) => void;
   writeStderr: (text: string) => void;
@@ -183,6 +185,7 @@ export async function runWatchMode(
       await runHudAuthorityTick({ cwd: authorityCwd });
     }),
     resizeTmuxPaneFn: deps.resizeTmuxPaneFn ?? resizeTmuxPane,
+    clearTmuxPaneHistoryFn: deps.clearTmuxPaneHistoryFn ?? clearTmuxPaneHistory,
     registerHudResizeHookFn: deps.registerHudResizeHookFn ?? registerHudResizeHook,
     writeStdout: deps.writeStdout ?? ((text: string) => process.stdout.write(text)),
     writeStderr: deps.writeStderr ?? ((text: string) => process.stderr.write(text)),
@@ -248,25 +251,36 @@ export async function runWatchMode(
       }
       const frameCwd = dependencies.resolveWatchCwdFn(cwd);
       if (firstRender || attached) {
-        if (firstRender) {
-          dependencies.writeStdout('\x1b[2J\x1b[H');
-          firstRender = false;
-        } else {
-          dependencies.writeStdout('\x1b[H');
-        }
         const config = await dependencies.readHudConfigFn(frameCwd);
         const ctx = await dependencies.readAllStateFn(frameCwd, config);
         const preset = flags.preset ?? config.preset;
         const maxLines = getHudRenderMaxLines(ctx);
-        if (maxLines !== lastDesiredHeight) {
-          reconcileRunningHudPaneHeight(maxLines, dependencies);
-          lastDesiredHeight = maxLines;
-        }
         const line = dependencies.renderHudFn(ctx, preset, {
           maxWidth: process.stdout.columns ?? undefined,
           maxLines,
         });
-        dependencies.writeStdout(line + '\x1b[K\x1b[J');
+        const hudPaneId = dependencies.env.TMUX_PANE?.trim();
+        const ownedHudPane = Boolean(
+          dependencies.env.TMUX
+          && dependencies.env[OMX_TMUX_HUD_OWNER_ENV] === '1'
+          && hudPaneId?.startsWith('%'),
+        );
+        const changingHeight = maxLines !== lastDesiredHeight;
+        const clearFrame = ownedHudPane && changingHeight
+          ? '\x1b[3J\x1b[2J\x1b[H'
+          : '\x1b[2J\x1b[H';
+        if (changingHeight) {
+          // Clear before a pane resize so tmux cannot reflow stale HUD rows
+          // into visible output or scrollback while changing the pane height.
+          dependencies.writeStdout(clearFrame);
+          reconcileRunningHudPaneHeight(maxLines, dependencies);
+          if (ownedHudPane && hudPaneId) dependencies.clearTmuxPaneHistoryFn(hudPaneId);
+          lastDesiredHeight = maxLines;
+          dependencies.writeStdout(`\x1b[H${line}\x1b[K\x1b[J`);
+        } else {
+          dependencies.writeStdout(`${clearFrame}${line}\x1b[K\x1b[J`);
+        }
+        firstRender = false;
         renderedThisTick = 'rendered';
       }
       try {
