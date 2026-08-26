@@ -192,7 +192,7 @@ export async function runWatchMode(
     }),
     setIntervalFn: deps.setIntervalFn ?? ((handler: () => void, intervalMs: number) => setInterval(handler, intervalMs)),
     clearIntervalFn: deps.clearIntervalFn ?? ((timer: ReturnType<typeof setInterval>) => clearInterval(timer)),
-    isSessionAttachedFn: deps.isSessionAttachedFn ?? isHudWatchSessionAttached,
+    isSessionAttachedFn: deps.isSessionAttachedFn ?? (() => isHudWatchSessionAttached({ env: dependencies.env })),
   };
 
   if (!dependencies.isTTY && !dependencies.env.CI) {
