@@ -222,6 +222,22 @@ describe('#3578 detached launch diagnostics', () => {
       });
     });
 
+    it('rechecks the tag-attempt marker inside the destructive predicate', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-owner-phase-interposition';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'owner-phase-interposition');
+        cleanupDetachedLeaderSessionAfterFailureForTest(authority, authority.ownerId, () => {
+          // Simulate tag-session completing after any earlier observation but
+          // before the single queued destructive predicate evaluates.
+          fixture.run(['set-option', '-t', sessionName, '@omx_detached_owner_tag_attempted', '1']);
+        });
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'same-command marker recheck must preserve');
+      });
+    });
+
     interface SessionAuthority {
       paneId: string;
       panePid: number;

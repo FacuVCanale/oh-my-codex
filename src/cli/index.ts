@@ -8588,14 +8588,13 @@ function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLea
   }
 }
 
-function cleanupDetachedLeaderSessionWithAuthority(authority: DetachedLeaderAuthority, ownerId: string): void {
+function cleanupDetachedLeaderSessionWithAuthority(
+  authority: DetachedLeaderAuthority,
+  ownerId: string,
+  beforeSink?: () => void,
+): void {
   try {
-    const tagAttempted = execTmuxFileSync(["show-options", "-qv", "-t", authority.sessionName, "@omx_detached_owner_tag_attempted"], {
-      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
-    }).trim() === "1";
-    const owner = tagAttempted
-      ? `#{==:#{@omx_instance_id},${ownerId}}`
-      : `#{||:#{==:#{@omx_instance_id},${ownerId}},#{==:#{@omx_instance_id},}}`;
+    const owner = `#{||:#{==:#{@omx_instance_id},${ownerId}},#{&&:#{==:#{@omx_instance_id},},#{!=:#{@omx_detached_owner_tag_attempted},1}}}`;
     const condition = [
       `#{==:#{session_name},${authority.sessionName}}`,
       `#{==:#{session_id},${authority.sessionId}}`,
@@ -8604,6 +8603,7 @@ function cleanupDetachedLeaderSessionWithAuthority(authority: DetachedLeaderAuth
     ].reduce((combined, item) => `#{&&:${combined},${item}}`);
     const receipt = detachedAuthorityReceipt();
     const success = `kill-session -t ${quoteShellArg(authority.sessionName)} ; display-message -p ${quoteShellArg(receipt)}`;
+    beforeSink?.();
     const result = execTmuxFileSync([
       "if-shell", "-F", "-t", authority.sessionName, condition, success, "display-message -p ''",
     ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -8628,8 +8628,9 @@ function cleanupDetachedLeaderSessionAfterFailure(paneId: string, payload: Detac
 export function cleanupDetachedLeaderSessionAfterFailureForTest(
   authority: DetachedLeaderAuthority,
   ownerId: string,
+  beforeSink?: () => void,
 ): void {
-  cleanupDetachedLeaderSessionWithAuthority(authority, ownerId);
+  cleanupDetachedLeaderSessionWithAuthority(authority, ownerId, beforeSink);
 }
 
 function traceDetachedLeaderPhase(phase: string): void {

@@ -84,6 +84,9 @@ describe('detached tmux authority contract', () => {
     assert.match(complete, /rollbackFromPreReportAuthority = detachedLeaderAuthority !== null/);
     assert.doesNotMatch(cliIndex, /scheduleDetachedPreReportCleanupRetry\(/);
     assert.match(cliIndex, /@omx_detached_owner_tag_attempted/);
+    const failureCleanup = cliIndex.slice(cliIndex.indexOf('function cleanupDetachedLeaderSessionWithAuthority'));
+    assert.doesNotMatch(failureCleanup, /show-options/);
+    assert.match(failureCleanup, /@omx_detached_owner_tag_attempted/);
     assert.match(cliIndex, /cleanupDetachedLeaderSessionAfterFailure\(pane, payload\)/);
   });
 
