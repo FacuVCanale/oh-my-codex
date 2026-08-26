@@ -963,10 +963,14 @@ async function copyFilePreservingTimestamps(
   options: {
     allowTopLevelSymlink?: boolean;
     afterStage?: (temporary: string, destination: string) => Promise<void>;
+    sourceRoot?: string;
+    destinationRoot?: string;
   } = {},
 ): Promise<void> {
   const sourcePath = options.allowTopLevelSymlink === true ? await realpath(source) : source;
-  const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  if (options.sourceRoot) await assertHistoryPathWithin(sourcePath, options.sourceRoot);
+  if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
+  const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | historyNoFollowFlag());
   let destinationHandle;
   const temporary = `${destination}.omx-history-${randomUUID()}`;
   try {
@@ -975,7 +979,7 @@ async function copyFilePreservingTimestamps(
     await mkdir(dirname(destination), { recursive: true });
     destinationHandle = await open(
       temporary,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | historyNoFollowFlag(),
       sourceStat.mode & 0o7777,
     );
     const buffer = Buffer.alloc(64 * 1024);
@@ -999,6 +1003,7 @@ async function copyFilePreservingTimestamps(
     if (!stagedStat.isFile() || stagedStat.isSymbolicLink()) {
       throw new Error(`history staging path is not a regular file: ${temporary}`);
     }
+    if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
     await rm(destination, { recursive: true, force: true });
     await rename(temporary, destination);
   } finally {
@@ -1008,9 +1013,14 @@ async function copyFilePreservingTimestamps(
   }
 }
 
-async function readHistoryFileWithoutSymlink(source: string, allowTopLevelSymlink = false): Promise<string> {
+async function readHistoryFileWithoutSymlink(
+  source: string,
+  allowTopLevelSymlink = false,
+  sourceRoot?: string,
+): Promise<string> {
   const sourcePath = allowTopLevelSymlink === true ? await realpath(source) : source;
-  const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  if (sourceRoot) await assertHistoryPathWithin(sourcePath, sourceRoot);
+  const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | historyNoFollowFlag());
   try {
     const sourceStat = await sourceHandle.stat();
     if (!sourceStat.isFile()) throw new Error(`history source is not a regular file: ${source}`);
@@ -1024,13 +1034,15 @@ async function writeHistoryFileAtomically(
   destination: string,
   contents: string,
   mode: number,
+  destinationRoot?: string,
 ): Promise<void> {
+  if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
   const temporary = `${destination}.omx-history-${randomUUID()}`;
   let destinationHandle;
   try {
     destinationHandle = await open(
       temporary,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | historyNoFollowFlag(),
       mode & 0o7777,
     );
     await destinationHandle.writeFile(contents, "utf-8");
@@ -1038,6 +1050,7 @@ async function writeHistoryFileAtomically(
     await destinationHandle.close();
     destinationHandle = undefined;
     await rm(destination, { recursive: true, force: true });
+    if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
     await rename(temporary, destination);
   } finally {
     await destinationHandle?.close().catch(() => undefined);
@@ -1080,6 +1093,32 @@ function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
 
 function isRegularHistoryTarget(sourceStat: { isDirectory(): boolean; isFile(): boolean }): boolean {
   return sourceStat.isDirectory() || sourceStat.isFile();
+}
+
+function historyNoFollowFlag(): number {
+  return process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW ?? 0);
+}
+
+function isHistoryPathWithin(candidate: string, root: string): boolean {
+  const path = relative(root, candidate);
+  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+}
+
+async function assertHistoryPathWithin(path: string, root: string, allowMissing = false): Promise<void> {
+  const [canonicalRoot, canonicalPath] = await Promise.all([
+    realpath(root),
+    realpath(path).catch((error) => {
+      if (allowMissing && isUnresolvableHistoryLinkError(error)) return undefined;
+      throw error;
+    }),
+  ]);
+  if (canonicalPath && !isHistoryPathWithin(canonicalPath, canonicalRoot)) {
+    throw new Error(`history path escapes its authorized root: ${path}`);
+  }
+}
+
+async function assertHistoryDestinationParentWithin(destination: string, root: string): Promise<void> {
+  await assertHistoryPathWithin(dirname(destination), root);
 }
 
 function isUnresolvableHistoryLinkError(error: unknown): boolean {
@@ -1238,6 +1277,7 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
         sourcePath,
         destination,
         false,
+        runtimeCodexHome,
         options.afterStage
           ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
           : undefined,
@@ -1247,6 +1287,8 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
     if (sourceStat.isFile()) {
       await copyFilePreservingTimestamps(sourcePath, destination, {
         allowTopLevelSymlink: false,
+        sourceRoot: sourcePath,
+        destinationRoot: runtimeCodexHome,
         afterStage: options.afterStage
           ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
           : undefined,
@@ -1260,9 +1302,12 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
   source: string,
   destination: string,
   allowTopLevelSymlink = false,
+  sourceRoot = source,
+  destinationRoot = destination,
 ): Promise<void> {
   const sourceStat = allowTopLevelSymlink ? await stat(source) : await lstat(source);
   if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) return;
+  await assertHistoryPathWithin(source, sourceRoot);
   const destinationStat = await lstat(destination).catch((error) => {
     if (isUnresolvableHistoryLinkError(error)) return undefined;
     throw error;
@@ -1270,7 +1315,11 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
   if (destinationStat && (!destinationStat.isDirectory() || destinationStat.isSymbolicLink())) {
     await rm(destination, { recursive: true, force: true });
   }
-  const destinationMode = destinationStat ? destinationStat.mode & 0o7777 : undefined;
+  await assertHistoryDestinationParentWithin(destination, destinationRoot);
+  const destinationMode =
+    destinationStat && destinationStat.isDirectory() && !destinationStat.isSymbolicLink()
+      ? destinationStat.mode & sourceStat.mode & 0o7777
+      : undefined;
   await mkdir(destination, { recursive: true, mode: destinationMode ?? 0o700 });
   await chmod(destination, (destinationMode ?? 0o700) | 0o700);
   for (const entry of await readdir(source, { withFileTypes: true })) {
@@ -1282,9 +1331,9 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
     });
     if (!entryStat || entryStat.isSymbolicLink()) continue;
     if (entryStat.isDirectory()) {
-      await copyProjectLaunchRuntimeHistoryDirectory(sourceEntry, destinationEntry);
+      await copyProjectLaunchRuntimeHistoryDirectory(sourceEntry, destinationEntry, false, sourceRoot, destinationRoot);
     } else if (entryStat.isFile()) {
-      await copyFilePreservingTimestamps(sourceEntry, destinationEntry);
+      await copyFilePreservingTimestamps(sourceEntry, destinationEntry, { sourceRoot, destinationRoot });
     }
   }
   await chmod(destination, destinationMode ?? (sourceStat.mode & 0o7777));
@@ -1295,6 +1344,7 @@ async function replaceProjectLaunchRuntimeHistoryDirectory(
   source: string,
   destination: string,
   allowTopLevelSymlink: boolean,
+  destinationRoot: string,
   afterStage?: (temporary: string, destination: string) => Promise<void>,
 ): Promise<void> {
   const temporary = `${destination}.omx-history-${randomUUID()}`;
@@ -1303,13 +1353,15 @@ async function replaceProjectLaunchRuntimeHistoryDirectory(
     if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) {
       throw new Error(`history source is not a directory: ${source}`);
     }
-    await copyProjectLaunchRuntimeHistoryDirectory(source, temporary, allowTopLevelSymlink);
+    await copyProjectLaunchRuntimeHistoryDirectory(source, temporary, allowTopLevelSymlink, source, dirname(destination));
     await afterStage?.(temporary, destination);
     const stagedStat = await lstat(temporary);
     if (!stagedStat.isDirectory() || stagedStat.isSymbolicLink()) {
       throw new Error(`history staging path is not a directory: ${temporary}`);
     }
+    await assertHistoryDestinationParentWithin(destination, destinationRoot);
     await rm(destination, { recursive: true, force: true });
+    await assertHistoryDestinationParentWithin(destination, destinationRoot);
     await rename(temporary, destination);
   } finally {
     await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
@@ -1344,6 +1396,8 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
         sourceInspection.targetRealpath ?? source,
         destination,
         false,
+        sourceInspection.targetRealpath ?? source,
+        runtimeCodexHome,
       );
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
@@ -1364,18 +1418,23 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
         await copyFilePreservingTimestamps(
           sourceInspection.targetRealpath ?? source,
           destination,
-          { allowTopLevelSymlink: false },
+          { allowTopLevelSymlink: false, sourceRoot: sourceInspection.targetRealpath ?? source, destinationRoot: runtimeCodexHome },
         );
         mergedHistorySourceRealpaths.add(sourceRealpath);
         continue;
       }
-      const existing = await readHistoryFileWithoutSymlink(destination);
-      const addition = await readHistoryFileWithoutSymlink(source, true);
+      const existing = await readHistoryFileWithoutSymlink(destination, false, runtimeCodexHome);
+      const addition = await readHistoryFileWithoutSymlink(
+        sourceInspection.targetRealpath ?? source,
+        false,
+        sourceInspection.targetRealpath ?? source,
+      );
       const separator = existing === "" || existing.endsWith("\n") || addition === "" ? "" : "\n";
       await writeHistoryFileAtomically(
         destination,
         `${existing}${separator}${addition}`,
         destinationStat.mode & 0o7777,
+        runtimeCodexHome,
       );
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
@@ -1383,7 +1442,11 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
     await copyFilePreservingTimestamps(
       sourceInspection.targetRealpath ?? source,
       destination,
-      { allowTopLevelSymlink: false },
+      {
+        allowTopLevelSymlink: false,
+        sourceRoot: sourceInspection.targetRealpath ?? source,
+        destinationRoot: runtimeCodexHome,
+      },
     );
     mergedHistorySourceRealpaths.add(sourceRealpath);
   }
@@ -1472,7 +1535,15 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     const mergedHistorySourceRealpaths = new Set<string>();
     for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
       const source = join(projectCodexHome, entryName);
-      if (existsSync(source)) mergedHistorySourceRealpaths.add(realpathSync(source));
+      const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
+      if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
+      const sourceRealpath =
+        sourceInspection.targetRealpath ??
+        await realpath(source).catch((error) => {
+          if (isUnresolvableHistoryLinkError(error)) return undefined;
+          throw error;
+        });
+      if (sourceRealpath) mergedHistorySourceRealpaths.add(sourceRealpath);
     }
     skippedHistoryEntryNames = await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome, {
       onlySymlinks: !mergingHistory,

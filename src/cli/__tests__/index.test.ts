@@ -3148,6 +3148,8 @@ describe("project launch scope helpers", () => {
       await mkdir(join(extraCodexHome, "sessions"), { recursive: true });
       await writeFile(join(primarySessions, "rollout-primary.jsonl"), "primary-session\n");
       await writeFile(join(extraCodexHome, "sessions", "rollout-extra.jsonl"), "extra-session\n");
+      chmodSync(primarySessions, 0o700);
+      chmodSync(join(extraCodexHome, "sessions"), 0o755);
       await symlink(primarySessions, join(sourceCodexHome, "sessions"), "dir");
 
       const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
@@ -3158,6 +3160,9 @@ describe("project launch scope helpers", () => {
       );
 
       assert.equal((await lstat(join(runtimeCodexHome, "sessions"))).isSymbolicLink(), false);
+      if (process.platform !== "win32") {
+        assert.equal((await stat(join(runtimeCodexHome, "sessions"))).mode & 0o777, 0o700);
+      }
       assert.equal(
         await readFile(join(runtimeCodexHome, "sessions", "rollout-primary.jsonl"), "utf-8"),
         "primary-session\n",
