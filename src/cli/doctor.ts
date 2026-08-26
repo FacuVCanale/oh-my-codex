@@ -3472,7 +3472,7 @@ async function checkPluginMarketplaceRegistration(
 			return {
 				name: "Skills",
 				status: "warn",
-				message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} is registered, but ${detail}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+				message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} is registered, but ${detail}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" so /skills can discover OMX plugin skills`,
 			};
 		}
 

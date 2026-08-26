@@ -1,5 +1,6 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
-import { cp, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
+import { randomUUID } from "crypto";
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
@@ -204,6 +205,64 @@ async function mkdirDirectoryChildExclusive(parent: DirectoryRef, name: string):
 	await assertDirectoryRef(parent, "exclusive mkdir");
 	await mkdir(operationPath);
 	await assertDirectoryRef(parent, "exclusive mkdir");
+}
+
+async function copyPackagedTree(sourcePath: string, destination: DirectoryRef): Promise<void> {
+	const sourceStats = await lstat(sourcePath);
+	if (!sourceStats.isDirectory() || sourceStats.isSymbolicLink()) {
+		throw new Error(`refusing to copy a non-directory packaged plugin root: ${sourcePath}`);
+	}
+	const entries = await readdir(sourcePath, { withFileTypes: true });
+	for (const entry of entries) {
+		const sourceChildPath = join(sourcePath, entry.name);
+		if (entry.isSymbolicLink()) {
+			throw new Error(`refusing to copy a symlinked packaged plugin entry: ${sourceChildPath}`);
+		}
+		if (entry.isDirectory()) {
+			await mkdirDirectoryChildExclusive(destination, entry.name);
+			const child = await openDirectoryChild(destination, entry.name);
+			try {
+				await copyPackagedTree(sourceChildPath, child);
+			} finally {
+				await child.handle.close();
+			}
+			continue;
+		}
+		if (!entry.isFile()) {
+			throw new Error(`refusing to copy a non-regular packaged plugin entry: ${sourceChildPath}`);
+		}
+		const sourceHandle = await open(sourceChildPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		try {
+			const before = await sourceHandle.stat();
+			if (!before.isFile() || before.isSymbolicLink()) {
+				throw new Error(`packaged plugin entry changed while copying: ${sourceChildPath}`);
+			}
+			const content = await sourceHandle.readFile();
+			const after = await sourceHandle.stat();
+			if (
+				after.dev !== before.dev ||
+				after.ino !== before.ino ||
+				after.size !== before.size
+			) {
+				throw new Error(`packaged plugin entry changed while copying: ${sourceChildPath}`);
+			}
+			const destinationHandle = await openRegularFileChild(
+				destination,
+				entry.name,
+				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+				before.mode & 0o7777,
+			);
+			try {
+				await destinationHandle.writeFile(content);
+				await destinationHandle.chmod(before.mode & 0o7777);
+				await destinationHandle.sync();
+			} finally {
+				await destinationHandle.close();
+			}
+		} finally {
+			await sourceHandle.close();
+		}
+	}
 }
 
 async function openRegularFileChild(parent: DirectoryRef, name: string, flags: number, mode?: number): Promise<FileHandle> {
@@ -462,6 +521,31 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
+async function reclaimStalePublicationLock(
+	cacheBaseRef: DirectoryRef,
+	lockName: string,
+	lockStats: Stats,
+): Promise<void> {
+	const quarantineName = `${lockName}.reclaim-${process.pid}-${randomUUID()}`;
+	await renameChild(cacheBaseRef, lockName, cacheBaseRef, quarantineName);
+	const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
+	let quarantineStats: Stats;
+	try {
+		quarantineStats = await lstat(quarantinePath);
+	} catch (error) {
+		throw new Error(`stale publication lock disappeared during reclamation: ${(error as Error).message}`);
+	}
+	if (quarantineStats.dev !== lockStats.dev || quarantineStats.ino !== lockStats.ino) {
+		try {
+			await renameChild(cacheBaseRef, quarantineName, cacheBaseRef, lockName);
+		} catch {
+			// Preserve a replacement lock if another publisher claimed the name.
+		}
+		throw new Error("publication lock changed during stale-lock reclamation");
+	}
+	await removeChild(cacheBaseRef, quarantineName, { force: true });
+}
+
 async function claimPublicationLock(
 	cacheBaseRef: DirectoryRef,
 	cacheBase: string,
@@ -508,9 +592,15 @@ async function claimPublicationLock(
 			if (!stale) {
 				throw new Error(`another OMX plugin cache publication is active at ${cacheBase}; refusing concurrent publication`);
 			}
-			const unlinkBefore = await lstat(lockPath);
-			if (unlinkBefore.dev !== lockBefore.dev || unlinkBefore.ino !== lockBefore.ino) continue;
-			await removeChild(cacheBaseRef, ".omx-publish.lock", { force: true });
+			const reclaimBefore = await lstat(lockPath);
+			if (reclaimBefore.dev !== lockBefore.dev || reclaimBefore.ino !== lockBefore.ino) continue;
+			try {
+				await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", reclaimBefore);
+			} catch (reclaimError) {
+				if ((reclaimError as NodeJS.ErrnoException).code === "ENOENT") continue;
+				if ((reclaimError as Error).message === "publication lock changed during stale-lock reclamation") continue;
+				throw reclaimError;
+			}
 		}
 	}
 	throw new Error(`cannot recover stale OMX plugin cache publication lock at ${cacheBase}`);
@@ -813,7 +903,8 @@ async function stageCompletePluginSnapshot(
 	await mkdirDirectoryChildExclusive(stagingParent, "snapshot");
 	const snapshot = await openDirectoryChild(stagingParent, "snapshot");
 	try {
-		await cp(packagedMarketplace.pluginRoot, snapshot.path, { recursive: true });
+		await createExclusiveFileChild(snapshot, ".omx-incomplete", `${process.pid}\n`);
+		await copyPackagedTree(packagedMarketplace.pluginRoot, snapshot);
 		await assertDirectoryRef(snapshot, "snapshot staging");
 		await applyTeamModeToPluginCache(snapshot, teamMode);
 		const hooksDir = await openDirectoryChild(snapshot, "hooks");
@@ -822,7 +913,7 @@ async function stageCompletePluginSnapshot(
 		} finally {
 			await hooksDir.handle.close();
 		}
-		const manifest = await readRegularOmxPluginCacheManifest(snapshot.path, snapshot.path);
+		const manifest = await readRegularOmxPluginCacheManifest(snapshot.operationPath, snapshot.operationPath);
 		const skillsDir = await openDirectoryChild(snapshot, "skills");
 		await skillsDir.handle.close();
 		if (
@@ -1416,7 +1507,6 @@ async function materializePackagedOmxPluginCacheImpl(
 			cacheBaseRef = await openDirectoryRef(cacheBase);
 			ownsCacheBaseRef = true;
 		}
-		const lockPath = childOperationPath(cacheBaseRef, ".omx-publish.lock");
 		let lockHandle: FileHandle;
 		try {
 			lockHandle = await claimPublicationLock(cacheBaseRef, cacheBase, noFollowFlags);
@@ -1455,18 +1545,13 @@ async function materializePackagedOmxPluginCacheImpl(
 			await syncDirectoryTree(snapshotRef);
 			await options.onCacheDirPrepared?.(cacheDir);
 			try {
-				await mkdirDirectoryChildExclusive(cacheBaseRef, version);
+				await createExclusiveFileChild(snapshotRef, ".omx-complete", `${process.pid}\n`);
+				await removeChild(snapshotRef, ".omx-incomplete", { force: true });
+				await syncDirectoryTree(snapshotRef);
+				await renameChild(tempRef, "snapshot", cacheBaseRef, version);
+				await snapshotRef.handle.close();
+				snapshotRef = undefined;
 				finalRef = await openDirectoryChild(cacheBaseRef, version);
-				await createExclusiveFileChild(finalRef, ".omx-incomplete", `${process.pid}\n`);
-				const stagedEntries = await readdir(snapshotRef.operationPath, { withFileTypes: true });
-				for (const entry of stagedEntries) {
-					if (entry.isSymbolicLink()) throw new Error(`refusing to publish symlinked cache entry: ${entry.name}`);
-					await renameChild(snapshotRef, entry.name, finalRef, entry.name);
-				}
-				await syncDirectoryTree(finalRef);
-				await createExclusiveFileChild(finalRef, ".omx-complete", `${process.pid}\n`);
-				await removeChild(finalRef, ".omx-incomplete", { force: true });
-				await finalRef.handle.sync();
 				await assertDirectoryRef(finalRef, "publication validation");
 				const finalPathStats = await lstat(finalRef.path);
 				const finalDescriptorStats = await finalRef.handle.stat();
@@ -1505,9 +1590,7 @@ async function materializePackagedOmxPluginCacheImpl(
 			try { await lockHandle.close(); } catch (error) { cleanupError ??= error; }
 			try {
 				if (!lockIdentity) throw new Error(`publication lock identity unavailable at ${cacheBase}`);
-				const currentLockStats = await lstat(lockPath);
-				if (currentLockStats.dev !== lockIdentity.dev || currentLockStats.ino !== lockIdentity.ino) throw new Error(`publication lock changed before cleanup at ${cacheBase}`);
-				await removeChild(cacheBaseRef, ".omx-publish.lock", { force: true });
+				await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity);
 				await cacheBaseRef.handle.sync();
 			} catch (error) { cleanupError ??= error; }
 			if (ownsCacheBaseRef) {
@@ -1610,7 +1693,7 @@ export async function materializePackagedOmxPluginCache(
 					path: namespace.path,
 					operationPath: cacheBaseFdPath,
 				},
-				anchoredCacheDir: join(namespace.path, version),
+				anchoredCacheDir: join(namespace.fdPath, version),
 			},
 		);
 	} catch (error) {

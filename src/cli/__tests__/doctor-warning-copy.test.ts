@@ -680,16 +680,17 @@ command = "node"
 			});
 			if (shouldSkipForSpawnPermissions(res.error)) return;
 			assert.equal(res.status, 0, res.stderr || res.stdout);
+			const escapedVersion = version.replaceAll(".", String.fromCharCode(92) + ".");
 			assert.match(
 				res.stdout,
 				new RegExp(
-					`Skills: plugin marketplace oh-my-codex-local is registered, but installed Codex plugin cache manifest version 0\\.0\\.0-stale does not match packaged version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+					`Skills: plugin marketplace oh-my-codex-local is registered, but installed Codex plugin cache manifest version 0\\.0\\.0-stale does not match packaged version ${escapedVersion}; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin.*so /skills can discover OMX plugin skills`,
 				),
 			);
 			assert.match(
 				res.stdout,
 				new RegExp(
-					`Plugin versions: expected cache directory .*${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not materialized with packaged plugin manifest version ${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin`,
+					`Plugin versions: expected cache directory .*${escapedVersion} is not materialized with packaged plugin manifest version ${escapedVersion}; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin`,
 				),
 			);
 		} finally {
@@ -873,6 +874,11 @@ command = "node"
 			);
 			if (shouldSkipForSpawnPermissions(setupRes.error)) return;
 			assert.equal(setupRes.status, 0, setupRes.stderr || setupRes.stdout);
+			const configPath = join(codexDir, "config.toml");
+			const configContent = await readFile(configPath, "utf-8");
+			if (!/^\s*plugin_hooks\s*=/m.test(configContent)) {
+				await writeFile(configPath, `plugin_hooks = true\n${configContent}`);
+			}
 			await rm(join(codexDir, "plugins", "cache"), {
 				recursive: true,
 				force: true,
@@ -886,7 +892,7 @@ command = "node"
 			assert.equal(res.status, 0, res.stderr || res.stdout);
 			assert.match(
 				res.stdout,
-				/Skills: plugin marketplace oh-my-codex-local is registered, but no installed Codex plugin cache was found; run "omx setup --plugin --force" so \/skills can discover OMX plugin skills/,
+				/Skills: plugin marketplace oh-my-codex-local is registered, but no installed Codex plugin cache was found; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin.*so \/skills can discover OMX plugin skills/,
 			);
 			assert.match(
 				res.stdout,
