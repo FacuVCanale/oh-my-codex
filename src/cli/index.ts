@@ -1124,6 +1124,8 @@ async function copyProjectLaunchRuntimeHistoryDirectory(source: string, destinat
       await copyFilePreservingTimestamps(sourceEntry, destinationEntry);
     }
   }
+  const sourceStat = await stat(source);
+  await utimes(destination, sourceStat.atime, sourceStat.mtime);
 }
 
 async function mergeProjectLaunchRuntimeHistoryEntries(
@@ -1214,6 +1216,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     if (PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entry.name)) {
       const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
       if (!sourceInspection?.targetStat) continue;
+      if (options.includeHistoryArtifacts === true && sourceInspection.linkStat.isSymbolicLink()) continue;
     }
     if (entry.name === "config.toml") {
       const projectHooksPath = join(projectCodexHome, "hooks.json");
@@ -1234,7 +1237,6 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
 	}
     await linkOrCopyCodexHomeEntry(source, destination);
   }
-  await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
   if (options.includeHistoryArtifacts === true) {
     const extraHistoryCodexHomes = options.extraHistoryCodexHomes ?? [];
     const mergingHistory = extraHistoryCodexHomes.length > 0;
@@ -1250,6 +1252,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
       await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome, mergedHistorySourceRealpaths);
     }
   }
+  await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
 
 
   return runtimeCodexHome;

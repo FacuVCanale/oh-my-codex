@@ -3098,6 +3098,8 @@ describe("project launch scope helpers", () => {
       await writeFile(outsideHistory, "must-not-follow\n");
       await symlink(outsideHistory, join(targetSessions, "nested-escape.jsonl"));
       await writeFile(targetHistory, '{"session_id":"linked-session"}\n');
+      const sessionsMtime = new Date("2024-06-07T08:09:10Z");
+      utimesSync(targetSessions, sessionsMtime, sessionsMtime);
       await symlink(targetSessions, join(sourceCodexHome, "sessions"), "dir");
       await symlink(targetHistory, join(sourceCodexHome, "history.jsonl"));
       await symlink(join(wd, "missing-session-index.jsonl"), join(sourceCodexHome, "session_index.jsonl"));
@@ -3111,6 +3113,7 @@ describe("project launch scope helpers", () => {
 
       assert.equal((await stat(join(runtimeCodexHome, "sessions"))).isDirectory(), true);
       assert.equal((await lstat(join(runtimeCodexHome, "sessions"))).isSymbolicLink(), false);
+      assert.equal((await stat(join(runtimeCodexHome, "sessions"))).mtime.toISOString(), sessionsMtime.toISOString());
       assert.equal(
         await readFile(join(runtimeCodexHome, "sessions", "rollout-linked.jsonl"), "utf-8"),
         "linked-session\n",
@@ -3119,6 +3122,60 @@ describe("project launch scope helpers", () => {
       assert.equal((await lstat(join(runtimeCodexHome, "history.jsonl"))).isSymbolicLink(), false);
       assert.equal(await readFile(join(runtimeCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked-session"}\n');
       assert.equal(existsSync(join(runtimeCodexHome, "session_index.jsonl")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("merges a symlinked primary history tree with an independent source", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-symlink-merge-"));
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      const primarySessions = join(wd, "primary-sessions");
+      const extraCodexHome = join(wd, "extra-codex-home");
+      await mkdir(sourceCodexHome, { recursive: true });
+      await mkdir(primarySessions, { recursive: true });
+      await mkdir(join(extraCodexHome, "sessions"), { recursive: true });
+      await writeFile(join(primarySessions, "rollout-primary.jsonl"), "primary-session\n");
+      await writeFile(join(extraCodexHome, "sessions", "rollout-extra.jsonl"), "extra-session\n");
+      await symlink(primarySessions, join(sourceCodexHome, "sessions"), "dir");
+
+      const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-symlink-merge",
+        sourceCodexHome,
+        { includeHistoryArtifacts: true, extraHistoryCodexHomes: [extraCodexHome] },
+      );
+
+      assert.equal((await lstat(join(runtimeCodexHome, "sessions"))).isSymbolicLink(), false);
+      assert.equal(
+        await readFile(join(runtimeCodexHome, "sessions", "rollout-primary.jsonl"), "utf-8"),
+        "primary-session\n",
+      );
+      assert.equal(
+        await readFile(join(runtimeCodexHome, "sessions", "rollout-extra.jsonl"), "utf-8"),
+        "extra-session\n",
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("skips cyclic durable history links without aborting preparation", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-cyclic-link-"));
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      await mkdir(join(sourceCodexHome, "sessions"), { recursive: true });
+      await symlink("history.jsonl", join(sourceCodexHome, "history.jsonl"));
+
+      const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-cyclic-link",
+        sourceCodexHome,
+        { includeHistoryArtifacts: true },
+      );
+
+      assert.equal(existsSync(join(runtimeCodexHome, "history.jsonl")), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
