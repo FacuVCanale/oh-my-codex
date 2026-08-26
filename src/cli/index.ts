@@ -2644,7 +2644,7 @@ function cleanupDetachedPreReportSessionInternal(
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
   afterAuthenticatedReadyOrTerminalProbe?: () => void,
-): void {
+): DetachedPreReportCleanupResult {
   const receipt = detachedAuthorityReceipt();
   const sessionTarget = authority.sessionName;
   const success = `kill-session -t ${quoteShellArg(sessionTarget)} ; display-message -p ${quoteShellArg(receipt)}`;
@@ -2662,21 +2662,43 @@ function cleanupDetachedPreReportSessionInternal(
   if (authenticatedReady) {
     throw new Error("detached leader became ready or terminal before pre-report cleanup");
   }
-  if (paneState === "live") return;
+  if (paneState === "live") return "preserved-live";
   const sessionScoped = execTmuxFileSync([
     "if-shell", "-F", "-t", sessionTarget, detachedPreReportSessionCleanupCondition(authority, allowUnownedPreTag, paneState === "dead"),
     success, "display-message -p ''",
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");
+  return "cleaned";
+}
+
+type DetachedPreReportCleanupResult = "cleaned" | "preserved-live";
+
+function cleanupDetachedPreReportSessionWithRetry(
+  authority: DetachedLeaderAuthority,
+  allowUnownedPreTag: boolean,
+  authenticatedReadyOrTerminalProbe?: () => boolean,
+): void {
+  let result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  if (result === "cleaned") return;
+  // A failed report may be published while the leader pane is still live. Do
+  // not treat that observation as successful cleanup: retain the marker and
+  // retry the identity-fenced decision after the leader exits. A later ready,
+  // terminal, respawn, or ownership change fails closed inside the retry.
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    blockMs(20);
+    result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+    if (result === "cleaned") return;
+  }
+  throw new Error("detached leader remained live before pre-report cleanup retry");
 }
 
 export function cleanupDetachedPreReportSession(
   authority: DetachedLeaderAuthority,
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
-  afterAuthenticatedReadyOrTerminalProbe?: () => void,
 ): void {
-  cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, afterAuthenticatedReadyOrTerminalProbe);
+  cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
 }
 
 /** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
@@ -2686,8 +2708,12 @@ export function cleanupDetachedPreReportSessionForTest(
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
   afterAuthenticatedReadyOrTerminalProbe?: () => void,
+  retryAfterLive = false,
 ): void {
-  cleanupDetachedPreReportSessionInternal(authority, afterTopologyProbe, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, afterAuthenticatedReadyOrTerminalProbe);
+  const result = cleanupDetachedPreReportSessionInternal(authority, afterTopologyProbe, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, afterAuthenticatedReadyOrTerminalProbe);
+  if (retryAfterLive && result === "preserved-live") {
+    cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  }
 }
 
 function runDetachedHudMutation(
@@ -8107,6 +8133,7 @@ async function runCodex(
               rmSync(`${releaseMarkerPath}.release`, { force: true });
               rmSync(`${releaseMarkerPath}.abort`, { force: true });
             };
+            let sessionCleanupCompleted = !rollbackFromPreReportAuthority;
             if (createdSession) {
               if (isExactDetachedFinalization(finalization, {
                 nonce: detachedLaunchNonce,
@@ -8146,13 +8173,14 @@ async function runCodex(
                           isDetachedTerminalReportAuthorized(report, expected);
                       },
                     );
+                    sessionCleanupCompleted = true;
                     return;
                   }
                   runDetachedLeaderMutation(leaderAuthority, step.args);
                 });
               }
             }
-            await attempt("rollback", removeReleaseMarkers);
+            if (sessionCleanupCompleted) await attempt("rollback", removeReleaseMarkers);
           },
         },
       );
