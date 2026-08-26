@@ -62,6 +62,7 @@ import {
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
   prepareRuntimeCodexHomeForProjectLaunch,
+  historyDestinationMode,
   captureMadmaxWorktreeRuntimeContext,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
@@ -3305,6 +3306,30 @@ describe("project launch scope helpers", () => {
           chmodSync(join(runtimeCodexHome, "sessions", "rollout.jsonl"), 0o600);
         }
       }
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes group-owned replacement modes for the new owner", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-owner-mode-"));
+    try {
+      const groupWritable = join(wd, "group-writable.jsonl");
+      const groupReadable = join(wd, "group-readable.jsonl");
+      await writeFile(groupWritable, "group-writable\n");
+      await writeFile(groupReadable, "group-readable\n");
+      chmodSync(groupWritable, 0o660);
+      chmodSync(groupReadable, 0o440);
+
+      const writableMode = historyDestinationMode(0o060);
+      const readableMode = historyDestinationMode(0o040);
+      assert.equal(writableMode & 0o700, 0o600);
+      assert.equal(readableMode & 0o700, 0o400);
+      chmodSync(groupWritable, writableMode);
+      chmodSync(groupReadable, readableMode);
+      await writeFile(groupWritable, "owner-can-append\n", { flag: "a" });
+      assert.match(await readFile(groupWritable, "utf-8"), /owner-can-append/);
+      assert.equal(await readFile(groupReadable, "utf-8"), "group-readable\n");
+    } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });

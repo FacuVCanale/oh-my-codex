@@ -1046,16 +1046,17 @@ async function writeHistoryFileAtomically(
 ): Promise<void> {
   const canonicalDestinationRoot = destinationRoot ? await realpath(destinationRoot) : undefined;
   if (canonicalDestinationRoot) await assertHistoryDestinationParentWithin(destination, canonicalDestinationRoot);
+  const destinationMode = historyDestinationMode(mode);
   const temporary = `${destination}.omx-history-${randomUUID()}`;
   let destinationHandle;
   try {
     destinationHandle = await open(
       temporary,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | historyNoFollowFlag(),
-      mode & 0o7777,
+      destinationMode,
     );
     await destinationHandle.writeFile(contents, "utf-8");
-    await destinationHandle.chmod(mode & 0o7777);
+    await destinationHandle.chmod(destinationMode);
     await destinationHandle.close();
     destinationHandle = undefined;
     await rm(destination, { recursive: true, force: true });
@@ -1104,7 +1105,7 @@ function isRegularHistoryTarget(sourceStat: { isDirectory(): boolean; isFile(): 
   return sourceStat.isDirectory() || sourceStat.isFile();
 }
 
-function historyDestinationMode(sourceMode: number): number {
+export function historyDestinationMode(sourceMode: number): number {
   const permissions = sourceMode & 0o777;
   return (sourceMode & 0o7000) | permissions | ((permissions & 0o070) << 3) | ((permissions & 0o007) << 6);
 }
