@@ -1388,6 +1388,7 @@ export async function acquireHistoryPersistenceLock(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const lockStat = await lstat(lockPath).catch(() => undefined);
+      if (!lockStat) continue;
       if (lockStat?.isSymbolicLink()) throw new Error(`history persistence lock is a symlink: ${lockPath}`);
       const owner = await readHistoryPersistenceLockOwner(lockPath);
       const lockAge = lockStat ? Date.now() - lockStat.mtimeMs : 0;
