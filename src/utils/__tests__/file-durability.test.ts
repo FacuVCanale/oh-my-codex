@@ -126,6 +126,26 @@ test("durability warning names combined regular-file and directory degradation",
 	]);
 });
 
+test("plugin cache publication treats Windows EPERM fsync as degraded success", () => {
+	const tracker: RegularFileDurabilityTracker = { degraded: false };
+	recordRegularFileSyncOutcome(tracker, "unsupported-windows-eperm");
+	recordDirectorySyncOutcome(tracker, "unsupported-windows-eperm");
+	const originalWrite = process.stderr.write;
+	const warnings: string[] = [];
+	process.stderr.write = ((value: string) => {
+		warnings.push(value);
+		return true;
+	}) as typeof process.stderr.write;
+	try {
+		emitDegradedDurabilityWarning("plugin cache publication", tracker);
+	} finally {
+		process.stderr.write = originalWrite;
+	}
+	assert.deepEqual(warnings, [
+		"[omx] warning: Windows EPERM regular-file and directory fsync unsupported in plugin cache publication; operation succeeded with degraded durability.\n",
+	]);
+});
+
 test("a throwing stderr sink cannot fail an already successful transaction", () => {
 	const originalWrite = process.stderr.write;
 	const tracker: RegularFileDurabilityTracker = { degraded: false };

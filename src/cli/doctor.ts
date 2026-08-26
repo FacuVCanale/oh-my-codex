@@ -86,6 +86,7 @@ import {
 import {
 	OMX_LOCAL_MARKETPLACE_NAME,
 	OMX_LOCAL_PLUGIN_CONFIG_KEY,
+	PLUGIN_LAUNCHER_RECOVERY_HINT,
 	discoverOmxPluginCacheDirs,
 	expectedPackagedOmxSkillNames,
 	getPinnedLauncherIncompatibilityReason,
@@ -2408,11 +2409,22 @@ async function checkPluginScopedNativeHooks(
 	const state = await readOmxPluginCacheState(expectedCacheDir);
 
 	if (!state) {
+		if (existsSync(join(expectedCacheDir, ".codex-plugin", "plugin.json"))) {
+			const launcherIncompat = await getPinnedLauncherIncompatibilityReason(expectedCacheDir, packagedMarketplace);
+			if (launcherIncompat) {
+				return {
+					name: "Native hooks",
+					status: "warn",
+					message:
+						`plugin-scoped hooks are enabled, but cached launcher in ${expectedCacheDir} is incompatible (${launcherIncompat.reason}); ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\``,
+				};
+			}
+		}
 		return {
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks are enabled, but the expected Codex plugin cache manifest is missing at ${join(expectedCacheDir, ".codex-plugin", "plugin.json")}; ${setupHooksPathDescription}; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks are enabled, but the expected Codex plugin cache manifest is missing at ${join(expectedCacheDir, ".codex-plugin", "plugin.json")}; ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -2421,7 +2433,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks are enabled, but the Codex plugin cache manifest points hooks to ${String(state.hooksPointer)} instead of ./hooks/hooks.json at ${expectedHooksPath}; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks are enabled, but the Codex plugin cache manifest points hooks to ${String(state.hooksPointer)} instead of ./hooks/hooks.json at ${expectedHooksPath}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -2442,7 +2454,7 @@ async function checkPluginScopedNativeHooks(
 				name: "Native hooks",
 				status: "warn",
 				message:
-					`plugin-scoped hooks are enabled, but expected plugin hook file is missing at ${expectedPath}; ${setupHooksPathDescription}; run "omx setup --plugin" to refresh the plugin cache`,
+					`plugin-scoped hooks are enabled, but expected plugin hook file is missing at ${expectedPath}; ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 			};
 		}
 	}
@@ -2461,7 +2473,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher in ${expectedCacheDir} do not match the packaged plugin; ${setupHooksPathDescription}; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks are enabled, but cached plugin hook files or pinned hook launcher in ${expectedCacheDir} do not match the packaged plugin; ${setupHooksPathDescription}; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -2489,7 +2501,7 @@ async function checkPluginScopedNativeHooks(
 			name: "Native hooks",
 			status: "warn",
 			message:
-				`plugin-scoped hooks.json at ${expectedHooksPath} is missing OMX native coverage for one or more events; run "omx setup --plugin" to refresh the plugin cache`,
+				`plugin-scoped hooks.json at ${expectedHooksPath} is missing OMX native coverage for one or more events; run \`codex plugin remove ${OMX_LOCAL_PLUGIN_CONFIG_KEY} --json\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
 
@@ -3408,9 +3420,6 @@ async function checkPluginMarketplaceRegistration(
 				message: `packaged ${OMX_LOCAL_MARKETPLACE_NAME} plugin has no skills mirror; reinstall oh-my-codex`,
 			};
 		}
-		const cacheStates = (
-			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
-		).filter((state) => state !== null);
 		const expectedCacheDir = join(
 			codexHomeDir,
 			"plugins",
@@ -3419,21 +3428,23 @@ async function checkPluginMarketplaceRegistration(
 			"oh-my-codex",
 			packagedManifestVersion,
 		);
-		const currentCacheState = cacheStates.find((state) => state.cacheDir === expectedCacheDir);
-		if (currentCacheState?.manifestVersion === packagedManifestVersion) {
+		if (existsSync(expectedCacheDir)) {
 			const provenanceReason = await omxPluginCacheProvenanceReason(
 				expectedCacheDir,
 				packagedMarketplace,
 				packagedManifestVersion,
 			);
-			if (provenanceReason) {
+			if (provenanceReason && !provenanceReason.startsWith("plugin manifest version is not ")) {
 				return {
 					name: "Skills",
 					status: "warn",
-					message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} cache provenance is invalid: ${provenanceReason}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+					message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} cache provenance is invalid: ${provenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" so /skills can discover OMX plugin skills`,
 				};
 			}
 		}
+		const cacheStates = (
+			await Promise.all(cacheDirs.map((dir) => readOmxPluginCacheState(dir)))
+		).filter((state) => state !== null);
 		const packagedManifestSummary = {
 			manifestVersion: packagedManifestVersion,
 			skillNames: expectedSkillNames,
@@ -3461,7 +3472,7 @@ async function checkPluginMarketplaceRegistration(
 			return {
 				name: "Skills",
 				status: "warn",
-				message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} is registered, but ${detail}; run "omx setup --plugin --force" so /skills can discover OMX plugin skills`,
+				message: `plugin marketplace ${OMX_LOCAL_MARKETPLACE_NAME} is registered, but ${detail}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" so /skills can discover OMX plugin skills`,
 			};
 		}
 
@@ -3535,27 +3546,28 @@ async function checkPluginVersionDiagnostics(
 		"oh-my-codex",
 		manifestVersion,
 	);
+	if (existsSync(cacheDir)) {
+		const provenanceReason = await omxPluginCacheProvenanceReason(
+			cacheDir,
+			packagedMarketplace,
+			manifestVersion,
+		);
+		if (provenanceReason && !provenanceReason.startsWith("plugin manifest version is not ")) {
+			return {
+				name: "Plugin versions",
+				status: "warn",
+				message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun "omx setup --plugin" to refresh the plugin cache`,
+			};
+		}
+	}
 	const cacheState = await readOmxPluginCacheState(cacheDir);
 	if (cacheState?.manifestVersion !== manifestVersion) {
 		return {
 			name: "Plugin versions",
 			status: "warn",
-			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run "omx setup --plugin --force" to refresh the plugin cache`,
+			message: `expected cache directory ${cacheDir} is not materialized with packaged plugin manifest version ${manifestVersion}; run \`${PLUGIN_LAUNCHER_RECOVERY_HINT}\` then rerun \`omx setup --plugin\` to refresh the plugin cache`,
 		};
 	}
-	const provenanceReason = await omxPluginCacheProvenanceReason(
-		cacheDir,
-		packagedMarketplace,
-		manifestVersion,
-	);
-	if (provenanceReason) {
-		return {
-			name: "Plugin versions",
-			status: "warn",
-			message: `expected cache directory ${cacheDir} has invalid plugin cache provenance: ${provenanceReason}; run "omx setup --plugin --force" to refresh the plugin cache`,
-		};
-	}
-
 	if (stamp?.install_channel === "dev") {
 		const devDisplay = stamp.dev_base_version && stamp.install_revision
 			? `v${stamp.dev_base_version}-dev-${stamp.install_revision}`

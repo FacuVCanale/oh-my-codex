@@ -1244,6 +1244,7 @@ interface HistoryPersistenceLockLease {
   token: string;
   lockIdentity: { dev: number; ino: number };
   heartbeat: ReturnType<typeof setInterval>;
+  waitForHeartbeat: () => Promise<void>;
 }
 
 interface HistoryPersistenceLockOwner {
@@ -1256,7 +1257,10 @@ async function readHistoryPersistenceLockOwner(
   lockPath: string,
 ): Promise<HistoryPersistenceLockOwner | null | undefined> {
   try {
-    const owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf-8")) as {
+    const raw = await readFile(join(lockPath, "owner.json"), "utf-8");
+    const parts = raw.split("\n");
+    const completeLines = raw.endsWith("\n") || parts.length === 1 ? parts.filter(Boolean) : parts.slice(0, -1).filter(Boolean);
+    const owner = JSON.parse(completeLines.at(-1) ?? "") as {
       token?: unknown;
       pid?: unknown;
       startIdentity?: unknown;
@@ -1327,6 +1331,7 @@ async function retireHistoryLock(
 
 export async function releaseHistoryPersistenceLock(lease: HistoryPersistenceLockLease): Promise<void> {
   clearInterval(lease.heartbeat);
+  await lease.waitForHeartbeat();
   if (!(await historyLockIsCurrent(lease))) return;
   await retireHistoryLock(lease.lockPath, lease.root, lease.lockIdentity, lease.token);
 }
@@ -1359,19 +1364,27 @@ export async function acquireHistoryPersistenceLock(
       const initialOwnerPath = `${ownerPath}.${randomUUID()}.tmp`;
       await writeFile(
         initialOwnerPath,
-        JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
+        `${JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() })}\n`,
         { flag: "wx", mode: 0o600 },
       );
       await rename(initialOwnerPath, ownerPath);
-      const heartbeat = setInterval(async () => {
+      let heartbeatInFlight = Promise.resolve();
+      const runHeartbeat = async () => {
         let temporaryOwnerPath: string | undefined;
         try {
           const owner = await readHistoryPersistenceLockOwner(lockPath);
           if (owner?.token !== token) return;
+          if (process.platform === "win32") {
+            const currentLockStat = await lstat(lockPath);
+            if (!hasSameHistoryIdentity(currentLockStat, lockIdentity)) return;
+            await utimes(lockPath, new Date(), new Date());
+            await writeFile(ownerPath, `${JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() })}\n`, { flag: "a" });
+            return;
+          }
           temporaryOwnerPath = `${ownerPath}.${randomUUID()}.tmp`;
           await writeFile(
             temporaryOwnerPath,
-            JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
+            `${JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() })}\n`,
             { flag: "wx", mode: 0o600 },
           );
           const currentLockStat = await lstat(lockPath);
@@ -1385,9 +1398,12 @@ export async function acquireHistoryPersistenceLock(
           // A contender may have removed a dead owner's lock between checks.
           if (temporaryOwnerPath) await rm(temporaryOwnerPath, { force: true }).catch(() => undefined);
         }
+      };
+      const heartbeat = setInterval(() => {
+        heartbeatInFlight = heartbeatInFlight.then(runHeartbeat, runHeartbeat);
       }, heartbeatMs);
       heartbeat.unref?.();
-      return { root, lockPath, token, lockIdentity, heartbeat };
+      return { root, lockPath, token, lockIdentity, heartbeat, waitForHeartbeat: () => heartbeatInFlight };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const lockStat = await lstat(lockPath).catch(() => undefined);
