@@ -1408,15 +1408,6 @@ export async function acquireHistoryPersistenceLock(
   }
 }
 
-async function withHistoryPersistenceLock<T>(root: string, action: () => Promise<T>): Promise<T> {
-  const lease = await acquireHistoryPersistenceLock(root);
-  try {
-    return await action();
-  } finally {
-    await releaseHistoryPersistenceLock(lease);
-  }
-}
-
 function hasSameHistoryIdentity(
   actual: { dev: number; ino: number },
   expected: { dev: number; ino: number },
@@ -1525,19 +1516,34 @@ async function persistProjectLaunchRuntimeJsonlArtifact(
 async function resolveHistoryPersistenceLockRoot(
   projectCodexHome: string,
   destinationRoot: string,
-): Promise<string> {
+): Promise<string[]> {
   const candidates: string[] = [];
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const destination = join(projectCodexHome, entryName);
     const inspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
     const target = inspection?.targetRealpath;
     if (!target) continue;
-    const anchor = inspection.targetStat?.isDirectory() ? target : dirname(target);
-    const canonicalAnchor = await realpath(anchor).catch(() => undefined);
-    if (!canonicalAnchor) continue;
-    if (await access(canonicalAnchor, fsConstants.W_OK).then(() => true, () => false)) candidates.push(canonicalAnchor);
+    const anchors = [dirname(target), ...(inspection.targetStat?.isDirectory() ? [target] : [])];
+    for (const anchor of anchors) {
+      const canonicalAnchor = await realpath(anchor).catch(() => undefined);
+      if (!canonicalAnchor) continue;
+      if (await access(canonicalAnchor, fsConstants.W_OK).then(() => true, () => false)) {
+        candidates.push(canonicalAnchor);
+        break;
+      }
+    }
   }
-  return candidates.sort()[0] ?? destinationRoot;
+  return (candidates.length > 0 ? [...new Set(candidates)] : [destinationRoot]).sort();
+}
+
+async function withHistoryPersistenceLocks<T>(roots: string[], action: () => Promise<T>): Promise<T> {
+  const leases: HistoryPersistenceLockLease[] = [];
+  try {
+    for (const root of [...new Set(roots)].sort()) leases.push(await acquireHistoryPersistenceLock(root));
+    return await action();
+  } finally {
+    for (const lease of leases.reverse()) await releaseHistoryPersistenceLock(lease);
+  }
 }
 
 async function persistProjectLaunchRuntimeHistoryArtifacts(
@@ -1548,9 +1554,9 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
   if (!existsSync(runtimeCodexHome)) return true;
   await mkdir(projectCodexHome, { recursive: true });
   const destinationRoot = await realpath(projectCodexHome);
-  const lockRoot = await resolveHistoryPersistenceLockRoot(projectCodexHome, destinationRoot);
+  const lockRoots = await resolveHistoryPersistenceLockRoot(projectCodexHome, destinationRoot);
 
-  return withHistoryPersistenceLock(lockRoot, async () => {
+  return withHistoryPersistenceLocks(lockRoots, async () => {
     let complete = true;
     for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(runtimeCodexHome, entryName);
@@ -1768,6 +1774,7 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
     destinationWasExistingDirectory,
   );
   for (const entry of await readdir(source, { withFileTypes: true })) {
+    if (entry.name === ".omx-history.lock" || entry.name.startsWith(".omx-history.lock.")) continue;
     const sourceEntry = join(source, entry.name);
     const destinationEntry = join(destination, entry.name);
     const entryStat = await lstat(sourceEntry).catch((error) => {
@@ -2305,7 +2312,7 @@ async function prepareResumeCodexHomeForLaunch(
       args: selection.args,
       prepared: {
         codexHomeOverride: runtimeCodexHome,
-        projectLocalCodexHomeForCleanup: resolveProjectLocalCodexHomeForLaunch(cwd, env),
+        projectLocalCodexHomeForCleanup: projectHomes[0].path,
         runtimeCodexHomeForCleanup: runtimeCodexHome,
       },
     };

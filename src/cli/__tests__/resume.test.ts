@@ -419,7 +419,7 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       assert.match(result.stdout, /project-rollout-present=no/);
       assert.equal(
         await readFile(
-          join(projectCodexHome, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl'),
+          join(runtimeCodexHome, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl'),
           'utf-8',
         ),
         '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n',
