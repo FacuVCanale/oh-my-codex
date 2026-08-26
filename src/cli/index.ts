@@ -4,7 +4,7 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
 import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
@@ -1101,17 +1101,16 @@ function historyNoFollowFlag(): number {
 
 function isHistoryPathWithin(candidate: string, root: string): boolean {
   const path = relative(root, candidate);
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+  const escapes = path === ".." || path.startsWith(`..${sep}`);
+  return path === "" || (!escapes && !isAbsolute(path));
 }
 
 async function assertHistoryPathWithin(path: string, root: string, allowMissing = false): Promise<void> {
-  const [canonicalRoot, canonicalPath] = await Promise.all([
-    realpath(root),
-    realpath(path).catch((error) => {
+  const canonicalRoot = root;
+  const canonicalPath = await realpath(path).catch((error) => {
       if (allowMissing && isUnresolvableHistoryLinkError(error)) return undefined;
       throw error;
-    }),
-  ]);
+    });
   if (canonicalPath && !isHistoryPathWithin(canonicalPath, canonicalRoot)) {
     throw new Error(`history path escapes its authorized root: ${path}`);
   }
@@ -1252,6 +1251,7 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
   options: MaterializeProjectLaunchRuntimeHistoryOptions = {},
 ): Promise<Set<string>> {
   const skipEntryNames = new Set<string>();
+  const destinationRoot = await realpath(runtimeCodexHome);
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
     const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
@@ -1268,31 +1268,39 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
       skipEntryNames.add(entryName);
       continue;
     }
-    await rm(destination, { recursive: true, force: true });
-    const sourceStat = sourceInspection.targetStat;
-    if (!sourceStat) continue;
-    const sourcePath = sourceInspection.targetRealpath ?? source;
-    if (sourceStat.isDirectory()) {
-      await replaceProjectLaunchRuntimeHistoryDirectory(
-        sourcePath,
-        destination,
-        false,
-        runtimeCodexHome,
-        options.afterStage
-          ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
-          : undefined,
-      );
-      continue;
-    }
-    if (sourceStat.isFile()) {
-      await copyFilePreservingTimestamps(sourcePath, destination, {
-        allowTopLevelSymlink: false,
-        sourceRoot: sourcePath,
-        destinationRoot: runtimeCodexHome,
-        afterStage: options.afterStage
-          ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
-          : undefined,
-      });
+    try {
+      await rm(destination, { recursive: true, force: true });
+      const sourceStat = sourceInspection.targetStat;
+      if (!sourceStat) continue;
+      const sourcePath = sourceInspection.targetRealpath ?? source;
+      if (sourceStat.isDirectory()) {
+        await replaceProjectLaunchRuntimeHistoryDirectory(
+          sourcePath,
+          destination,
+          false,
+          destinationRoot,
+          options.afterStage
+            ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
+            : undefined,
+        );
+        continue;
+      }
+      if (sourceStat.isFile()) {
+        await copyFilePreservingTimestamps(sourcePath, destination, {
+          allowTopLevelSymlink: false,
+          sourceRoot: sourcePath,
+          destinationRoot,
+          afterStage: options.afterStage
+            ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
+            : undefined,
+        });
+      }
+    } catch (error) {
+      if (isUnresolvableHistoryLinkError(error)) {
+        skipEntryNames.add(entryName);
+        continue;
+      }
+      throw error;
     }
   }
   return skipEntryNames;
@@ -1373,11 +1381,18 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
   sourceCodexHome: string,
   mergedHistorySourceRealpaths: Set<string>,
 ): Promise<void> {
+  const destinationRoot = await realpath(runtimeCodexHome);
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
     const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
     if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
-    const sourceRealpath = sourceInspection.targetRealpath ?? realpathSync(source);
+    const sourceRealpath =
+      sourceInspection.targetRealpath ??
+      await realpath(source).catch((error) => {
+        if (isUnresolvableHistoryLinkError(error)) return undefined;
+        throw error;
+      });
+    if (!sourceRealpath) continue;
     if (mergedHistorySourceRealpaths.has(sourceRealpath)) continue;
     if (!(await historyEntryStillMatches(source, sourceInspection))) continue;
     const destination = join(runtimeCodexHome, entryName);
@@ -1397,7 +1412,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
         destination,
         false,
         sourceInspection.targetRealpath ?? source,
-        runtimeCodexHome,
+        destinationRoot,
       );
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
@@ -1418,12 +1433,12 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
         await copyFilePreservingTimestamps(
           sourceInspection.targetRealpath ?? source,
           destination,
-          { allowTopLevelSymlink: false, sourceRoot: sourceInspection.targetRealpath ?? source, destinationRoot: runtimeCodexHome },
+          { allowTopLevelSymlink: false, sourceRoot: sourceInspection.targetRealpath ?? source, destinationRoot },
         );
         mergedHistorySourceRealpaths.add(sourceRealpath);
         continue;
       }
-      const existing = await readHistoryFileWithoutSymlink(destination, false, runtimeCodexHome);
+      const existing = await readHistoryFileWithoutSymlink(destination, false, destinationRoot);
       const addition = await readHistoryFileWithoutSymlink(
         sourceInspection.targetRealpath ?? source,
         false,
@@ -1434,7 +1449,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
         destination,
         `${existing}${separator}${addition}`,
         destinationStat.mode & 0o7777,
-        runtimeCodexHome,
+        destinationRoot,
       );
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
@@ -1445,7 +1460,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
       {
         allowTopLevelSymlink: false,
         sourceRoot: sourceInspection.targetRealpath ?? source,
-        destinationRoot: runtimeCodexHome,
+        destinationRoot,
       },
     );
     mergedHistorySourceRealpaths.add(sourceRealpath);
