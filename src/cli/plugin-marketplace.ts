@@ -1057,8 +1057,12 @@ export async function removeChildIfIdentity(
 		}
 		return removeChild(cacheBaseRef, quarantineName, {
 			...options,
-			preserveRecursive: true,
-			beforeDestructiveRemove: verifyQuarantineOwnership,
+			preserveRecursive: false,
+			beforeDestructiveRemove: async () => {
+				const owned = await verifyQuarantineOwnership();
+				if (!owned) options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
+				return owned;
+			},
 		});
 	}
 	return removeChild(cacheBaseRef, quarantineName, {

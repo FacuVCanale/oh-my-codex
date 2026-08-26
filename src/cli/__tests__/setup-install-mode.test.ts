@@ -1355,12 +1355,12 @@ describe("omx setup install mode behavior", () => {
 			const result = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
 			assert.equal(result.status, "materialized");
 			assert.equal(existsSync(previous), true);
-			assert.equal(existsSync(older), false, "retired root is moved to bounded quarantine when atomic recursive removal is unavailable");
+			assert.equal(existsSync(older), false, "eligible retired root is removed after identity-bound quarantine validation");
 			assert.equal(existsSync(pinned), true);
 			assert.equal(existsSync(foreign), true);
-			assert.deepEqual(result.retiredDirs, []);
-			assert.deepEqual(result.preservedDirs, [older]);
-			assert.ok((await readdir(cacheBase)).some((name) => name.includes(".reclaim-")), "bounded retirement cleanup must remain reportable");
+			assert.deepEqual(result.retiredDirs, [older]);
+			assert.deepEqual(result.preservedDirs ?? [], []);
+			assert.equal((await readdir(cacheBase)).some((name) => name.includes(".reclaim-")), false, "successfully retired roots must not accumulate quarantine artifacts");
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}

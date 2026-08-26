@@ -1764,4 +1764,41 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("preserves a live pin inserted after quarantine before recursive cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-live-pin-late-cleanup-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const seed = async (version: string) => {
+          const dir = join(cacheBase, version);
+          await mkdir(join(dir, ".codex-plugin"), { recursive: true });
+          await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version }));
+          await writeFile(join(dir, ".omx-managed"), "fixture\n");
+          await writeFile(join(dir, ".omx-complete"), `${JSON.stringify({ version, claimDigest: await computeOmxPluginCacheClaimDigest(dir) })}\n`);
+        };
+        await seed("0.20.0");
+        await seed("0.20.1");
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRemoveSyscall: async (path) => {
+            if (interposed || !path.includes(".reclaim-")) return;
+            interposed = true;
+            await writeFile(join(path, ".omx-live-pin"), "late pin\n");
+          },
+        });
+        try {
+          const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js");
+          const preservedDirs: string[] = [];
+          assert.deepEqual(await retireUnpinnedManagedSnapshots(codexHomeDir, "0.21.0", undefined, false, preservedDirs), []);
+          assert.equal(interposed, true);
+          assert.ok(preservedDirs.some((path) => existsSync(join(path, ".omx-live-pin"))));
+        } finally {
+          resetHooks();
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
