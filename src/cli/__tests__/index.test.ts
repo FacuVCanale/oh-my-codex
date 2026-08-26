@@ -3411,6 +3411,28 @@ describe("project launch scope helpers", () => {
       );
       assert.equal((await lstat(join(safeDestinationRuntime, "sessions", "rollout.jsonl"))).isSymbolicLink(), false);
 
+      const emptyDestinationSourceHome = join(wd, "empty-destination-source-home");
+      const emptyDestinationSessions = join(wd, "empty-destination-sessions");
+      await mkdir(emptyDestinationSourceHome, { recursive: true });
+      await mkdir(emptyDestinationSessions, { recursive: true });
+      await writeFile(join(emptyDestinationSessions, "rollout.jsonl"), "empty-destination-safe\n");
+      await symlink(emptyDestinationSessions, join(emptyDestinationSourceHome, "sessions"), "dir");
+      const emptyDestinationRuntime = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-empty-destination-swap",
+        emptyDestinationSourceHome,
+        {
+          includeHistoryArtifacts: true,
+          afterHistoryEntryValidation: async (entryName, _source, destination) => {
+            if (entryName === "sessions") await mkdir(destination, { recursive: true });
+          },
+        },
+      );
+      assert.equal(
+        await readFile(join(emptyDestinationRuntime, "sessions", "rollout.jsonl"), "utf-8"),
+        "empty-destination-safe\n",
+      );
+
       const stagedSourceHome = join(wd, "staged-source-home");
       const stagedSessions = join(wd, "staged-sessions");
       const outsideStageDirectory = join(wd, "outside-stage-directory");
@@ -3525,6 +3547,30 @@ describe("project launch scope helpers", () => {
         '{"session_id":"existing"}\n',
       );
       assert.equal(existsSync(runtimeAlias), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent JSONL cleanup appends without losing either source", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-concurrent-copyback-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const runtimeOne = join(wd, "runtime-one");
+      const runtimeTwo = join(wd, "runtime-two");
+      await mkdir(runtimeOne, { recursive: true });
+      await mkdir(runtimeTwo, { recursive: true });
+      await writeFile(join(runtimeOne, "history.jsonl"), '{"session_id":"one"}\n');
+      await writeFile(join(runtimeTwo, "history.jsonl"), '{"session_id":"two"}\n');
+
+      await Promise.all([
+        cleanupRuntimeCodexHome(runtimeOne, projectCodexHome),
+        cleanupRuntimeCodexHome(runtimeTwo, projectCodexHome),
+      ]);
+
+      const persisted = await readFile(join(projectCodexHome, "history.jsonl"), "utf-8");
+      assert.match(persisted, /"session_id":"one"/);
+      assert.match(persisted, /"session_id":"two"/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

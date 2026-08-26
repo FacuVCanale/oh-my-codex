@@ -1135,6 +1135,14 @@ async function assertHistoryDestinationParentWithin(destination: string, root: s
   await assertHistoryPathWithin(dirname(destination), root);
 }
 
+async function assertHistoryDestinationDirectorySafe(destination: string, root: string): Promise<void> {
+  const destinationStat = await lstat(destination);
+  if (!destinationStat.isDirectory() || destinationStat.isSymbolicLink()) {
+    throw new HistoryEntryChangedError(`history destination changed during copy: ${destination}`);
+  }
+  await assertHistoryPathWithin(destination, root);
+}
+
 function isUnresolvableHistoryLinkError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as NodeJS.ErrnoException).code;
@@ -1149,11 +1157,51 @@ function isDiscardableHistoryCopyError(error: unknown): boolean {
   return isUnresolvableHistoryLinkError(error) || error instanceof HistoryEntryChangedError;
 }
 
+const HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS = 5_000;
+const HISTORY_PERSISTENCE_LOCK_STALE_MS = 30_000;
+
+async function withHistoryPersistenceLock<T>(root: string, action: () => Promise<T>): Promise<T> {
+  const lockPath = join(root, ".omx-history.lock");
+  const deadline = Date.now() + HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      const lockStat = await lstat(lockPath);
+      if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) {
+        throw new Error(`history persistence lock is not a private directory: ${lockPath}`);
+      }
+      await assertHistoryPathWithin(lockPath, root);
+      try {
+        return await action();
+      } finally {
+        await rm(lockPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lockStat = await lstat(lockPath).catch(() => undefined);
+      if (lockStat?.isSymbolicLink()) throw new Error(`history persistence lock is a symlink: ${lockPath}`);
+      if (lockStat && Date.now() - lockStat.mtimeMs > HISTORY_PERSISTENCE_LOCK_STALE_MS) {
+        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for history persistence lock: ${lockPath}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
 function hasSameHistoryIdentity(
   actual: { dev: number; ino: number },
   expected: { dev: number; ino: number },
 ): boolean {
   return actual.dev === expected.dev && actual.ino === expected.ino;
+}
+
+function hasSameHistoryVersion(
+  actual: { dev: number; ino: number; size: number; mtimeMs: number },
+  expected: { dev: number; ino: number; size: number; mtimeMs: number },
+): boolean {
+  return hasSameHistoryIdentity(actual, expected) && actual.size === expected.size && actual.mtimeMs === expected.mtimeMs;
 }
 
 async function inspectProjectLaunchRuntimeHistoryEntry(source: string) {
@@ -1210,22 +1258,41 @@ async function persistProjectLaunchRuntimeJsonlArtifact(
   sourceRoot: string,
   destinationRoot: string,
   sourceMode: number,
+  expectedSourceStat: { dev: number; ino: number; size: number; mtimeMs: number },
 ): Promise<void> {
-  const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
-  if (destinationInspection && !destinationInspection.targetStat?.isFile()) return;
-  const destinationPath = destinationInspection?.targetRealpath ?? destination;
-  await assertHistoryPathWithin(destinationPath, destinationRoot, true);
-  const existing = destinationInspection ? await readHistoryFileWithoutSymlink(destinationPath, false, destinationRoot) : "";
-  const sourceContents = await readHistoryFileWithoutSymlink(source, false, sourceRoot);
-  const separator = existing === "" || existing.endsWith("\n") || sourceContents === "" ? "" : "\n";
-  const lines = uniqueJsonlLines(`${existing}${separator}${sourceContents}`);
-  const mode = destinationInspection?.targetStat?.mode ?? historyDestinationMode(sourceMode);
-  await writeHistoryFileAtomically(
-    destinationPath,
-    lines.length > 0 ? `${lines.join("\n")}\n` : "",
-    mode,
-    destinationRoot,
-  );
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
+    if (destinationInspection && !destinationInspection.targetStat?.isFile()) return;
+    const destinationPath = destinationInspection?.targetRealpath ?? destination;
+    await assertHistoryPathWithin(destinationPath, destinationRoot, true);
+    const destinationVersion = destinationInspection?.targetStat;
+    const existing = destinationInspection ? await readHistoryFileWithoutSymlink(destinationPath, false, destinationRoot) : "";
+    const sourceContents = await readHistoryFileWithoutSymlink(source, false, sourceRoot);
+    const sourceStat = await stat(source);
+    if (!hasSameHistoryVersion(sourceStat, expectedSourceStat)) {
+      throw new HistoryEntryChangedError(`history source changed during JSONL read: ${source}`);
+    }
+    const latestDestinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
+    const latestDestinationVersion = latestDestinationInspection?.targetStat;
+    if (
+      (destinationVersion && !latestDestinationVersion) ||
+      (!destinationVersion && latestDestinationVersion) ||
+      (destinationVersion && latestDestinationVersion && !hasSameHistoryVersion(latestDestinationVersion, destinationVersion))
+    ) {
+      continue;
+    }
+    const separator = existing === "" || existing.endsWith("\n") || sourceContents === "" ? "" : "\n";
+    const lines = uniqueJsonlLines(`${existing}${separator}${sourceContents}`);
+    const mode = destinationInspection?.targetStat?.mode ?? historyDestinationMode(sourceMode);
+    await writeHistoryFileAtomically(
+      destinationPath,
+      lines.length > 0 ? `${lines.join("\n")}\n` : "",
+      mode,
+      destinationRoot,
+    );
+    return;
+  }
+  throw new HistoryEntryChangedError(`history destination changed during JSONL persistence: ${destination}`);
 }
 
 async function persistProjectLaunchRuntimeHistoryArtifacts(
@@ -1237,7 +1304,8 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
   await mkdir(projectCodexHome, { recursive: true });
   const destinationRoot = await realpath(projectCodexHome);
 
-  for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+  await withHistoryPersistenceLock(destinationRoot, async () => {
+    for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(runtimeCodexHome, entryName);
     const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
     if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
@@ -1275,6 +1343,7 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
           sourceRoot,
           destinationRoot,
           sourceInspection.targetStat.mode,
+          sourceInspection.targetStat,
         );
       } catch (error) {
         if (isDiscardableHistoryCopyError(error)) continue;
@@ -1294,7 +1363,8 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
         throw error;
       }
     }
-  }
+    }
+  });
 }
 
 async function ensureProjectLaunchRuntimeHistoryLinks(
@@ -1425,6 +1495,7 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
       : undefined;
   const sourceDestinationMode = historyDestinationMode(sourceStat.mode);
   await mkdir(destination, { recursive: true, mode: destinationMode ?? sourceDestinationMode });
+  await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
   await chmod(destination, (destinationMode ?? sourceDestinationMode) | 0o700);
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const sourceEntry = join(source, entry.name);
@@ -1451,7 +1522,9 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
       });
     }
   }
+  await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
   await chmod(destination, destinationMode ?? sourceDestinationMode);
+  await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
   await utimes(destination, sourceStat.atime, sourceStat.mtime);
 }
 
