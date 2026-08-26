@@ -1334,6 +1334,7 @@ describe("omx setup install mode behavior", () => {
 				await mkdir(join(dir, "skills"), { recursive: true });
 				await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version, skills: "./skills/", hooks: "./hooks/hooks.json" }));
 				await writeFile(join(dir, ".omx-complete"), "fixture\n");
+				await writeFile(join(dir, ".omx-managed"), "fixture\n");
 				if (pinned) await writeFile(join(dir, ".omx-live-pin"), "pinned\n");
 				return dir;
 			};
@@ -1348,10 +1349,12 @@ describe("omx setup install mode behavior", () => {
 			const result = await materializePackagedOmxPluginCache(codexHomeDir, packagedMarketplace);
 			assert.equal(result.status, "materialized");
 			assert.equal(existsSync(previous), true);
-			assert.equal(existsSync(older), false);
+			assert.equal(existsSync(older), false, "retired root is moved to bounded quarantine when atomic recursive removal is unavailable");
 			assert.equal(existsSync(pinned), true);
 			assert.equal(existsSync(foreign), true);
-			assert.deepEqual(result.retiredDirs, [older]);
+			assert.deepEqual(result.retiredDirs, []);
+			assert.deepEqual(result.preservedDirs, [older]);
+			assert.ok((await readdir(cacheBase)).some((name) => name.includes(".reclaim-")), "bounded retirement cleanup must remain reportable");
 		} finally {
 			await rm(wd, { recursive: true, force: true });
 		}

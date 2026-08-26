@@ -12,10 +12,11 @@ import {
   rename,
   rm,
   symlink,
+
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   PLUGIN_LAUNCHER_RECOVERY_HINT,
   hasExpectedOmxPluginCache,
@@ -29,9 +30,15 @@ import {
   readOmxPluginCacheState,
   discoverOmxPluginCacheDirs,
   resolvePackagedOmxMarketplace,
+  setPluginCacheMutationHooksForTest,
 } from "../plugin-marketplace.js";
 
 const packageRoot = process.cwd();
+
+function parseLastPublicationLockRecord(bytes: string): Record<string, unknown> {
+  const lines = bytes.split("\n").map((line) => line.trim()).filter(Boolean);
+  return JSON.parse(lines.at(-1) ?? "") as Record<string, unknown>;
+}
 
 async function withIsolatedUserHome<T>(
   wd: string,
@@ -1109,7 +1116,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
           onCacheDirPrepared: async () => {
             const bytes = await readFile(lockPath);
-            const before = JSON.parse(bytes.toString("utf-8")) as { heartbeatAt?: number };
+            const before = parseLastPublicationLockRecord(bytes.toString("utf-8")) as { heartbeatAt?: number };
             assert.ok(typeof before.heartbeatAt === "number");
             // Concurrent claimant while critical section is still held.
             const concurrent = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
@@ -1120,7 +1127,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
             // interval has kept the real lease non-expired (done via the interval).
             await new Promise<void>((r) => setTimeout(r, 50));
             const afterBytes = await readFile(lockPath);
-            const after = JSON.parse(afterBytes.toString("utf-8")) as { heartbeatAt?: number };
+            const after = parseLastPublicationLockRecord(afterBytes.toString("utf-8")) as { heartbeatAt?: number };
             assert.ok(typeof after.heartbeatAt === "number");
           },
         });
@@ -1177,6 +1184,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           const dir = join(cacheBase, v);
           await mkdir(dir, { recursive: true });
           await writeFile(join(dir, ".omx-complete"), "ok\n");
+          await writeFile(join(dir, ".omx-managed"), "fixture\n");
           await mkdir(join(dir, ".codex-plugin"), { recursive: true });
           await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: v, skills: "./skills/", hooks: "./hooks/hooks.json" }));
         }
@@ -1197,12 +1205,12 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
-  it("retirement replacement after validation is restored (P2 3861490875)", async () => {
+  it("retirement replacement after validation is preserved (P2 3861490875)", async () => {
     // Deterministic identity-bound test: stat, replace directory with foreign
     // inode, then call removeChildIfIdentity with stale original stats.
-    // The helper must restore the foreign replacement to its canonical version
-    // path (or keep it in quarantine if a successor now occupies the name)
-    // and must not delete foreign content.
+    // The helper must preserve the foreign replacement at its canonical version
+    // path or in quarantine, because portable directory restoration cannot be
+    // made atomic no-replace, and must not delete foreign content.
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-replacement-restore-"));
     try {
       await withIsolatedUserHome(wd, async (codexHomeDir) => {
@@ -1249,4 +1257,386 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("preserves both artifacts when retirement is interposed before quarantine", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-retirement-interpose-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        await mkdir(cacheBase, { recursive: true });
+        const victim = "0.20.0";
+        const victimPath = join(cacheBase, victim);
+        await mkdir(victimPath, { recursive: true });
+        await writeFile(join(victimPath, "victim.txt"), "victim\n");
+        const originalStats = await lstat(victimPath);
+        const originalPath = join(cacheBase, `${victim}.original`);
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRename: async (sourcePath) => {
+            if (interposed || basename(sourcePath) !== victim) return;
+            interposed = true;
+            await rename(victimPath, originalPath);
+            await mkdir(victimPath, { recursive: true });
+            await writeFile(join(victimPath, "successor.txt"), "successor\n");
+          },
+        });
+        try {
+          const { removeChildIfIdentity } = await import("../plugin-marketplace.js") as unknown as {
+            removeChildIfIdentity: (baseRef: unknown, name: string, stats: import("fs").Stats, opts: unknown) => Promise<void>;
+          };
+          const { open } = await import("fs/promises");
+          const { constants } = await import("fs");
+          const fd = await open(cacheBase, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+          const baseRef: unknown = {
+            handle: fd,
+            path: cacheBase,
+            operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+          };
+          try {
+            await assert.rejects(
+              removeChildIfIdentity(baseRef, victim, originalStats, { recursive: true, force: true }),
+              /preserved quarantine/,
+            );
+          } finally {
+            await fd.close();
+          }
+        } finally {
+          resetHooks();
+        }
+        assert.equal(await readFile(join(originalPath, "victim.txt"), "utf-8"), "victim\n");
+        const quarantined = (await readdir(cacheBase)).find((name) => name.includes(".reclaim-"));
+        assert.ok(quarantined, "interposed successor must remain quarantined for bounded cleanup");
+        const successorAtVersion = existsSync(join(victimPath, "successor.txt"));
+        const successorInQuarantine = existsSync(join(cacheBase, quarantined!, "successor.txt"));
+        assert.equal(successorAtVersion || successorInQuarantine, true, "interposed successor must remain reachable");
+        if (successorInQuarantine) {
+          assert.equal(await readFile(join(cacheBase, quarantined!, "successor.txt"), "utf-8"), "successor\n");
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when staging destination appears between no-replace checks", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-staging-interpose-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        let destinationName: string | undefined;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeMkdirExclusive: async (parentPath, name) => {
+            if (destinationName || parentPath !== cacheDir || name === ".omx-incomplete") return;
+            destinationName = name;
+            await writeFile(join(parentPath, name), "staging successor\n");
+          },
+          beforeExclusiveCreate: async (parentPath, name) => {
+            if (destinationName || parentPath !== cacheDir || name === ".omx-incomplete") return;
+            destinationName = name;
+            await writeFile(join(parentPath, name), "staging successor\n");
+          },
+        });
+        try {
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        } finally {
+          resetHooks();
+        }
+        assert.ok(destinationName);
+        assert.equal(await readFile(join(cacheDir, destinationName!), "utf-8"), "staging successor\n");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a staged source changes after its bytes are read", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-staged-source-race-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          afterStagedFileRead: async (path) => {
+            if (interposed || (!path.includes("/snapshot/hooks/") && !path.includes("\\snapshot\\hooks\\")) || !path.endsWith("hooks.json")) return;
+            interposed = true;
+            await writeFile(path, "{\"attacker\":true}\n");
+          },
+        });
+        try {
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        } finally {
+          resetHooks();
+        }
+        assert.equal(existsSync(join(cacheDir, ".omx-complete")), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("validates the final claim before publishing the complete marker", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-final-claim-validation-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeCompleteMarker: async (claimPath) => {
+            await writeFile(join(claimPath, "hooks", "hooks.json"), "{\"attacker\":true}\n");
+          },
+        });
+        try {
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        } finally {
+          resetHooks();
+        }
+        assert.equal(existsSync(join(cacheDir, ".omx-complete")), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a replacement interposed between quarantine lstat and recursive removal", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-removal-interpose-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        await mkdir(cacheBase, { recursive: true });
+        const victim = "0.20.0";
+        const victimPath = join(cacheBase, victim);
+        await mkdir(victimPath, { recursive: true });
+        await writeFile(join(victimPath, "victim.txt"), "victim\n");
+        const originalStats = await lstat(victimPath);
+        const preservedPath = join(cacheBase, `${victim}.preserved`);
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRemove: async (path) => {
+            if (interposed || !path.includes(".reclaim-")) return;
+            interposed = true;
+            await rename(path, preservedPath);
+            await mkdir(path, { recursive: true });
+            await writeFile(join(path, "replacement.txt"), "replacement\n");
+          },
+        });
+        try {
+          const { removeChildIfIdentity } = await import("../plugin-marketplace.js") as unknown as {
+            removeChildIfIdentity: (baseRef: unknown, name: string, stats: import("fs").Stats, opts: unknown) => Promise<void>;
+          };
+          const { open } = await import("fs/promises");
+          const { constants } = await import("fs");
+          const fd = await open(cacheBase, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+          const baseRef: unknown = {
+            handle: fd,
+            path: cacheBase,
+            operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+          };
+          try {
+            await assert.rejects(
+              removeChildIfIdentity(baseRef, victim, originalStats, { recursive: true, force: true, preserveRecursive: false }),
+              /changed before deletion/,
+            );
+          } finally {
+            await fd.close();
+          }
+        } finally {
+          resetHooks();
+        }
+        assert.equal(await readFile(join(preservedPath, "victim.txt"), "utf-8"), "victim\n");
+        const replacementAtVersion = existsSync(join(cacheBase, victim, "replacement.txt"));
+        const quarantined = (await readdir(cacheBase)).find((name) => name.includes(".reclaim-"));
+        const replacementInQuarantine = quarantined
+          ? existsSync(join(cacheBase, quarantined, "replacement.txt"))
+          : false;
+        assert.equal(replacementAtVersion || replacementInQuarantine, true, "replacement must remain reachable");
+        if (replacementInQuarantine) {
+          assert.equal(await readFile(join(cacheBase, quarantined!, "replacement.txt"), "utf-8"), "replacement\n");
+        }
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a replacement interposed after the final removal identity check", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-removal-final-fence-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        await mkdir(cacheBase, { recursive: true });
+        const victim = "0.20.0";
+        const victimPath = join(cacheBase, victim);
+        await mkdir(victimPath, { recursive: true });
+        await writeFile(join(victimPath, "victim.txt"), "victim\n");
+        const originalStats = await lstat(victimPath);
+        const preservedPath = join(cacheBase, `${victim}.preserved`);
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRemoveSyscall: async (path) => {
+            if (interposed || !path.includes(".reclaim-")) return;
+            interposed = true;
+            await rename(path, preservedPath);
+            await mkdir(path, { recursive: true });
+            await writeFile(join(path, "replacement.txt"), "replacement\n");
+          },
+        });
+        try {
+          const { removeChildIfIdentity } = await import("../plugin-marketplace.js") as unknown as {
+            removeChildIfIdentity: (baseRef: unknown, name: string, stats: import("fs").Stats, opts: unknown) => Promise<void>;
+          };
+          const { open } = await import("fs/promises");
+          const { constants } = await import("fs");
+          const fd = await open(cacheBase, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+          const baseRef: unknown = {
+            handle: fd,
+            path: cacheBase,
+            operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+            mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`,
+          };
+          try {
+            await assert.rejects(
+              removeChildIfIdentity(baseRef, victim, originalStats, { recursive: true, force: true, preserveRecursive: false }),
+              /changed before removal syscall/,
+            );
+          } finally {
+            await fd.close();
+          }
+        } finally {
+          resetHooks();
+        }
+        assert.equal(await readFile(join(preservedPath, "victim.txt"), "utf-8"), "victim\n");
+        const quarantined = (await readdir(cacheBase)).find((name) => name.includes(".reclaim-"));
+        const replacementAtVersion = existsSync(join(cacheBase, victim, "replacement.txt"));
+        const replacementInQuarantine = quarantined
+          ? existsSync(join(cacheBase, quarantined, "replacement.txt"))
+          : false;
+        assert.equal(replacementAtVersion || replacementInQuarantine, true, "replacement must remain reachable");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves a successor during interposed stale-lock cleanup", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-stale-lock-interpose-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        const originalPath = join(cacheBase, ".omx-publish.lock.original");
+        await mkdir(cacheBase, { recursive: true });
+        await writeFile(lockPath, JSON.stringify({ pid: 99999999, createdAt: Date.now() - 60_000 }));
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRename: async (sourcePath) => {
+            if (interposed || basename(sourcePath) !== ".omx-publish.lock") return;
+            interposed = true;
+            await rename(lockPath, originalPath);
+            await writeFile(lockPath, JSON.stringify({
+              pid: process.pid,
+              createdAt: Date.now(),
+              heartbeatAt: Date.now(),
+              processToken: "successor",
+            }));
+          },
+        });
+        try {
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        } finally {
+          resetHooks();
+        }
+        const successor = parseLastPublicationLockRecord(await readFile(lockPath, "utf-8")) as { processToken?: string };
+        assert.equal(successor.processToken, "successor");
+        assert.equal(existsSync(originalPath), true);
+        assert.ok((await readdir(cacheBase)).some((name) => name.includes(".reclaim-")), "raced lock quarantine must remain for bounded cleanup");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("re-reads a same-inode heartbeat before stale-lock quarantine", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-heartbeat-recheck-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        await writeFile(lockPath, `${JSON.stringify({ pid: 99999999, createdAt: Date.now() - 600_000, heartbeatAt: Date.now() - 600_000, processToken: "old" })}\n`);
+        let refreshed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeStaleLockReclaim: async (path) => {
+            if (refreshed) return;
+            refreshed = true;
+            await writeFile(path, `${JSON.stringify({ pid: process.pid, createdAt: Date.now(), heartbeatAt: Date.now(), processToken: "same-inode-live" })}\n`, { flag: "a" });
+          },
+        });
+        try {
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        } finally {
+          resetHooks();
+        }
+        const record = parseLastPublicationLockRecord(await readFile(lockPath, "utf-8")) as { processToken?: string };
+        assert.equal(record.processToken, "same-inode-live");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts stale-lock cleanup when the quarantined owner heartbeats late", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-late-heartbeat-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        await writeFile(lockPath, `${JSON.stringify({ pid: 99999999, createdAt: Date.now() - 600_000, heartbeatAt: Date.now() - 600_000, processToken: "old" })}\n`);
+        let heartbeated = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRemoveSyscall: async (path) => {
+            if (heartbeated || !path.includes(".reclaim-")) return;
+            heartbeated = true;
+            await writeFile(path, `${JSON.stringify({ pid: process.pid, createdAt: Date.now(), heartbeatAt: Date.now(), processToken: "late-owner" })}\n`);
+          },
+        });
+        try {
+          const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        } finally {
+          resetHooks();
+        }
+        const successor = parseLastPublicationLockRecord(await readFile(lockPath, "utf-8")) as { processToken?: string };
+        assert.equal(successor.processToken, "late-owner");
+        assert.ok((await readdir(cacheBase)).some((name) => name.includes(".reclaim-")), "late-heartbeat quarantine must remain bounded");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });

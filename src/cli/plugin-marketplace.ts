@@ -42,6 +42,7 @@ interface PluginManifest {
 }
 
 const OMX_PLUGIN_HOOK_LAUNCHER_FILE = "omx-command.json";
+const OMX_PLUGIN_MANAGED_MARKER = ".omx-managed";
 const OMX_PLUGIN_CACHE_STAGING_PREFIX = ".omx-plugin-";
 const TEAM_MODE_PLUGIN_SKILL_NAMES = new Set(["team", "worker"]);
 
@@ -138,6 +139,31 @@ interface DirectoryRef {
 	mutationPath: string | null;
 }
 
+interface PluginCacheMutationTestHooks {
+	beforeRename?: (sourcePath: string, destinationPath: string) => void | Promise<void>;
+	beforeMkdirExclusive?: (parentPath: string, name: string) => void | Promise<void>;
+	beforeExclusiveCreate?: (parentPath: string, name: string) => void | Promise<void>;
+	afterStagedFileRead?: (path: string, stats: Stats, bytes: Buffer) => void | Promise<void>;
+	beforeFinalClaimValidation?: (claimPath: string) => void | Promise<void>;
+	beforeCompleteMarker?: (claimPath: string) => void | Promise<void>;
+	beforeStaleLockReclaim?: (lockPath: string, stats: Stats) => void | Promise<void>;
+	beforeRemove?: (path: string, stats: Stats) => void | Promise<void>;
+	beforeRemoveSyscall?: (path: string, stats: Stats) => void | Promise<void>;
+}
+
+let pluginCacheMutationTestHooks: PluginCacheMutationTestHooks | undefined;
+
+/** @internal Test seam for deterministic cache mutation interposition coverage. */
+export function setPluginCacheMutationHooksForTest(
+	hooks: PluginCacheMutationTestHooks | undefined,
+): () => void {
+	const previous = pluginCacheMutationTestHooks;
+	pluginCacheMutationTestHooks = hooks;
+	return () => {
+		pluginCacheMutationTestHooks = previous;
+	};
+}
+
 function directoryScanOperationPath(handle: FileHandle, path: string): string {
 	return directoryFdPath(handle.fd) ?? resolve(path);
 }
@@ -197,6 +223,12 @@ async function assertDirectoryRef(parent: DirectoryRef, operation: string): Prom
 	}
 }
 
+function sameFileIdentity(left: Stats, right: Stats): boolean {
+	return typeof left.dev === "number" && typeof left.ino === "number"
+		&& typeof right.dev === "number" && typeof right.ino === "number"
+		&& left.dev === right.dev && left.ino === right.ino;
+}
+
 async function openDirectoryRef(path: string): Promise<DirectoryRef> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	const directoryFlags = fsConstants.O_DIRECTORY;
@@ -254,6 +286,7 @@ async function mkdirDirectoryChild(parent: DirectoryRef, name: string): Promise<
 async function mkdirDirectoryChildExclusive(parent: DirectoryRef, name: string): Promise<void> {
 	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "exclusive mkdir");
+	await pluginCacheMutationTestHooks?.beforeMkdirExclusive?.(parent.path, name);
 	await mkdir(mutationPath);
 	await assertDirectoryRef(parent, "exclusive mkdir");
 }
@@ -327,9 +360,84 @@ async function copyPackagedTree(
 	await assertDirectoryRef(source, "packaged source copy");
 }
 
+async function copyStagedTreeNoReplace(
+	source: DirectoryRef,
+	destination: DirectoryRef,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
+	await assertDirectoryRef(source, "staged source copy");
+	await assertDirectoryRef(destination, "staged destination copy");
+	const entries = await readdir(source.operationPath, { withFileTypes: true });
+	for (const entry of entries) {
+		if (entry.name === ".omx-incomplete") continue;
+		if (entry.isSymbolicLink()) {
+			throw new Error(`refusing to copy a symlinked staged cache entry: ${join(source.path, entry.name)}`);
+		}
+		if (entry.isDirectory()) {
+			await mkdirDirectoryChildExclusive(destination, entry.name);
+			const sourceChild = await openDirectoryChild(source, entry.name);
+			const destinationChild = await openDirectoryChild(destination, entry.name);
+			try {
+				await copyStagedTreeNoReplace(sourceChild, destinationChild, tracker);
+			} finally {
+				await sourceChild.handle.close();
+				await destinationChild.handle.close();
+			}
+			continue;
+		}
+		if (!entry.isFile()) {
+			throw new Error(`refusing to copy a non-regular staged cache entry: ${join(source.path, entry.name)}`);
+		}
+		const sourceHandle = await openRegularFileChild(source, entry.name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		try {
+			const before = await sourceHandle.stat();
+			if (!before.isFile() || before.isSymbolicLink()) {
+				throw new Error(`staged cache entry changed while copying: ${join(source.path, entry.name)}`);
+			}
+			const content = await sourceHandle.readFile();
+			await pluginCacheMutationTestHooks?.afterStagedFileRead?.(join(source.path, entry.name), before, content);
+			const verifyHandle = await openRegularFileChild(source, entry.name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+			try {
+				const verifyStats = await verifyHandle.stat();
+				const verifyContent = await verifyHandle.readFile();
+				if (
+					!sameFileIdentity(before, verifyStats)
+					|| verifyStats.size !== before.size
+					|| !content.equals(verifyContent)
+				) {
+					throw new Error(`staged cache entry changed while copying: ${join(source.path, entry.name)}`);
+				}
+			} finally {
+				await verifyHandle.close();
+			}
+			const destinationHandle = await openRegularFileChild(
+				destination,
+				entry.name,
+				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+				before.mode & 0o7777,
+			);
+			try {
+				await destinationHandle.writeFile(content);
+				await destinationHandle.chmod(before.mode & 0o7777);
+				const outcome = await syncRegularFile(destinationHandle);
+				if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
+			} finally {
+				await destinationHandle.close();
+			}
+		} finally {
+			await sourceHandle.close();
+		}
+	}
+	await assertDirectoryRef(source, "staged source copy");
+	await assertDirectoryRef(destination, "staged destination copy");
+}
+
 async function openRegularFileChild(parent: DirectoryRef, name: string, flags: number, mode?: number): Promise<FileHandle> {
 	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "file open");
+	if ((flags & fsConstants.O_EXCL) !== 0) {
+		await pluginCacheMutationTestHooks?.beforeExclusiveCreate?.(parent.path, name);
+	}
 	const handle = await open(mutationPath, flags, mode);
 	try {
 		await assertDirectoryRef(parent, "file open");
@@ -377,18 +485,49 @@ async function createExclusiveFileChild(
 	await assertDirectoryRef(parent, "exclusive file create");
 }
 
-async function removeChild(parent: DirectoryRef, name: string, options: { recursive?: boolean; force?: boolean } = {}): Promise<void> {
+interface RemoveChildOptions {
+	recursive?: boolean;
+	force?: boolean;
+	preserveRecursive?: boolean;
+}
+
+async function removeChild(parent: DirectoryRef, name: string, options: RemoveChildOptions = {}): Promise<boolean> {
 	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "remove");
-	// #3552 blocker 2: gate the destructive rm on the current inode so a
-	// name swapped between the barrier and the syscall cannot redirect the
-	// deletion at a replacement target; the post-barrier re-assert detects
-	// a replaced parent before the result is trusted.
 	let before: Stats | undefined;
 	try {
 		before = await lstat(mutationPath);
 	} catch (error) {
 		if (!options.force || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	if (before) {
+		if (options.recursive && options.preserveRecursive && before.isDirectory()) {
+			return false;
+		}
+		// A final identity fence immediately before rm is the portable fallback
+		// for platforms without unlinkat(2). If an interposer changes the name
+		// after the quarantine lstat, preserve the replacement and report bounded
+		// cleanup instead of recursively deleting an unknown inode.
+		await pluginCacheMutationTestHooks?.beforeRemove?.(mutationPath, before);
+		const current = await lstat(mutationPath).catch((error) => {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw error;
+		});
+		if (!current || !sameFileIdentity(before, current)) {
+			throw new Error(`identity-bound removal target changed before deletion: ${mutationPath}`);
+		}
+		// Keep an explicit barrier immediately before the destructive syscall. The
+		// production path has no portable unlinkat(2) primitive; the final re-lstat
+		// after this barrier is the fail-closed fallback that preserves a raced
+		// replacement instead of trusting a stale pathname check.
+		await pluginCacheMutationTestHooks?.beforeRemoveSyscall?.(mutationPath, current);
+		const final = await lstat(mutationPath).catch((error) => {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+			throw error;
+		});
+		if (!final || !sameFileIdentity(before, final)) {
+			throw new Error(`identity-bound removal target changed before removal syscall: ${mutationPath}`);
+		}
 	}
 	await rm(mutationPath, options);
 	if (before) {
@@ -400,6 +539,7 @@ async function removeChild(parent: DirectoryRef, name: string, options: { recurs
 		}
 	}
 	await assertDirectoryRef(parent, "remove");
+	return true;
 }
 
 async function renameChild(sourceParent: DirectoryRef, sourceName: string, destinationParent: DirectoryRef, destinationName: string): Promise<void> {
@@ -417,6 +557,27 @@ async function renameChild(sourceParent: DirectoryRef, sourceName: string, desti
 	const destinationPath = childMutationPath(destinationParent, destinationName);
 	await assertDirectoryRef(sourceParent, "rename");
 	await assertDirectoryRef(destinationParent, "rename");
+	const destinationBefore = await lstat(destinationPath).catch((error) => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	});
+	if (destinationBefore) {
+		throw Object.assign(
+			new Error(`rename destination already exists: ${destinationPath}`),
+			{ code: "EEXIST" },
+		);
+	}
+	await pluginCacheMutationTestHooks?.beforeRename?.(sourcePath, destinationPath);
+	const destinationAfter = await lstat(destinationPath).catch((error) => {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	});
+	if (destinationAfter) {
+		throw Object.assign(
+			new Error(`rename destination appeared during no-replace check: ${destinationPath}`),
+			{ code: "EEXIST" },
+		);
+	}
 	await rename(sourcePath, destinationPath);
 	await assertDirectoryRef(sourceParent, "rename");
 	await assertDirectoryRef(destinationParent, "rename");
@@ -572,7 +733,7 @@ async function readRegularFileTextNoFollow(path: string, options: { anchorDir?: 
 	return bytes?.toString("utf-8") ?? null;
 }
 
-async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complete" | ".omx-incomplete"): Promise<boolean> {
+async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complete" | ".omx-incomplete" | ".omx-managed"): Promise<boolean> {
 	return (await readOmxPluginCacheFileNoFollow(join(cacheDir, name), { anchorDir: cacheDir })) !== null;
 }
 
@@ -682,7 +843,8 @@ function buildPublicationLockRecord(heartbeatAt: number = Date.now()): string {
 
 function parsePublicationLockRecord(bytes: Buffer): PublicationLockRecord | null {
 	try {
-		const parsed = JSON.parse(bytes.toString("utf-8")) as PublicationLockRecord;
+		const lines = bytes.toString("utf-8").split("\n").map((line) => line.trim()).filter(Boolean);
+		const parsed = JSON.parse(lines.at(-1) ?? "") as PublicationLockRecord;
 		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 		return parsed;
 	} catch {
@@ -700,6 +862,18 @@ function publicationLockLeaseExpired(record: PublicationLockRecord, now = Date.n
 	return now - heartbeat > PUBLICATION_LOCK_LEASE_MS;
 }
 
+function publicationLockFileAgeExpired(stats: Stats, now = Date.now()): boolean {
+	return typeof stats.mtimeMs === "number" && Number.isFinite(stats.mtimeMs)
+		&& now - stats.mtimeMs > PUBLICATION_LOCK_LEASE_MS;
+}
+
+function publicationLockRecordStructurallyValid(record: PublicationLockRecord): boolean {
+	const hasPid = typeof record.pid === "number" && Number.isInteger(record.pid) && record.pid > 0;
+	const hasHeartbeat = typeof record.heartbeatAt === "number" && Number.isFinite(record.heartbeatAt);
+	const hasCreatedAt = typeof record.createdAt === "number" && Number.isFinite(record.createdAt);
+	return hasPid && (hasHeartbeat || hasCreatedAt);
+}
+
 function isPublicationLockStale(record: PublicationLockRecord, now = Date.now()): boolean {
 	if (typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return false;
 	if (publicationLockLeaseExpired(record, now)) return true;
@@ -713,8 +887,10 @@ async function refreshPublicationLockRecord(
 	try {
 		const record = buildPublicationLockRecord();
 		const buf = Buffer.from(record, "utf-8");
-		await lockHandle.truncate(0);
-		await lockHandle.write(buf, 0, buf.length, 0);
+		// Heartbeats are append-only complete records. Readers consume the last
+		// complete line, so an in-progress write can never turn a previous valid
+		// owner record into a partially published lock state.
+		await lockHandle.write(buf);
 		const outcome = await syncRegularFile(lockHandle);
 		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 	} catch {
@@ -736,8 +912,8 @@ export async function removeChildIfIdentity(
 	cacheBaseRef: DirectoryRef,
 	childName: string,
 	childStats: Stats,
-	options: { recursive?: boolean; force?: boolean },
-): Promise<void> {
+	options: RemoveChildOptions,
+): Promise<boolean> {
 	const quarantineName = `.${childName}.reclaim-${process.pid}-${randomUUID()}`;
 	await renameChild(cacheBaseRef, childName, cacheBaseRef, quarantineName);
 	const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
@@ -748,42 +924,33 @@ export async function removeChildIfIdentity(
 		throw new Error(`identity-bound removal target disappeared during reclamation: ${(error as Error).message}`);
 	}
 	if (quarantineStats.dev !== childStats.dev || quarantineStats.ino !== childStats.ino) {
-		// Quarantined the wrong inode (replacement after validation): restore it
-		// to its version path without clobbering a successor. For directories
-		// link(2) is EPERM, so rename the quarantine back only if the version
-		// name is still free; for regular files use link to avoid clobbering a
-		// successor that may have appeared.
-		const isDirQuarantine = quarantineStats.isDirectory();
+		// Quarantined the wrong inode (replacement after validation). There is no
+		// portable atomic no-replace directory restore: rename(quarantine, name)
+		// can overwrite a successor inserted after any lstat(name). Preserve the
+		// quarantined inode instead of risking overwrite or deletion. Regular
+		// files can be linked back with no-clobber semantics, but the quarantine
+		// link is intentionally retained so cleanup never follows a raced path.
 		try {
-			if (isDirQuarantine) {
-				const versionPath = join(cacheBaseRef.path, childName);
-				let versionExists = false;
-				try {
-					await lstat(versionPath);
-					versionExists = true;
-				} catch (e) {
-					if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-				}
-				if (!versionExists) {
-					await renameChild(cacheBaseRef, quarantineName, cacheBaseRef, childName);
-				}
-			} else {
+			if (!quarantineStats.isDirectory()) {
 				await link(quarantinePath, childOperationPath(cacheBaseRef, childName));
-				await removeChild(cacheBaseRef, quarantineName, { force: true });
 			}
 		} catch {
 			// Preserve replacement without overwriting a successor that appeared
 			// between the quarantine and the restore attempt; quarantine remains.
 		}
-		throw new Error("identity-bound removal target changed during reclamation");
+		throw new Error(`identity-bound removal target changed during reclamation; preserved quarantine ${quarantinePath}`);
 	}
-	await removeChild(cacheBaseRef, quarantineName, options);
+	return removeChild(cacheBaseRef, quarantineName, {
+		...options,
+		preserveRecursive: options.preserveRecursive ?? options.recursive === true,
+	});
 }
 
 async function reclaimStalePublicationLock(
 	cacheBaseRef: DirectoryRef,
 	lockName: string,
 	lockStats: Stats,
+	checkLateHeartbeat = true,
 ): Promise<void> {
 	const quarantineName = `.${lockName}.reclaim-${process.pid}-${randomUUID()}`;
 	await renameChild(cacheBaseRef, lockName, cacheBaseRef, quarantineName);
@@ -797,11 +964,26 @@ async function reclaimStalePublicationLock(
 	if (quarantineStats.dev !== lockStats.dev || quarantineStats.ino !== lockStats.ino) {
 		try {
 			await link(quarantinePath, childOperationPath(cacheBaseRef, lockName));
-			await removeChild(cacheBaseRef, quarantineName, { force: true });
 		} catch {
 			// Preserve a replacement lock and its contents without overwriting it.
 		}
-		throw new Error("publication lock changed during stale-lock reclamation");
+		throw new Error(`publication lock changed during stale-lock reclamation; preserved quarantine ${quarantinePath}`);
+	}
+	if (checkLateHeartbeat) {
+		await pluginCacheMutationTestHooks?.beforeRemoveSyscall?.(quarantinePath, quarantineStats);
+		const quarantineBytes = await readFile(quarantinePath).catch(() => null);
+		const quarantineRecord = quarantineBytes === null ? null : parsePublicationLockRecord(quarantineBytes);
+		const quarantineStillStale = quarantineRecord !== null && publicationLockRecordStructurallyValid(quarantineRecord)
+			? isPublicationLockStale(quarantineRecord)
+			: publicationLockFileAgeExpired(quarantineStats);
+		if (!quarantineStillStale) {
+			try {
+				await link(quarantinePath, childOperationPath(cacheBaseRef, lockName));
+			} catch {
+				// Preserve a successor lock or a late-heartbeat owner without clobbering.
+			}
+			throw new Error(`publication lock heartbeat changed during stale-lock reclamation; preserved quarantine ${quarantinePath}`);
+		}
 	}
 	await removeChild(cacheBaseRef, quarantineName, { force: true });
 }
@@ -817,7 +999,7 @@ async function claimPublicationLock(
 			const lockHandle = await openRegularFileChild(
 				cacheBaseRef,
 				".omx-publish.lock",
-				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags,
+				fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags,
 				0o600,
 			);
 			try {
@@ -829,7 +1011,7 @@ async function claimPublicationLock(
 				try { lockIdentity = await lockHandle.stat(); } catch { /* preserve the primary failure */ }
 				try { await lockHandle.close(); } catch { /* preserve the primary failure */ }
 				if (lockIdentity) {
-					try { await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity); } catch { /* preserve the primary failure */ }
+					try { await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity, false); } catch { /* preserve the primary failure */ }
 				}
 				throw error;
 			}
@@ -849,18 +1031,26 @@ async function claimPublicationLock(
 			let stale = false;
 			if (lockBytes !== null) {
 				const record = parsePublicationLockRecord(lockBytes);
-				stale = record !== null && isPublicationLockStale(record);
+				stale = record !== null && publicationLockRecordStructurallyValid(record)
+					? isPublicationLockStale(record)
+					: publicationLockFileAgeExpired(lockBefore);
+			} else {
+				stale = publicationLockFileAgeExpired(lockBefore);
 			}
 			if (!stale) {
 				throw new Error(`another OMX plugin cache publication is active at ${cacheBase}; refusing concurrent publication`);
 			}
 			const reclaimBefore = await lstat(lockPath);
 			if (reclaimBefore.dev !== lockBefore.dev || reclaimBefore.ino !== lockBefore.ino) continue;
+			await pluginCacheMutationTestHooks?.beforeStaleLockReclaim?.(lockPath, reclaimBefore);
 			try {
 				await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", reclaimBefore);
 			} catch (reclaimError) {
 				if ((reclaimError as NodeJS.ErrnoException).code === "ENOENT") continue;
-				if ((reclaimError as Error).message === "publication lock changed during stale-lock reclamation") continue;
+				if (
+					(reclaimError as Error).message.startsWith("publication lock changed during stale-lock reclamation")
+					|| (reclaimError as Error).message.startsWith("publication lock heartbeat changed during stale-lock reclamation")
+				) continue;
 				throw reclaimError;
 			}
 		}
@@ -1525,6 +1715,7 @@ export interface OmxPluginCacheMaterializeResult {
 	cacheDir?: string;
 	version?: string;
 	retiredDirs?: string[];
+	preservedDirs?: string[];
 	reason?: string;
 	launcherTarget?: string;
 }
@@ -1655,6 +1846,7 @@ export async function retireUnpinnedManagedSnapshots(
 	currentVersion: string,
 	anchoredCacheBaseRef?: DirectoryRef,
 	publicationLockHeld = false,
+	preservedDirs?: string[],
 ): Promise<string[]> {
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
@@ -1700,6 +1892,7 @@ export async function retireUnpinnedManagedSnapshots(
 			const manifest = await readRegularOmxPluginCacheManifest(candidateRef.operationPath, candidateRef.operationPath);
 			if (manifest?.name !== OMX_PLUGIN_NAME || manifest.version !== entry.name) continue;
 			if (!(await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-complete")) || await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-incomplete")) continue;
+			if (!(await hasRegularPublicationMarker(candidateRef.operationPath, OMX_PLUGIN_MANAGED_MARKER))) continue;
 			if (await readOmxPluginCacheFileNoFollow(join(candidateRef.operationPath, ".omx-live-pin"), { anchorDir: candidateRef.operationPath }) !== null) continue;
 			managed.push({ path: join(cacheBase, entry.name), version: entry.name, mtimeMs: candidateStats.mtimeMs, ref: candidateRef, stats: candidateStats });
 		}
@@ -1714,8 +1907,14 @@ export async function retireUnpinnedManagedSnapshots(
 			if (!currentStats.isDirectory() || currentStats.isSymbolicLink() || currentStats.dev !== candidate.stats.dev || currentStats.ino !== candidate.stats.ino) {
 				throw new Error(`managed cache retirement target changed before removal: ${candidate.path}`);
 			}
-			await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true });
-			retired.push(candidate.path);
+			if (await readOmxPluginCacheFileNoFollow(join(candidate.ref.operationPath, ".omx-live-pin"), { anchorDir: candidate.ref.operationPath }) !== null) {
+				continue;
+			}
+			if (await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true })) {
+				retired.push(candidate.path);
+			} else {
+				preservedDirs?.push(candidate.path);
+			}
 		}
 		return retired;
 	} finally {
@@ -1734,7 +1933,7 @@ export async function retireUnpinnedManagedSnapshots(
 					cur.dev === publicationLockIdentity.dev &&
 					cur.ino === publicationLockIdentity.ino
 				) {
-					try { await reclaimStalePublicationLock(baseRef!, ".omx-publish.lock", publicationLockIdentity); } catch (error) { cleanupError ??= error; }
+					try { await reclaimStalePublicationLock(baseRef!, ".omx-publish.lock", publicationLockIdentity, false); } catch (error) { cleanupError ??= error; }
 				}
 			}
 		}
@@ -1892,6 +2091,7 @@ async function materializePackagedOmxPluginCacheImpl(
 		let cleanupError: unknown = null;
 		let lockIdentity: Stats | undefined;
 		let finalRef: DirectoryRef | undefined;
+		let claimRef: DirectoryRef | undefined;
 		try {
 			lockIdentity = await lockHandle.stat();
 			// Refresh once under the held fd so the initial heartbeat is at most
@@ -1915,7 +2115,6 @@ async function materializePackagedOmxPluginCacheImpl(
 				// `.omx-complete` is committed last inside the claim. Every trust
 				// path requires `.omx-complete`, so no intermediate state is
 				// trusted, and no pre-existing directory is ever replaced.
-				let claimRef: DirectoryRef | undefined;
 				try {
 					claimRef = await claimPublicationDestination(cacheBaseRef, version, durability);
 				} catch (error) {
@@ -1933,9 +2132,9 @@ async function materializePackagedOmxPluginCacheImpl(
 					}
 				}
 				if (claimRef) {
-					// Drop the snapshot's staging marker, then the claim's own
-					// placeholder, so every entry moved below lands in an empty
-					// claim and the final marker is the only trust switch.
+					// Drop the snapshot's staging marker and the claim's placeholder;
+					// the claim is then populated only through exclusive creates and
+					// the final marker is the trust switch.
 					await removeChild(snapshotRef, ".omx-incomplete", { force: true });
 					await removeChild(claimRef, ".omx-incomplete", { force: true });
 					await assertDirectoryRef(claimRef, "publication claim");
@@ -1943,13 +2142,18 @@ async function materializePackagedOmxPluginCacheImpl(
 					if (claimEntries.length > 0) {
 						throw new Error(`publication claim is not empty at ${join(cacheBaseRef.path, version)}`);
 					}
-					const stagedEntries = await readdir(snapshotRef.scanOperationPath, { withFileTypes: true });
-					for (const entry of stagedEntries) {
-						if (entry.name === ".omx-incomplete") continue;
-						await renameChild(tempRef, `snapshot/${entry.name}`, claimRef, entry.name);
-					}
+					// The portable no-replace primitive is exclusive create, not rename.
+					// Copy the private staged tree into the empty claim with exclusive
+					// mkdir/O_EXCL file creation so a destination inserted between any
+					// checks is rejected instead of overwritten.
+					await copyStagedTreeNoReplace(snapshotRef, claimRef, durability);
 					await snapshotRef.handle.close();
 					snapshotRef = undefined;
+					await createExclusiveFileChild(claimRef, OMX_PLUGIN_MANAGED_MARKER, `${process.pid}\n`, durability);
+					await pluginCacheMutationTestHooks?.beforeFinalClaimValidation?.(claimRef.path);
+					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);
+					await pluginCacheMutationTestHooks?.beforeCompleteMarker?.(claimRef.path);
+					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);
 					await syncDirectoryTree(claimRef, durability);
 					await createExclusiveFileChild(claimRef, ".omx-complete", `${process.pid}\n`, durability);
 					const claimDirSyncOutcome = await syncDirectory(claimRef.handle);
@@ -1975,12 +2179,15 @@ async function materializePackagedOmxPluginCacheImpl(
 			}
 			if (outcome.status === "materialized") {
 				try {
+					const preservedDirs: string[] = [];
 					outcome.retiredDirs = await retireUnpinnedManagedSnapshots(
 						codexHomeDir,
 						version,
 						cacheBaseRef,
 						true,
+						preservedDirs,
 					);
+					if (preservedDirs.length > 0) outcome.preservedDirs = preservedDirs;
 				} catch (error) {
 					outcome = {
 						status: "stale-launcher",
@@ -2004,6 +2211,9 @@ async function materializePackagedOmxPluginCacheImpl(
 	} finally {
 			if (publicationLockHeartbeat) clearInterval(publicationLockHeartbeat);
 			try { if (finalRef) await finalRef.handle.close(); } catch (error) { cleanupError ??= error; }
+			if (claimRef && claimRef !== finalRef) {
+				try { await claimRef.handle.close(); } catch (error) { cleanupError ??= error; }
+			}
 			try { if (snapshotRef) await snapshotRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			try { if (tempRef) await tempRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			try { if (tempName) await removeChild(cacheBaseRef, tempName, { recursive: true, force: true }); } catch (error) { cleanupError = error; }
@@ -2020,7 +2230,7 @@ async function materializePackagedOmxPluginCacheImpl(
 					cur.dev === lockIdentity.dev &&
 					cur.ino === lockIdentity.ino
 				) {
-					await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity);
+					await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity, false);
 				}
 				const syncOutcome = await syncDirectory(cacheBaseRef.handle);
 				recordDirectorySyncOutcome(durability, syncOutcome);
