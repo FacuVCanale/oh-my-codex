@@ -3228,6 +3228,42 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("skips an extra history home that disappears during preparation", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-disappearing-extra-"));
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      const sourceSessions = join(wd, "source-sessions");
+      const extraCodexHome = join(wd, "extra-codex-home");
+      await mkdir(sourceCodexHome, { recursive: true });
+      await mkdir(sourceSessions, { recursive: true });
+      await mkdir(join(extraCodexHome, "sessions"), { recursive: true });
+      await writeFile(join(sourceSessions, "rollout-primary.jsonl"), "primary-session\n");
+      await writeFile(join(extraCodexHome, "sessions", "rollout-extra.jsonl"), "extra-session\n");
+      await symlink(sourceSessions, join(sourceCodexHome, "sessions"), "dir");
+
+      const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-disappearing-extra",
+        sourceCodexHome,
+        {
+          includeHistoryArtifacts: true,
+          extraHistoryCodexHomes: [extraCodexHome],
+          afterHistoryEntryValidation: async (entryName) => {
+            if (entryName === "sessions") await rm(join(extraCodexHome, "sessions"), { recursive: true, force: true });
+          },
+        },
+      );
+
+      assert.equal(
+        await readFile(join(runtimeCodexHome, "sessions", "rollout-primary.jsonl"), "utf-8"),
+        "primary-session\n",
+      );
+      assert.equal(existsSync(join(runtimeCodexHome, "sessions", "rollout-extra.jsonl")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("skips cyclic durable history links without aborting preparation", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-cyclic-link-"));
     try {
@@ -3374,6 +3410,30 @@ describe("project launch scope helpers", () => {
       assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"session-2835"}\n');
       assert.equal(await readFile(join(projectCodexHome, "auth.json"), "utf-8"), '{"token":"opaque"}\n');
       assert.equal(existsSync(runtimeCodexHome), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("persists materialized sessions through symlinked authorized roots", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-persist-symlink-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const projectCodexHomeReal = join(wd, ".codex-real");
+      const projectSessions = join(projectCodexHomeReal, "sessions-target");
+      const runtimeCodexHome = join(wd, "runtime-codex-home");
+      await mkdir(projectSessions, { recursive: true });
+      await mkdir(join(runtimeCodexHome, "sessions", "2026"), { recursive: true });
+      await symlink(projectCodexHomeReal, projectCodexHome, "dir");
+      await symlink(projectSessions, join(projectCodexHomeReal, "sessions"), "dir");
+      await writeFile(join(runtimeCodexHome, "sessions", "2026", "rollout.jsonl"), "persisted-session\n");
+
+      await cleanupRuntimeCodexHome(runtimeCodexHome, projectCodexHome);
+
+      assert.equal(
+        await readFile(join(projectSessions, "2026", "rollout.jsonl"), "utf-8"),
+        "persisted-session\n",
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

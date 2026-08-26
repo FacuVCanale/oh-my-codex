@@ -965,6 +965,7 @@ async function copyFilePreservingTimestamps(
     afterStage?: (temporary: string, destination: string) => Promise<void>;
     sourceRoot?: string;
     destinationRoot?: string;
+    expectedSourceStat?: { dev: number; ino: number };
   } = {},
 ): Promise<void> {
   const sourcePath = options.allowTopLevelSymlink === true ? await realpath(source) : source;
@@ -976,6 +977,9 @@ async function copyFilePreservingTimestamps(
   try {
     const sourceStat = await sourceHandle.stat();
     if (!sourceStat.isFile()) throw new Error(`history source is not a regular file: ${source}`);
+    if (options.expectedSourceStat && !hasSameHistoryIdentity(sourceStat, options.expectedSourceStat)) {
+      throw new HistoryEntryChangedError(`history source changed during copy: ${source}`);
+    }
     await mkdir(dirname(destination), { recursive: true });
     destinationHandle = await open(
       temporary,
@@ -1000,7 +1004,7 @@ async function copyFilePreservingTimestamps(
     destinationHandle = undefined;
     await options.afterStage?.(temporary, destination);
     const stagedStat = await lstat(temporary);
-    if (!stagedStat.isFile() || stagedStat.isSymbolicLink()) {
+    if (!stagedStat.isFile() || stagedStat.isSymbolicLink() || stagedStat.nlink !== 1) {
       throw new Error(`history staging path is not a regular file: ${temporary}`);
     }
     if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
@@ -1126,6 +1130,21 @@ function isUnresolvableHistoryLinkError(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP";
 }
 
+class HistoryEntryChangedError extends Error {
+  code = "ESTALE";
+}
+
+function isDiscardableHistoryCopyError(error: unknown): boolean {
+  return isUnresolvableHistoryLinkError(error) || error instanceof HistoryEntryChangedError;
+}
+
+function hasSameHistoryIdentity(
+  actual: { dev: number; ino: number },
+  expected: { dev: number; ino: number },
+): boolean {
+  return actual.dev === expected.dev && actual.ino === expected.ino;
+}
+
 async function inspectProjectLaunchRuntimeHistoryEntry(source: string) {
   // Durable history names are an explicit allowlist. Follow only the named
   // entry's top-level link so a directory link is classified as a directory;
@@ -1174,12 +1193,27 @@ function uniqueJsonlLines(contents: string): string[] {
   return lines;
 }
 
-async function persistProjectLaunchRuntimeJsonlArtifact(source: string, destination: string): Promise<void> {
-  const existing = existsSync(destination) ? await readFile(destination, "utf-8").catch(() => "") : "";
-  const sourceContents = await readFile(source, "utf-8");
+async function persistProjectLaunchRuntimeJsonlArtifact(
+  source: string,
+  destination: string,
+  sourceRoot: string,
+  destinationRoot: string,
+): Promise<void> {
+  const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
+  if (destinationInspection && !destinationInspection.targetStat?.isFile()) return;
+  const destinationPath = destinationInspection?.targetRealpath ?? destination;
+  await assertHistoryPathWithin(destinationPath, destinationRoot, true);
+  const existing = destinationInspection ? await readHistoryFileWithoutSymlink(destinationPath, false, destinationRoot) : "";
+  const sourceContents = await readHistoryFileWithoutSymlink(source, false, sourceRoot);
   const separator = existing === "" || existing.endsWith("\n") || sourceContents === "" ? "" : "\n";
   const lines = uniqueJsonlLines(`${existing}${separator}${sourceContents}`);
-  await writeFile(destination, lines.length > 0 ? `${lines.join("\n")}\n` : "", "utf-8");
+  const mode = destinationInspection?.targetStat?.mode ?? 0o600;
+  await writeHistoryFileAtomically(
+    destinationPath,
+    lines.length > 0 ? `${lines.join("\n")}\n` : "",
+    mode,
+    destinationRoot,
+  );
 }
 
 async function persistProjectLaunchRuntimeHistoryArtifacts(
@@ -1189,23 +1223,34 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
   if (!runtimeCodexHome || !projectCodexHome) return;
   if (!existsSync(runtimeCodexHome)) return;
   await mkdir(projectCodexHome, { recursive: true });
+  const destinationRoot = await realpath(projectCodexHome);
 
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(runtimeCodexHome, entryName);
-    if (!existsSync(source)) continue;
-    const sourceStat = await lstat(source);
-    if (sourceStat.isSymbolicLink()) continue;
+    const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
+    if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
+    const sourcePath = sourceInspection.targetRealpath ?? source;
+    const sourceRoot = sourceInspection.targetRealpath ?? source;
+    if (!(await historyEntryStillMatches(source, sourceInspection))) continue;
     const destination = join(projectCodexHome, entryName);
-    if (sourceStat.isDirectory()) {
-      await cp(source, destination, { recursive: true, force: true, preserveTimestamps: true, verbatimSymlinks: true });
+    const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
+    if (destinationInspection && !destinationInspection.targetStat) continue;
+    const destinationPath = destinationInspection?.targetRealpath ?? destination;
+    await assertHistoryPathWithin(destinationPath, destinationRoot, true);
+    if (sourceInspection.targetStat.isDirectory()) {
+      await copyProjectLaunchRuntimeHistoryDirectory(sourcePath, destinationPath, false, sourceRoot, destinationRoot, sourceInspection.targetStat);
       continue;
     }
     if (entryName === "history.jsonl" || entryName === "session_index.jsonl") {
-      await persistProjectLaunchRuntimeJsonlArtifact(source, destination);
+      await persistProjectLaunchRuntimeJsonlArtifact(sourcePath, destinationPath, sourceRoot, destinationRoot);
       continue;
     }
-    if (sourceStat.isFile()) {
-      await copyFilePreservingTimestamps(source, destination);
+    if (sourceInspection.targetStat.isFile()) {
+      await copyFilePreservingTimestamps(sourcePath, destinationPath, {
+        sourceRoot,
+        destinationRoot,
+        expectedSourceStat: sourceInspection.targetStat,
+      });
     }
   }
 }
@@ -1279,6 +1324,7 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
           destination,
           false,
           destinationRoot,
+          sourceStat,
           options.afterStage
             ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
             : undefined,
@@ -1290,13 +1336,14 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
           allowTopLevelSymlink: false,
           sourceRoot: sourcePath,
           destinationRoot,
+          expectedSourceStat: sourceStat,
           afterStage: options.afterStage
             ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
             : undefined,
         });
       }
     } catch (error) {
-      if (isUnresolvableHistoryLinkError(error)) {
+      if (isDiscardableHistoryCopyError(error)) {
         skipEntryNames.add(entryName);
         continue;
       }
@@ -1312,9 +1359,13 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
   allowTopLevelSymlink = false,
   sourceRoot = source,
   destinationRoot = destination,
+  expectedSourceStat?: { dev: number; ino: number },
 ): Promise<void> {
   const sourceStat = allowTopLevelSymlink ? await stat(source) : await lstat(source);
   if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) return;
+  if (expectedSourceStat && !hasSameHistoryIdentity(sourceStat, expectedSourceStat)) {
+    throw new HistoryEntryChangedError(`history source changed during directory copy: ${source}`);
+  }
   await assertHistoryPathWithin(source, sourceRoot);
   const destinationStat = await lstat(destination).catch((error) => {
     if (isUnresolvableHistoryLinkError(error)) return undefined;
@@ -1339,9 +1390,20 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
     });
     if (!entryStat || entryStat.isSymbolicLink()) continue;
     if (entryStat.isDirectory()) {
-      await copyProjectLaunchRuntimeHistoryDirectory(sourceEntry, destinationEntry, false, sourceRoot, destinationRoot);
+      await copyProjectLaunchRuntimeHistoryDirectory(
+        sourceEntry,
+        destinationEntry,
+        false,
+        sourceRoot,
+        destinationRoot,
+        entryStat,
+      );
     } else if (entryStat.isFile()) {
-      await copyFilePreservingTimestamps(sourceEntry, destinationEntry, { sourceRoot, destinationRoot });
+      await copyFilePreservingTimestamps(sourceEntry, destinationEntry, {
+        sourceRoot,
+        destinationRoot,
+        expectedSourceStat: entryStat,
+      });
     }
   }
   await chmod(destination, destinationMode ?? (sourceStat.mode & 0o7777));
@@ -1353,6 +1415,7 @@ async function replaceProjectLaunchRuntimeHistoryDirectory(
   destination: string,
   allowTopLevelSymlink: boolean,
   destinationRoot: string,
+  expectedSourceStat: { dev: number; ino: number },
   afterStage?: (temporary: string, destination: string) => Promise<void>,
 ): Promise<void> {
   const temporary = `${destination}.omx-history-${randomUUID()}`;
@@ -1361,7 +1424,17 @@ async function replaceProjectLaunchRuntimeHistoryDirectory(
     if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) {
       throw new Error(`history source is not a directory: ${source}`);
     }
-    await copyProjectLaunchRuntimeHistoryDirectory(source, temporary, allowTopLevelSymlink, source, dirname(destination));
+    if (!hasSameHistoryIdentity(sourceStat, expectedSourceStat)) {
+      throw new HistoryEntryChangedError(`history source changed during directory publication: ${source}`);
+    }
+    await copyProjectLaunchRuntimeHistoryDirectory(
+      source,
+      temporary,
+      allowTopLevelSymlink,
+      source,
+      destinationRoot,
+      sourceStat,
+    );
     await afterStage?.(temporary, destination);
     const stagedStat = await lstat(temporary);
     if (!stagedStat.isDirectory() || stagedStat.isSymbolicLink()) {
