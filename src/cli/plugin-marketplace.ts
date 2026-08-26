@@ -144,14 +144,18 @@ function directoryScanOperationPath(handle: FileHandle, path: string): string {
 
 function directoryOperationPath(handle: FileHandle, path: string): string | null {
 	// #3552 blockers 1+2: Linux mutates through a descriptor-relative
-	// /proc/self/fd path. Darwin has no usable fd path, so mutations fail
-	// closed (ENOTSUP) instead of degrading to visible paths. Windows opens
-	// the directory without traversing reparse points
-	// (O_NOFOLLOW|O_DIRECTORY), so the validated visible path is the safe
-	// mutation anchor there.
+	// /proc/self/fd path. Node exposes no *at() primitives on other
+	// platforms, so every mutation elsewhere goes through the visible path
+	// that this handle's open() already validated without following
+	// symlinks/reparse points, restricted to non-destructive shapes:
+	// exclusive mkdir / O_CREAT|O_EXCL|O_NOFOLLOW creates (never O_TRUNC on
+	// a foreign inode), fd-bound writes, quarantine+inode-gated rm, and
+	// rename only into this process's own verified claim, with
+	// assertDirectoryRef identity barriers immediately before and after
+	// every mutation so a replaced parent is detected before any result is
+	// trusted.
 	if (process.platform === "linux") return `/proc/self/fd/${handle.fd}`;
-	if (process.platform === "win32") return resolve(path);
-	return null;
+	return resolve(path);
 }
 
 function unsupportedDirectoryOperationError(): NodeJS.ErrnoException {
@@ -162,11 +166,14 @@ function unsupportedDirectoryOperationError(): NodeJS.ErrnoException {
 }
 
 function childMutationPath(parent: DirectoryRef, name: string): string {
-	if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+	// name is one or more "/"-joined simple components; callers validate the
+	// shape before reaching here, and every component must be a plain name.
+	const components = name.split("/");
+	if (components.some((component) => !component || component === "." || component === ".." || component.includes("\\"))) {
 		throw new Error(`invalid descriptor-relative child name: ${name}`);
 	}
 	if (!parent.mutationPath) throw unsupportedDirectoryOperationError();
-	return join(parent.mutationPath, name);
+	return join(parent.mutationPath, ...components);
 }
 
 function childOperationPath(parent: DirectoryRef, name: string): string {
@@ -350,24 +357,6 @@ async function syncRegularFileChild(
 	await assertDirectoryRef(parent, "file sync");
 }
 
-async function writeRegularFileChild(
-	parent: DirectoryRef,
-	name: string,
-	content: string,
-	tracker?: RegularFileDurabilityTracker,
-): Promise<void> {
-	const noFollowFlags = fsConstants.O_NOFOLLOW;
-	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
-	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | noFollowFlags, 0o600);
-	try {
-		await handle.writeFile(content);
-		const outcome = await syncRegularFile(handle);
-		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
-	} finally {
-		await handle.close();
-	}
-	await assertDirectoryRef(parent, "file write");
-}
 
 async function createExclusiveFileChild(
 	parent: DirectoryRef,
@@ -391,12 +380,40 @@ async function createExclusiveFileChild(
 async function removeChild(parent: DirectoryRef, name: string, options: { recursive?: boolean; force?: boolean } = {}): Promise<void> {
 	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "remove");
+	// #3552 blocker 2: gate the destructive rm on the current inode so a
+	// name swapped between the barrier and the syscall cannot redirect the
+	// deletion at a replacement target; the post-barrier re-assert detects
+	// a replaced parent before the result is trusted.
+	let before: Stats | undefined;
+	try {
+		before = await lstat(mutationPath);
+	} catch (error) {
+		if (!options.force || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	await rm(mutationPath, options);
+	if (before) {
+		try {
+			await lstat(mutationPath);
+			throw new Error(`removed cache entry reappeared during removal: ${mutationPath}`);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
 	await assertDirectoryRef(parent, "remove");
 }
 
 async function renameChild(sourceParent: DirectoryRef, sourceName: string, destinationParent: DirectoryRef, destinationName: string): Promise<void> {
-	const sourcePath = childMutationPath(sourceParent, sourceName);
+	// sourceName may be a single component or a "/"-joined relative path of
+	// simple components (publication moves staged snapshot entries), so
+	// validate each component instead of rejecting separators outright.
+	const sourceComponents = sourceName.split("/");
+	if (sourceComponents.some((component) => !component || component === "." || component === ".." || component.includes("\\"))) {
+		throw new Error(`invalid descriptor-relative child name: ${sourceName}`);
+	}
+	if (destinationName.includes("/") || destinationName.includes("\\") || !destinationName || destinationName === "." || destinationName === "..") {
+		throw new Error(`invalid descriptor-relative child name: ${destinationName}`);
+	}
+	const sourcePath = childMutationPath(sourceParent, sourceComponents.join("/"));
 	const destinationPath = childMutationPath(destinationParent, destinationName);
 	await assertDirectoryRef(sourceParent, "rename");
 	await assertDirectoryRef(destinationParent, "rename");
@@ -406,26 +423,37 @@ async function renameChild(sourceParent: DirectoryRef, sourceName: string, desti
 }
 
 /**
- * #3552 blocker 3: POSIX rename() silently replaces an empty same-version
- * directory, and Node exposes no renameat2(RENAME_NOREPLACE). Publication
- * therefore claims the destination with an atomic exclusive mkdir first:
- * EEXIST means another actor already claimed or published `<version>` (empty
- * or not) and the publication fails closed; success means this process owns
- * the empty claim, and the subsequent rename can only ever replace that
- * verified claim (inode re-checked immediately before the rename). The
- * caller re-verifies the published inode afterwards.
+ * #3552 blocker 3 / review 3860267789: POSIX rename() silently replaces an
+ * empty same-version directory and Node exposes no renameat2(RENAME_NOREPLACE),
+ * so pre/post inode checks around a rename can never be atomic no-replace.
+ * Publication therefore never renames onto `<version>`: the destination is
+ * claimed with an atomic exclusive mkdir (the one portable no-replace
+ * primitive). EEXIST — whether the destination is empty, foreign, incomplete,
+ * or a completed snapshot — always fails closed without touching it. The
+ * claim is self-described with an O_EXCL `.omx-incomplete` marker, the staged
+ * snapshot entries are renamed into the empty claim (destination names cannot
+ * pre-exist), and `.omx-complete` is committed last. Every trust path requires
+ * `.omx-complete` and rejects `.omx-incomplete`, so no intermediate state is
+ * trusted, and no pre-existing directory is ever replaced or removed.
+ *
+ * A claim abandoned by a crashed publisher keeps `.omx-incomplete` and no
+ * `.omx-complete`; the next publication fails closed on it (stale-launcher
+ * with the removal recovery hint) rather than deleting foreign content.
  */
 async function claimPublicationDestination(
 	destinationParent: DirectoryRef,
 	destinationName: string,
-): Promise<Stats> {
+	tracker?: RegularFileDurabilityTracker,
+): Promise<DirectoryRef> {
 	await mkdirDirectoryChildExclusive(destinationParent, destinationName);
 	const claimRef = await openDirectoryChild(destinationParent, destinationName);
 	try {
 		await assertDirectoryRef(claimRef, "publication claim");
-		return await claimRef.handle.stat();
-	} finally {
+		await createExclusiveFileChild(claimRef, ".omx-incomplete", `${process.pid}\n`, tracker);
+		return claimRef;
+	} catch (error) {
 		await claimRef.handle.close();
+		throw error;
 	}
 }
 
@@ -1405,7 +1433,11 @@ async function writePinnedHookLauncher(
 	packagedMarketplace: PackagedOmxMarketplace,
 	tracker?: RegularFileDurabilityTracker,
 ): Promise<void> {
-	await writeRegularFileChild(
+	// #3552 review 3859434238: the launcher is generated into a freshly
+	// created staging snapshot, so it must be created exclusively; a
+	// concurrent hard link at the staged path would otherwise let O_TRUNC
+	// clobber a foreign inode before any provenance check.
+	await createExclusiveFileChild(
 		hooksDir,
 		OMX_PLUGIN_HOOK_LAUNCHER_FILE,
 		buildPinnedHookLauncherContent(packagedMarketplace),
@@ -1801,53 +1833,54 @@ async function materializePackagedOmxPluginCacheImpl(
 			await syncDirectoryTree(snapshotRef, durability);
 			await options.onCacheDirPrepared?.(cacheDir);
 			try {
-				// #3552 blockers 3+5: commit the complete marker while the snapshot
-				// is still only reachable under the staging parent (discovery never
-				// descends into `.omx-plugin-*` staging trees), then claim the
-				// destination with an atomic exclusive mkdir so a concurrently
-				// created `<version>` directory (empty or not) can never be
-				// silently replaced by the final rename.
-				await createExclusiveFileChild(snapshotRef, ".omx-complete", `${process.pid}\n`, durability);
-				await removeChild(snapshotRef, ".omx-incomplete", { force: true });
-				await syncDirectoryTree(snapshotRef, durability);
-				let published = true;
+				// #3552 blockers 3+5 / review 3860267789: never rename onto
+				// `<version>` (rename silently replaces an empty destination and
+				// pre/post inode checks cannot make it atomic). The destination is
+				// claimed with an atomic exclusive mkdir self-described by
+				// `.omx-incomplete`; the staged snapshot entries are then renamed
+				// into that empty claim (destination names cannot pre-exist), and
+				// `.omx-complete` is committed last inside the claim. Every trust
+				// path requires `.omx-complete`, so no intermediate state is
+				// trusted, and no pre-existing directory is ever replaced.
+				let claimRef: DirectoryRef | undefined;
 				try {
-					await claimPublicationDestination(cacheBaseRef, version);
+					claimRef = await claimPublicationDestination(cacheBaseRef, version, durability);
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-						published = false;
+						outcome = {
+							status: "stale-launcher",
+							cacheDir,
+							version,
+							reason: `same-version OMX plugin cache already exists at ${cacheDir}; refusing to replace or remove an existing directory; run ${PLUGIN_LAUNCHER_RECOVERY_HINT} then rerun omx setup --plugin`,
+							launcherTarget: undefined,
+							retiredDirs: [],
+						};
 					} else {
 						throw error;
 					}
 				}
-				if (!published) {
-					outcome = {
-						status: "stale-launcher",
-						cacheDir,
-						version,
-						reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
-						launcherTarget: undefined,
-						retiredDirs: [],
-					};
-				} else {
-					const snapshotStats = await snapshotRef.handle.stat();
-					await renameChild(tempRef, "snapshot", cacheBaseRef, version);
+				if (claimRef) {
+					// Drop the snapshot's staging marker, then the claim's own
+					// placeholder, so every entry moved below lands in an empty
+					// claim and the final marker is the only trust switch.
+					await removeChild(snapshotRef, ".omx-incomplete", { force: true });
+					await removeChild(claimRef, ".omx-incomplete", { force: true });
+					await assertDirectoryRef(claimRef, "publication claim");
+					const claimEntries = await readdir(claimRef.scanOperationPath, { withFileTypes: true });
+					if (claimEntries.length > 0) {
+						throw new Error(`publication claim is not empty at ${join(cacheBaseRef.path, version)}`);
+					}
+					const stagedEntries = await readdir(snapshotRef.scanOperationPath, { withFileTypes: true });
+					for (const entry of stagedEntries) {
+						if (entry.name === ".omx-incomplete") continue;
+						await renameChild(tempRef, `snapshot/${entry.name}`, claimRef, entry.name);
+					}
 					await snapshotRef.handle.close();
 					snapshotRef = undefined;
-					finalRef = await openDirectoryChild(cacheBaseRef, version);
-					await assertDirectoryRef(finalRef, "publication validation");
-					const finalPathStats = await lstat(finalRef.path);
-					const finalDescriptorStats = await finalRef.handle.stat();
-					if (
-						!finalPathStats.isDirectory() ||
-						finalPathStats.isSymbolicLink() ||
-						finalPathStats.dev !== finalDescriptorStats.dev ||
-						finalPathStats.ino !== finalDescriptorStats.ino ||
-						finalDescriptorStats.dev !== snapshotStats.dev ||
-						finalDescriptorStats.ino !== snapshotStats.ino
-					) {
-						throw new Error(`published cache directory changed before validation: ${cacheDir}`);
-					}
+					await syncDirectoryTree(claimRef, durability);
+					await createExclusiveFileChild(claimRef, ".omx-complete", `${process.pid}\n`, durability);
+					await assertDirectoryRef(claimRef, "publication commit");
+					finalRef = claimRef;
 					const syncOutcome = await syncDirectory(cacheBaseRef.handle);
 					recordDirectorySyncOutcome(durability, syncOutcome);
 				}

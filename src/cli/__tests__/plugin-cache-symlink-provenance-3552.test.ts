@@ -158,7 +158,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
-  it("fails closed on Darwin where descriptor-relative mutation paths are unavailable", async () => {
+  it("keeps Darwin publication on identity-gated visible-path mutations", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-darwin-publication-"));
     try {
       await withPlatform("darwin", async () => {
@@ -166,9 +166,11 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           const packaged = await resolvePackagedOmxMarketplace(packageRoot);
           assert.ok(packaged);
           const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
-          assert.equal(first.status, "stale-launcher", JSON.stringify(first));
-          assert.match(first.reason ?? "", /ENOTSUP|descriptor-relative/);
-          assert.equal(existsSync(omxPluginCacheBase(codexHomeDir)), false);
+          assert.equal(first.status, "materialized", JSON.stringify(first));
+          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+          // Mutations stay reachable (no blanket ENOTSUP) because every one is
+          // exclusive-create or inode-gated through the validated anchor.
+          assert.equal(existsSync(omxPluginCacheBase(codexHomeDir)), true);
         });
       });
     } finally {
@@ -835,8 +837,31 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           },
         });
         assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        assert.match(result.reason ?? "", /already exists|refusing to replace/);
         assert.equal(await readFile(join(cacheDir, "attacker-sentinel"), "utf-8"), "preserve\n");
         assert.equal(existsSync(join(cacheDir, ".omx-complete")), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on a foreign .omx-incomplete directory instead of reclaiming it", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-foreign-incomplete-claim-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        await mkdir(cacheDir, { recursive: true });
+        await writeFile(join(cacheDir, "foreign-sentinel"), "preserve\n");
+        await writeFile(join(cacheDir, ".omx-incomplete"), "crashed publisher\n");
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        assert.match(result.reason ?? "", /already exists|refusing to replace|symlink or non-directory/);
+        assert.equal(await readFile(join(cacheDir, "foreign-sentinel"), "utf-8"), "preserve\n");
+        assert.equal(existsSync(join(cacheDir, ".omx-incomplete")), true);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
@@ -860,7 +885,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           },
         });
         assert.equal(result.status, "stale-launcher", JSON.stringify(result));
-        assert.match(result.reason ?? "", /appeared concurrently|refusing to replace/);
+        assert.match(result.reason ?? "", /already exists|refusing to replace/);
         // The claimant (empty directory) survives untouched.
         assert.equal((await lstat(cacheDir)).isDirectory(), true);
         assert.equal((await readdir(cacheDir)).length, 0);
