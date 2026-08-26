@@ -32,6 +32,37 @@ function runOmx(
 }
 
 describe('omx resume', () => {
+  it('runs project resume integration on Windows', async () => {
+    if (process.platform !== 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-windows-integration-'));
+    try {
+      const home = join(wd, 'home');
+      const projectCodexHome = join(wd, '.codex');
+      const fakeBin = join(wd, 'bin');
+      const rolloutPath = join(projectCodexHome, 'sessions', '2026', '06', '17', 'rollout-windows.jsonl');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(dirname(rolloutPath), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await writeFile(rolloutPath, 'windows-session\n');
+      await writeFile(join(fakeBin, 'codex.cmd'), '@echo off\r\nif exist "%CODEX_HOME%\\sessions\\2026\\06\\17\\rollout-windows.jsonl" echo rollout-present=yes\r\n');
+
+      const result = runOmx(wd, ['resume', '--project'], {
+        HOME: home,
+        PATH: `${fakeBin};${process.env.PATH ?? ''}`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /rollout-present=yes/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('exposes project-local Codex history artifacts to codex resume', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-project-history-'));
     try {

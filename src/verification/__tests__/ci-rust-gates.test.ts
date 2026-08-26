@@ -328,6 +328,14 @@ describe('CI Rust gates', () => {
       assert.match(jobBlock(workflow, jobName), /uses:\s*Swatinem\/rust-cache@v2/);
     }
 
+    const windowsHistoryJob = jobBlock(workflow, 'test-windows-js');
+    assert.match(windowsHistoryJob, /runs-on:\s*windows-latest/);
+    assert.match(windowsHistoryJob, /timeout-minutes:\s*30/);
+    assert.match(windowsHistoryJob, /run:\s*npm ci --ignore-scripts/);
+    assert.match(windowsHistoryJob, /node --test/);
+    assert.match(windowsHistoryJob, /serializes concurrent JSONL cleanup appends/);
+    assert.match(windowsHistoryJob, /runs project resume integration on Windows/);
+
     assert.match(
       workflow,
       /needs:\s*\[changes, docs-check, rustfmt, clippy, rust-tests, native-rust-darwin, native-rust-windows, lint, typecheck, build-dist, ralplan-preflight-macos, test, test-windows-js, coverage-team-critical, ralph-persistence-gate, native-cache-integrity, build\]/,

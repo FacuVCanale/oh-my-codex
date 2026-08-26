@@ -962,6 +962,7 @@ async function copyFilePreservingTimestamps(
   destination: string,
   options: {
     allowTopLevelSymlink?: boolean;
+    afterSourceOpen?: () => Promise<void>;
     afterStage?: (temporary: string, destination: string) => Promise<void>;
     sourceRoot?: string;
     destinationRoot?: string;
@@ -982,6 +983,7 @@ async function copyFilePreservingTimestamps(
     if (options.expectedSourceStat && !hasSameHistoryIdentity(sourceStat, options.expectedSourceStat)) {
       throw new HistoryEntryChangedError(`history source changed during copy: ${source}`);
     }
+    await options.afterSourceOpen?.();
     if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
     await mkdir(dirname(destination), { recursive: true });
     destinationHandle = await open(
@@ -991,15 +993,32 @@ async function copyFilePreservingTimestamps(
     );
     const buffer = Buffer.alloc(64 * 1024);
     let position = 0;
+    const copiedHash = createHash("sha256");
     while (true) {
       const { bytesRead } = await sourceHandle.read(buffer, 0, buffer.length, position);
       if (bytesRead === 0) break;
+      copiedHash.update(buffer.subarray(0, bytesRead));
       let written = 0;
       while (written < bytesRead) {
         const { bytesWritten } = await destinationHandle.write(buffer, written, bytesRead - written);
         written += bytesWritten;
       }
       position += bytesRead;
+    }
+    const copiedSourceStat = await sourceHandle.stat();
+    if (!hasSameHistoryVersion(copiedSourceStat, sourceStat)) {
+      throw new HistoryEntryChangedError(`history source content changed during copy: ${source}`);
+    }
+    const verificationHash = createHash("sha256");
+    position = 0;
+    while (true) {
+      const { bytesRead } = await sourceHandle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      verificationHash.update(buffer.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    if (verificationHash.digest("hex") !== copiedHash.digest("hex")) {
+      throw new HistoryEntryChangedError(`history source bytes changed during copy: ${source}`);
     }
     await destinationHandle.chmod(historyDestinationMode(sourceStat.mode));
     await destinationHandle.utimes(sourceStat.atime, sourceStat.mtime);
@@ -1143,6 +1162,19 @@ async function assertHistoryDestinationDirectorySafe(destination: string, root: 
   await assertHistoryPathWithin(destination, root);
 }
 
+async function chmodHistoryDestination(
+  destination: string,
+  mode: number,
+  tolerateForeignOwner: boolean,
+): Promise<void> {
+  try {
+    await chmod(destination, mode);
+  } catch (error) {
+    if (tolerateForeignOwner && (error as NodeJS.ErrnoException).code === "EPERM") return;
+    throw error;
+  }
+}
+
 function isUnresolvableHistoryLinkError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as NodeJS.ErrnoException).code;
@@ -1168,8 +1200,10 @@ interface HistoryPersistenceLockOptions {
 }
 
 interface HistoryPersistenceLockLease {
+  root: string;
   lockPath: string;
   token: string;
+  lockIdentity: { dev: number; ino: number };
   heartbeat: ReturnType<typeof setInterval>;
 }
 
@@ -1221,11 +1255,41 @@ async function isHistoryProcessAlive(owner: HistoryPersistenceLockOwner): Promis
   return currentIdentity === owner.startIdentity;
 }
 
+async function historyLockIsCurrent(lease: HistoryPersistenceLockLease): Promise<boolean> {
+  const lockStat = await lstat(lease.lockPath).catch(() => undefined);
+  if (!lockStat || !lockStat.isDirectory() || lockStat.isSymbolicLink()) return false;
+  if (!hasSameHistoryIdentity(lockStat, lease.lockIdentity)) return false;
+  const owner = await readHistoryPersistenceLockOwner(lease.lockPath);
+  return owner?.token === lease.token;
+}
+
+async function retireHistoryLock(
+  lockPath: string,
+  root: string,
+  expectedIdentity: { dev: number; ino: number },
+  expectedToken?: string,
+): Promise<void> {
+  const currentStat = await lstat(lockPath).catch(() => undefined);
+  if (!currentStat || !currentStat.isDirectory() || currentStat.isSymbolicLink()) return;
+  if (!hasSameHistoryIdentity(currentStat, expectedIdentity)) return;
+  if (expectedToken) {
+    const owner = await readHistoryPersistenceLockOwner(lockPath);
+    if (owner?.token !== expectedToken) return;
+  }
+  const retiredPath = `${lockPath}.retired-${randomUUID()}`;
+  try {
+    await rename(lockPath, retiredPath);
+  } catch {
+    return;
+  }
+  await assertHistoryPathWithin(retiredPath, root);
+  await rm(retiredPath, { recursive: true, force: true }).catch(() => undefined);
+}
+
 export async function releaseHistoryPersistenceLock(lease: HistoryPersistenceLockLease): Promise<void> {
   clearInterval(lease.heartbeat);
-  const owner = await readHistoryPersistenceLockOwner(lease.lockPath);
-  if (owner?.token !== lease.token) return;
-  await rm(lease.lockPath, { recursive: true, force: true }).catch(() => undefined);
+  if (!(await historyLockIsCurrent(lease))) return;
+  await retireHistoryLock(lease.lockPath, lease.root, lease.lockIdentity, lease.token);
 }
 
 export async function acquireHistoryPersistenceLock(
@@ -1246,6 +1310,7 @@ export async function acquireHistoryPersistenceLock(
         throw new Error(`history persistence lock is not a private directory: ${lockPath}`);
       }
       await assertHistoryPathWithin(lockPath, root);
+      const lockIdentity = { dev: lockStat.dev, ino: lockStat.ino };
       const token = randomUUID();
       const startIdentity = await historyProcessStartIdentity(process.pid);
       await writeFile(
@@ -1264,6 +1329,12 @@ export async function acquireHistoryPersistenceLock(
             JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
             { flag: "wx" },
           );
+          const currentLockStat = await lstat(lockPath);
+          const currentOwner = await readHistoryPersistenceLockOwner(lockPath);
+          if (!hasSameHistoryIdentity(currentLockStat, lockIdentity) || currentOwner?.token !== token) {
+            await rm(temporaryOwnerPath, { force: true }).catch(() => undefined);
+            return;
+          }
           await rename(temporaryOwnerPath, ownerPath);
         } catch {
           // A contender may have removed a dead owner's lock between checks.
@@ -1271,7 +1342,7 @@ export async function acquireHistoryPersistenceLock(
         }
       }, heartbeatMs);
       heartbeat.unref?.();
-      return { lockPath, token, heartbeat };
+      return { root, lockPath, token, lockIdentity, heartbeat };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const lockStat = await lstat(lockPath).catch(() => undefined);
@@ -1281,11 +1352,11 @@ export async function acquireHistoryPersistenceLock(
       if (owner && owner !== null && (await isHistoryProcessAlive(owner)) === false) {
         const ownerStat = await stat(join(lockPath, "owner.json")).catch(() => undefined);
         if (ownerStat && Date.now() - ownerStat.mtimeMs > staleMs) {
-          await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+          await retireHistoryLock(lockPath, root, lockStat ? { dev: lockStat.dev, ino: lockStat.ino } : { dev: -1, ino: -1 }, owner.token);
           continue;
         }
       } else if (owner === undefined && lockAge > staleMs) {
-        await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+        await retireHistoryLock(lockPath, root, lockStat ? { dev: lockStat.dev, ino: lockStat.ino } : { dev: -1, ino: -1 });
         continue;
       }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for history persistence lock: ${lockPath}`);
@@ -1411,20 +1482,24 @@ async function persistProjectLaunchRuntimeJsonlArtifact(
 async function persistProjectLaunchRuntimeHistoryArtifacts(
   runtimeCodexHome: string | undefined,
   projectCodexHome: string | undefined,
-): Promise<void> {
-  if (!runtimeCodexHome || !projectCodexHome) return;
-  if (!existsSync(runtimeCodexHome)) return;
+): Promise<boolean> {
+  if (!runtimeCodexHome || !projectCodexHome) return true;
+  if (!existsSync(runtimeCodexHome)) return true;
   await mkdir(projectCodexHome, { recursive: true });
   const destinationRoot = await realpath(projectCodexHome);
 
-  await withHistoryPersistenceLock(destinationRoot, async () => {
+  return withHistoryPersistenceLock(destinationRoot, async () => {
+    let complete = true;
     for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(runtimeCodexHome, entryName);
     const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
     if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
     const sourcePath = sourceInspection.targetRealpath ?? source;
     const sourceRoot = sourceInspection.targetRealpath ?? source;
-    if (!(await historyEntryStillMatches(source, sourceInspection))) continue;
+    if (!(await historyEntryStillMatches(source, sourceInspection))) {
+      complete = false;
+      continue;
+    }
     const destination = join(projectCodexHome, entryName);
     const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
     if (destinationInspection && !destinationInspection.targetStat) continue;
@@ -1443,7 +1518,10 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
       try {
         await copyProjectLaunchRuntimeHistoryDirectory(sourcePath, destinationPath, false, sourceRoot, destinationRoot, sourceInspection.targetStat);
       } catch (error) {
-        if (isDiscardableHistoryCopyError(error)) continue;
+        if (isDiscardableHistoryCopyError(error)) {
+          complete = false;
+          continue;
+        }
         throw error;
       }
       continue;
@@ -1459,7 +1537,10 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
           sourceInspection.targetStat,
         );
       } catch (error) {
-        if (isDiscardableHistoryCopyError(error)) continue;
+        if (isDiscardableHistoryCopyError(error)) {
+          complete = false;
+          continue;
+        }
         throw error;
       }
       continue;
@@ -1472,11 +1553,15 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
           expectedSourceStat: sourceInspection.targetStat,
         });
       } catch (error) {
-        if (isDiscardableHistoryCopyError(error)) continue;
+        if (isDiscardableHistoryCopyError(error)) {
+          complete = false;
+          continue;
+        }
         throw error;
       }
     }
     }
+    return complete;
   });
 }
 
@@ -1513,6 +1598,7 @@ interface MaterializeProjectLaunchRuntimeHistoryOptions {
   beforeCopy?: (entryName: string, source: string, destination: string) => Promise<void>;
   afterValidation?: (entryName: string, source: string, destination: string) => Promise<void>;
   afterStage?: (entryName: string, temporary: string, destination: string) => Promise<void>;
+  afterSourceOpen?: (entryName: string, source: string) => Promise<void>;
 }
 
 async function materializeProjectLaunchRuntimeHistoryEntries(
@@ -1565,6 +1651,9 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
           afterStage: options.afterStage
             ? (temporary, stagedDestination) => options.afterStage!(entryName, temporary, stagedDestination)
             : undefined,
+          afterSourceOpen: options.afterSourceOpen
+            ? () => options.afterSourceOpen!(entryName, sourcePath)
+            : undefined,
         });
       }
     } catch (error) {
@@ -1606,10 +1695,17 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
     destinationStat && destinationStat.isDirectory() && !destinationStat.isSymbolicLink()
       ? destinationStat.mode & historyDestinationMode(sourceStat.mode) & 0o7777
       : undefined;
+  const destinationWasExistingDirectory = Boolean(
+    destinationStat && destinationStat.isDirectory() && !destinationStat.isSymbolicLink(),
+  );
   const sourceDestinationMode = historyDestinationMode(sourceStat.mode);
   await mkdir(destination, { recursive: true, mode: destinationMode ?? sourceDestinationMode });
   await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
-  await chmod(destination, (destinationMode ?? sourceDestinationMode) | 0o700);
+  await chmodHistoryDestination(
+    destination,
+    (destinationMode ?? sourceDestinationMode) | 0o700,
+    destinationWasExistingDirectory,
+  );
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const sourceEntry = join(source, entry.name);
     const destinationEntry = join(destination, entry.name);
@@ -1636,7 +1732,7 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
     }
   }
   await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
-  await chmod(destination, destinationMode ?? sourceDestinationMode);
+  await chmodHistoryDestination(destination, destinationMode ?? sourceDestinationMode, destinationWasExistingDirectory);
   await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
   await utimes(destination, sourceStat.atime, sourceStat.mtime);
 }
@@ -1832,6 +1928,7 @@ export interface PrepareRuntimeCodexHomeForProjectLaunchOptions {
   beforeHistoryEntryCopy?: MaterializeProjectLaunchRuntimeHistoryOptions["beforeCopy"];
   afterHistoryEntryValidation?: MaterializeProjectLaunchRuntimeHistoryOptions["afterValidation"];
   afterHistoryEntryStage?: MaterializeProjectLaunchRuntimeHistoryOptions["afterStage"];
+  afterHistorySourceOpen?: MaterializeProjectLaunchRuntimeHistoryOptions["afterSourceOpen"];
 }
 
 export async function prepareRuntimeCodexHomeForProjectLaunch(
@@ -1903,6 +2000,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
       beforeCopy: options.beforeHistoryEntryCopy,
       afterValidation: options.afterHistoryEntryValidation,
       afterStage: options.afterHistoryEntryStage,
+      afterSourceOpen: options.afterHistorySourceOpen,
     });
     for (const extraCodexHome of extraHistoryCodexHomes) {
       await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome, mergedHistorySourceRealpaths);
@@ -2184,18 +2282,42 @@ export async function cleanupRuntimeCodexHome(
   projectCodexHomeForPersistence?: string,
 ): Promise<void> {
   if (!runtimeCodexHomeForCleanup) return;
+  const runtimeParent = dirname(runtimeCodexHomeForCleanup);
+  const initialParentStat = await lstat(runtimeParent).catch(() => undefined);
+  const initialParentRealpath = await realpath(runtimeParent).catch(() => undefined);
+  const initialRuntimeStat = await lstat(runtimeCodexHomeForCleanup).catch(() => undefined);
+  if (!initialParentStat || !initialParentRealpath || !initialRuntimeStat) return;
+  if (initialParentStat.isSymbolicLink()) return;
+  try {
+    await assertHistoryPathWithin(runtimeCodexHomeForCleanup, initialParentRealpath);
+  } catch {
+    return;
+  }
   await persistProjectLaunchRuntimeAuthState(
     runtimeCodexHomeForCleanup,
     projectCodexHomeForPersistence,
   );
-  await persistProjectLaunchRuntimeHistoryArtifacts(
+  const historyPersisted = await persistProjectLaunchRuntimeHistoryArtifacts(
     runtimeCodexHomeForCleanup,
     projectCodexHomeForPersistence,
   );
+  if (!historyPersisted) return;
   await persistProjectLaunchRuntimeProjectTrustState(
     runtimeCodexHomeForCleanup,
     projectCodexHomeForPersistence,
   );
+  const finalParentStat = await lstat(runtimeParent).catch(() => undefined);
+  const finalParentRealpath = await realpath(runtimeParent).catch(() => undefined);
+  const finalRuntimeStat = await lstat(runtimeCodexHomeForCleanup).catch(() => undefined);
+  if (
+    !finalParentStat ||
+    finalParentStat.isSymbolicLink() ||
+    !finalParentRealpath ||
+    finalParentRealpath !== initialParentRealpath ||
+    !hasSameHistoryIdentity(finalParentStat, initialParentStat) ||
+    !finalRuntimeStat ||
+    !hasSameHistoryIdentity(finalRuntimeStat, initialRuntimeStat)
+  ) return;
   await rm(runtimeCodexHomeForCleanup, { recursive: true, force: true });
 }
 

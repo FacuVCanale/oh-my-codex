@@ -1,6 +1,6 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
@@ -3135,6 +3135,34 @@ describe("project launch scope helpers", () => {
       assert.equal((await lstat(join(runtimeCodexHome, "history.jsonl"))).isSymbolicLink(), false);
       assert.equal(await readFile(join(runtimeCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked-session"}\n');
       assert.equal(existsSync(join(runtimeCodexHome, "session_index.jsonl")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("skips same-inode history content mutations during file publication", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-content-race-"));
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      const sourceHistory = join(wd, "source-history.jsonl");
+      await mkdir(sourceCodexHome, { recursive: true });
+      await writeFile(sourceHistory, "original\n");
+      await symlink(sourceHistory, join(sourceCodexHome, "history.jsonl"));
+      const originalStat = statSync(sourceHistory);
+      const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-content-race",
+        sourceCodexHome,
+        {
+          includeHistoryArtifacts: true,
+          afterHistorySourceOpen: async (entryName, source) => {
+            if (entryName !== "history.jsonl") return;
+            await writeFile(source, "mutated!\n");
+            utimesSync(source, originalStat.atime, originalStat.mtime);
+          },
+        },
+      );
+      assert.equal(existsSync(join(runtimeCodexHome, "history.jsonl")), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
