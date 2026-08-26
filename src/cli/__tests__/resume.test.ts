@@ -32,6 +32,43 @@ function runOmx(
 }
 
 describe('omx resume', () => {
+  it('runs project resume integration on Windows', async () => {
+    if (process.platform !== 'win32') return;
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-windows-integration-'));
+    try {
+      const home = join(wd, 'home');
+      const projectCodexHome = join(wd, '.codex');
+      const discoveredRuntimeHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime');
+      const fakeBin = join(wd, 'bin');
+      const rolloutPath = join(discoveredRuntimeHome, 'sessions', '2026', '06', '17', 'rollout-windows.jsonl');
+      await mkdir(home, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await mkdir(dirname(rolloutPath), { recursive: true });
+      await mkdir(join(wd, '.omx'), { recursive: true });
+      await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
+      await writeFile(rolloutPath, 'windows-session\n');
+      await writeFile(join(fakeBin, 'codex.cmd'), '@echo off\r\necho fake-codex\r\nif exist "%CODEX_HOME%\\sessions\\2026\\06\\17\\rollout-windows.jsonl" echo rollout-present=yes\r\n');
+
+      const result = runOmx(wd, ['resume', '--project'], {
+        HOME: home,
+        PATH: `${fakeBin};${process.env.PATH ?? ''}`,
+        Path: `${fakeBin};${process.env.Path ?? process.env.PATH ?? ''}`,
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex/);
+      assert.match(result.stdout, /rollout-present=yes/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it('exposes project-local Codex history artifacts to codex resume', async () => {
     const wd = await mkdtemp(join(tmpdir(), 'omx-resume-project-history-'));
     try {
@@ -380,12 +417,60 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       assert.match(result.stdout, /fake-codex:resume\b/);
       assert.match(result.stdout, /runtime-rollout-present=yes/);
       assert.match(result.stdout, /project-rollout-present=no/);
-      const runtimeDirs = await readdir(join(wd, '.omx', 'runtime', 'codex-home'));
-      const persistedNewTranscript = await Promise.all(runtimeDirs.map(async (dir) => {
-        const transcript = join(wd, '.omx', 'runtime', 'codex-home', dir, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl');
-        return readFile(transcript, 'utf-8').catch(() => '');
-      }));
-      assert.ok(persistedNewTranscript.some((content) => content.includes('new-project-resume')));
+      assert.equal(
+        await readFile(
+          join(runtimeCodexHome, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl'),
+          'utf-8',
+        ),
+        '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n',
+      );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes symlinked discovered history for madmax project resume', async () => {
+    const wd = await mkdtemp(join(tmpdir(), 'omx-resume-madmax-project-symlink-'));
+    try {
+      const home = join(wd, 'home');
+      const runsRoot = join(wd, 'runs');
+      const associatedRun = join(runsRoot, 'run-associated');
+      const runtimeHomes = join(associatedRun, '.omx', 'runtime', 'codex-home');
+      const sourceCodexHome = join(runtimeHomes, 'omx-z-source');
+      const linkedSessions = join(wd, 'project-sessions');
+      const fakeBin = join(wd, 'bin');
+      const fakeCodexPath = join(fakeBin, 'codex');
+      const fakePsPath = join(fakeBin, 'ps');
+
+      await mkdir(home, { recursive: true });
+      await mkdir(sourceCodexHome, { recursive: true });
+      await mkdir(linkedSessions, { recursive: true });
+      await mkdir(fakeBin, { recursive: true });
+      await writeFile(join(linkedSessions, 'rollout-linked.jsonl'), 'linked-session\n');
+      await symlink(linkedSessions, join(sourceCodexHome, 'sessions'), 'dir');
+      await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: wd, run_dir: associatedRun })}\n`);
+      await writeFile(fakeCodexPath, `#!/bin/sh
+printf 'fake-codex:%s\n' "$*"
+if [ -f "$CODEX_HOME/sessions/rollout-linked.jsonl" ]; then echo linked=yes; else echo linked=no; fi
+if [ -f "$CODEX_HOME/sessions/rollout-extra.jsonl" ]; then echo extra=yes; else echo extra=no; fi
+`);
+      await chmod(fakeCodexPath, 0o755);
+      await writeFile(fakePsPath, '#!/bin/sh\nexit 0\n');
+      await chmod(fakePsPath, 0o755);
+
+      const result = runOmx(wd, ['--madmax', 'resume', '--project'], {
+        HOME: home,
+        OMX_RUNS_DIR: runsRoot,
+        PATH: `${fakeBin}:/usr/bin:/bin`,
+        OMX_AUTO_UPDATE: '0',
+        OMX_NOTIFY_FALLBACK: '0',
+        OMX_HOOK_DERIVED_SIGNALS: '0',
+      });
+
+      assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
+      assert.match(result.stdout, /fake-codex:resume\b/);
+      assert.match(result.stdout, /linked=yes/);
+      assert.doesNotMatch(result.stderr, /EISDIR|ENOTSUP/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
