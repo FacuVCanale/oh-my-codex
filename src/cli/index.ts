@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
 import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { copyFile, cp, lstat, mkdir, open, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
+import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash, randomUUID } from "crypto";
 import {
@@ -940,10 +940,14 @@ export function runtimeCodexHomePath(
   return join(omxRoot(cwd), "runtime", "codex-home", sessionId);
 }
 
-async function linkOrCopyCodexHomeEntry(source: string, destination: string): Promise<void> {
+async function linkOrCopyCodexHomeEntry(
+  source: string,
+  destination: string,
+  createSymlink: typeof symlink = symlink,
+): Promise<void> {
   const stat = await lstat(source);
   try {
-    await symlink(source, destination, stat.isDirectory() && process.platform === "win32" ? "junction" : undefined);
+    await createSymlink(source, destination, stat.isDirectory() && process.platform === "win32" ? "junction" : undefined);
   } catch {
     if (stat.isDirectory()) {
       await cp(source, destination, { recursive: true, force: true, verbatimSymlinks: true });
@@ -953,10 +957,84 @@ async function linkOrCopyCodexHomeEntry(source: string, destination: string): Pr
   }
 }
 
-async function copyFilePreservingTimestamps(source: string, destination: string): Promise<void> {
-  await copyFile(source, destination);
-  const sourceStat = await stat(source);
-  await utimes(destination, sourceStat.atime, sourceStat.mtime);
+async function copyFilePreservingTimestamps(
+  source: string,
+  destination: string,
+  options: { allowTopLevelSymlink?: boolean } = {},
+): Promise<void> {
+  const sourcePath = options.allowTopLevelSymlink === true ? await realpath(source) : source;
+  const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  let destinationHandle;
+  const temporary = `${destination}.omx-history-${randomUUID()}`;
+  try {
+    const sourceStat = await sourceHandle.stat();
+    if (!sourceStat.isFile()) throw new Error(`history source is not a regular file: ${source}`);
+    await mkdir(dirname(destination), { recursive: true });
+    destinationHandle = await open(
+      temporary,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      sourceStat.mode & 0o7777,
+    );
+    const buffer = Buffer.alloc(64 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await sourceHandle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) break;
+      let written = 0;
+      while (written < bytesRead) {
+        const { bytesWritten } = await destinationHandle.write(buffer, written, bytesRead - written);
+        written += bytesWritten;
+      }
+      position += bytesRead;
+    }
+    await destinationHandle.close();
+    destinationHandle = undefined;
+    await chmod(temporary, sourceStat.mode & 0o7777);
+    await utimes(temporary, sourceStat.atime, sourceStat.mtime);
+    await rm(destination, { recursive: true, force: true });
+    await rename(temporary, destination);
+  } finally {
+    await destinationHandle?.close().catch(() => undefined);
+    await rm(temporary, { force: true }).catch(() => undefined);
+    await sourceHandle.close();
+  }
+}
+
+async function readHistoryFileWithoutSymlink(source: string, allowTopLevelSymlink = false): Promise<string> {
+  const sourcePath = allowTopLevelSymlink === true ? await realpath(source) : source;
+  const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const sourceStat = await sourceHandle.stat();
+    if (!sourceStat.isFile()) throw new Error(`history source is not a regular file: ${source}`);
+    return await sourceHandle.readFile("utf-8");
+  } finally {
+    await sourceHandle.close();
+  }
+}
+
+async function writeHistoryFileAtomically(
+  destination: string,
+  contents: string,
+  mode: number,
+): Promise<void> {
+  const temporary = `${destination}.omx-history-${randomUUID()}`;
+  let destinationHandle;
+  try {
+    destinationHandle = await open(
+      temporary,
+      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+      mode & 0o7777,
+    );
+    await destinationHandle.writeFile(contents, "utf-8");
+    await destinationHandle.close();
+    destinationHandle = undefined;
+    await chmod(temporary, mode & 0o7777);
+    await rm(destination, { recursive: true, force: true });
+    await rename(temporary, destination);
+  } finally {
+    await destinationHandle?.close().catch(() => undefined);
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 function isCodexSqliteArtifact(entryName: string): boolean {
@@ -992,6 +1070,10 @@ function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
   return PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES.has(entryName);
 }
 
+function isRegularHistoryTarget(sourceStat: { isDirectory(): boolean; isFile(): boolean }): boolean {
+  return sourceStat.isDirectory() || sourceStat.isFile();
+}
+
 function isUnresolvableHistoryLinkError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as NodeJS.ErrnoException).code;
@@ -1009,13 +1091,30 @@ async function inspectProjectLaunchRuntimeHistoryEntry(source: string) {
     if (isUnresolvableHistoryLinkError(error)) return undefined;
     throw error;
   }
-  if (!linkStat.isSymbolicLink()) return { linkStat, targetStat: linkStat };
+  if (!linkStat.isSymbolicLink()) return { linkStat, targetStat: linkStat, targetRealpath: undefined };
   try {
-    return { linkStat, targetStat: await stat(source) };
+    return { linkStat, targetStat: await stat(source), targetRealpath: await realpath(source) };
   } catch (error) {
     if (isUnresolvableHistoryLinkError(error)) return { linkStat, targetStat: undefined };
     throw error;
   }
+}
+
+async function historyEntryStillMatches(
+  source: string,
+  inspection: Awaited<ReturnType<typeof inspectProjectLaunchRuntimeHistoryEntry>>,
+): Promise<boolean> {
+  if (!inspection) return false;
+  const current = await inspectProjectLaunchRuntimeHistoryEntry(source);
+  const inspectedTarget = inspection.targetStat;
+  const currentTarget = current?.targetStat;
+  if (!current || !inspectedTarget || !currentTarget) return false;
+  if (current.linkStat.dev !== inspection.linkStat.dev || current.linkStat.ino !== inspection.linkStat.ino) return false;
+  if (inspection.targetRealpath !== current.targetRealpath) return false;
+  return (
+    currentTarget.dev === inspectedTarget.dev &&
+    currentTarget.ino === inspectedTarget.ino
+  );
 }
 
 function uniqueJsonlLines(contents: string): string[] {
@@ -1068,14 +1167,20 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
 async function ensureProjectLaunchRuntimeHistoryLinks(
   runtimeCodexHome: string,
   projectCodexHome: string,
+  skipEntryNames: ReadonlySet<string> = new Set(),
+  createSymlink: typeof symlink = symlink,
 ): Promise<void> {
   await mkdir(projectCodexHome, { recursive: true });
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    if (skipEntryNames.has(entryName)) continue;
     const runtimeEntry = join(runtimeCodexHome, entryName);
     if (existsSync(runtimeEntry)) continue;
     const projectEntry = join(projectCodexHome, entryName);
     const projectEntryInspection = await inspectProjectLaunchRuntimeHistoryEntry(projectEntry);
-    if (projectEntryInspection?.linkStat.isSymbolicLink() && !projectEntryInspection.targetStat) {
+    if (
+      projectEntryInspection &&
+      (!projectEntryInspection.targetStat || !isRegularHistoryTarget(projectEntryInspection.targetStat))
+    ) {
       continue;
     }
     if (entryName === "sessions") {
@@ -1083,33 +1188,66 @@ async function ensureProjectLaunchRuntimeHistoryLinks(
     } else if (!existsSync(projectEntry)) {
       await writeFile(projectEntry, "");
     }
-    await linkOrCopyCodexHomeEntry(projectEntry, runtimeEntry);
+    await linkOrCopyCodexHomeEntry(projectEntry, runtimeEntry, createSymlink);
   }
+}
+
+interface MaterializeProjectLaunchRuntimeHistoryOptions {
+  onlySymlinks?: boolean;
+  beforeCopy?: (entryName: string, source: string, destination: string) => Promise<void>;
 }
 
 async function materializeProjectLaunchRuntimeHistoryEntries(
   runtimeCodexHome: string,
   sourceCodexHome: string,
-  options: { onlySymlinks?: boolean } = {},
-): Promise<void> {
+  options: MaterializeProjectLaunchRuntimeHistoryOptions = {},
+): Promise<Set<string>> {
+  const skipEntryNames = new Set<string>();
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
     const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
     if (!sourceInspection || !sourceInspection.targetStat) continue;
     if (options.onlySymlinks === true && !sourceInspection.linkStat.isSymbolicLink()) continue;
     const destination = join(runtimeCodexHome, entryName);
-    await rm(destination, { recursive: true, force: true });
-    const sourceStat = sourceInspection.targetStat;
-    if (sourceStat.isDirectory()) {
-      await copyProjectLaunchRuntimeHistoryDirectory(source, destination);
+    await options.beforeCopy?.(entryName, source, destination);
+    if (!(await historyEntryStillMatches(source, sourceInspection))) {
+      skipEntryNames.add(entryName);
       continue;
     }
-    if (sourceStat.isFile()) await copyFilePreservingTimestamps(source, destination);
+    await rm(destination, { recursive: true, force: true });
+    const sourceStat = sourceInspection.targetStat;
+    if (!sourceStat) continue;
+    if (sourceStat.isDirectory()) {
+      await replaceProjectLaunchRuntimeHistoryDirectory(
+        source,
+        destination,
+        sourceInspection.linkStat.isSymbolicLink(),
+      );
+      continue;
+    }
+    if (sourceStat.isFile()) {
+      await copyFilePreservingTimestamps(source, destination, { allowTopLevelSymlink: true });
+    }
   }
+  return skipEntryNames;
 }
 
-async function copyProjectLaunchRuntimeHistoryDirectory(source: string, destination: string): Promise<void> {
-  await mkdir(destination, { recursive: true });
+async function copyProjectLaunchRuntimeHistoryDirectory(
+  source: string,
+  destination: string,
+  allowTopLevelSymlink = false,
+): Promise<void> {
+  const sourceStat = allowTopLevelSymlink ? await stat(source) : await lstat(source);
+  if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) return;
+  const destinationStat = await lstat(destination).catch((error) => {
+    if (isUnresolvableHistoryLinkError(error)) return undefined;
+    throw error;
+  });
+  if (destinationStat && (!destinationStat.isDirectory() || destinationStat.isSymbolicLink())) {
+    await rm(destination, { recursive: true, force: true });
+  }
+  await mkdir(destination, { recursive: true, mode: sourceStat.mode & 0o7777 });
+  await chmod(destination, sourceStat.mode & 0o7777);
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const sourceEntry = join(source, entry.name);
     const destinationEntry = join(destination, entry.name);
@@ -1124,8 +1262,28 @@ async function copyProjectLaunchRuntimeHistoryDirectory(source: string, destinat
       await copyFilePreservingTimestamps(sourceEntry, destinationEntry);
     }
   }
-  const sourceStat = await stat(source);
-  await utimes(destination, sourceStat.atime, sourceStat.mtime);
+  const finalSourceStat = await stat(source);
+  await chmod(destination, finalSourceStat.mode & 0o7777);
+  await utimes(destination, finalSourceStat.atime, finalSourceStat.mtime);
+}
+
+async function replaceProjectLaunchRuntimeHistoryDirectory(
+  source: string,
+  destination: string,
+  allowTopLevelSymlink: boolean,
+): Promise<void> {
+  const temporary = `${destination}.omx-history-${randomUUID()}`;
+  try {
+    const sourceStat = allowTopLevelSymlink ? await stat(source) : await lstat(source);
+    if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) {
+      throw new Error(`history source is not a directory: ${source}`);
+    }
+    await copyProjectLaunchRuntimeHistoryDirectory(source, temporary, allowTopLevelSymlink);
+    await rm(destination, { recursive: true, force: true });
+    await rename(temporary, destination);
+  } finally {
+    await rm(temporary, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 async function mergeProjectLaunchRuntimeHistoryEntries(
@@ -1135,35 +1293,56 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
 ): Promise<void> {
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
-    if (!existsSync(source)) continue;
-    const sourceRealpath = realpathSync(source);
+    const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
+    if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
+    const sourceRealpath = sourceInspection.targetRealpath ?? realpathSync(source);
     if (mergedHistorySourceRealpaths.has(sourceRealpath)) continue;
+    if (!(await historyEntryStillMatches(source, sourceInspection))) continue;
     const destination = join(runtimeCodexHome, entryName);
-    const sourceStat = await stat(source);
+    const sourceStat = sourceInspection.targetStat;
+    if (!sourceStat) continue;
     if (sourceStat.isDirectory()) {
+      const destinationStat = await lstat(destination).catch((error) => {
+        if (isUnresolvableHistoryLinkError(error)) return undefined;
+        throw error;
+      });
+      if (destinationStat && (!destinationStat.isDirectory() || destinationStat.isSymbolicLink())) {
+        await rm(destination, { recursive: true, force: true });
+      }
       await mkdir(destination, { recursive: true });
-      await copyProjectLaunchRuntimeHistoryDirectory(source, destination);
+      await copyProjectLaunchRuntimeHistoryDirectory(source, destination, sourceInspection.linkStat.isSymbolicLink());
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
     if (entryName === "sessions") continue;
     if (!sourceStat.isFile()) continue;
-    if (existsSync(destination)) {
-      const destinationStat = await stat(destination);
+    const destinationLinkStat = await lstat(destination).catch((error) => {
+      if (isUnresolvableHistoryLinkError(error)) return undefined;
+      throw error;
+    });
+    if (destinationLinkStat?.isSymbolicLink()) {
+      await rm(destination, { force: true });
+    }
+    if (destinationLinkStat && !destinationLinkStat.isSymbolicLink()) {
+      const destinationStat = destinationLinkStat;
       if (!destinationStat.isFile()) {
         await rm(destination, { recursive: true, force: true });
-        await copyFilePreservingTimestamps(source, destination);
+        await copyFilePreservingTimestamps(source, destination, { allowTopLevelSymlink: true });
         mergedHistorySourceRealpaths.add(sourceRealpath);
         continue;
       }
-      const existing = await readFile(destination, "utf-8").catch(() => "");
-      const addition = await readFile(source, "utf-8");
+      const existing = await readHistoryFileWithoutSymlink(destination);
+      const addition = await readHistoryFileWithoutSymlink(source, true);
       const separator = existing === "" || existing.endsWith("\n") || addition === "" ? "" : "\n";
-      await writeFile(destination, `${existing}${separator}${addition}`, "utf-8");
+      await writeHistoryFileAtomically(
+        destination,
+        `${existing}${separator}${addition}`,
+        destinationStat.mode & 0o7777,
+      );
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
-    await copyFilePreservingTimestamps(source, destination);
+    await copyFilePreservingTimestamps(source, destination, { allowTopLevelSymlink: true });
     mergedHistorySourceRealpaths.add(sourceRealpath);
   }
 }
@@ -1191,6 +1370,8 @@ export async function persistProjectLaunchRuntimeAuthState(
 export interface PrepareRuntimeCodexHomeForProjectLaunchOptions {
   includeHistoryArtifacts?: boolean;
   extraHistoryCodexHomes?: string[];
+  createSymlink?: typeof symlink;
+  beforeHistoryEntryCopy?: MaterializeProjectLaunchRuntimeHistoryOptions["beforeCopy"];
 }
 
 export async function prepareRuntimeCodexHomeForProjectLaunch(
@@ -1204,7 +1385,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
   await mkdir(runtimeCodexHome, { recursive: true });
 
   if (!existsSync(projectCodexHome)) {
-    await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
+    await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome, new Set(), options.createSymlink);
     return runtimeCodexHome;
   }
 
@@ -1216,7 +1397,10 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     if (PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entry.name)) {
       const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
       if (!sourceInspection?.targetStat) continue;
-      if (options.includeHistoryArtifacts === true && sourceInspection.linkStat.isSymbolicLink()) continue;
+      if (options.includeHistoryArtifacts === true) {
+        if (!isRegularHistoryTarget(sourceInspection.targetStat)) continue;
+        continue;
+      }
     }
     if (entry.name === "config.toml") {
       const projectHooksPath = join(projectCodexHome, "hooks.json");
@@ -1237,6 +1421,7 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
 	}
     await linkOrCopyCodexHomeEntry(source, destination);
   }
+  let skippedHistoryEntryNames = new Set<string>();
   if (options.includeHistoryArtifacts === true) {
     const extraHistoryCodexHomes = options.extraHistoryCodexHomes ?? [];
     const mergingHistory = extraHistoryCodexHomes.length > 0;
@@ -1245,14 +1430,20 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
       const source = join(projectCodexHome, entryName);
       if (existsSync(source)) mergedHistorySourceRealpaths.add(realpathSync(source));
     }
-    await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome, {
+    skippedHistoryEntryNames = await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome, {
       onlySymlinks: !mergingHistory,
+      beforeCopy: options.beforeHistoryEntryCopy,
     });
     for (const extraCodexHome of extraHistoryCodexHomes) {
       await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome, mergedHistorySourceRealpaths);
     }
   }
-  await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
+  await ensureProjectLaunchRuntimeHistoryLinks(
+    runtimeCodexHome,
+    projectCodexHome,
+    skippedHistoryEntryNames,
+    options.createSymlink,
+  );
 
 
   return runtimeCodexHome;

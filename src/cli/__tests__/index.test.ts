@@ -1,6 +1,6 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
@@ -3090,35 +3090,45 @@ describe("project launch scope helpers", () => {
     try {
       const sourceCodexHome = join(wd, "source-codex-home");
       const targetSessions = join(wd, "project-sessions");
+      const nestedSessions = join(targetSessions, "nested");
       const targetHistory = join(wd, "project-history.jsonl");
       const outsideHistory = join(wd, "outside-history.jsonl");
       await mkdir(sourceCodexHome, { recursive: true });
-      await mkdir(targetSessions, { recursive: true });
-      await writeFile(join(targetSessions, "rollout-linked.jsonl"), "linked-session\n");
+      await mkdir(nestedSessions, { recursive: true });
+      await writeFile(join(nestedSessions, "rollout-linked.jsonl"), "linked-session\n");
       await writeFile(outsideHistory, "must-not-follow\n");
-      await symlink(outsideHistory, join(targetSessions, "nested-escape.jsonl"));
+      await symlink(outsideHistory, join(nestedSessions, "nested-escape.jsonl"));
       await writeFile(targetHistory, '{"session_id":"linked-session"}\n');
       const sessionsMtime = new Date("2024-06-07T08:09:10Z");
+      chmodSync(targetSessions, 0o700);
+      chmodSync(nestedSessions, 0o700);
       utimesSync(targetSessions, sessionsMtime, sessionsMtime);
       await symlink(targetSessions, join(sourceCodexHome, "sessions"), "dir");
       await symlink(targetHistory, join(sourceCodexHome, "history.jsonl"));
       await symlink(join(wd, "missing-session-index.jsonl"), join(sourceCodexHome, "session_index.jsonl"));
+      const createSymlink: typeof symlink = async () => {
+        throw new Error("history symlink creation must not be used");
+      };
 
       const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
         wd,
         "session-history-symlinks",
         sourceCodexHome,
-        { includeHistoryArtifacts: true },
+        { includeHistoryArtifacts: true, createSymlink },
       );
 
       assert.equal((await stat(join(runtimeCodexHome, "sessions"))).isDirectory(), true);
       assert.equal((await lstat(join(runtimeCodexHome, "sessions"))).isSymbolicLink(), false);
       assert.equal((await stat(join(runtimeCodexHome, "sessions"))).mtime.toISOString(), sessionsMtime.toISOString());
+      if (process.platform !== "win32") {
+        assert.equal((await stat(join(runtimeCodexHome, "sessions"))).mode & 0o777, 0o700);
+        assert.equal((await stat(join(runtimeCodexHome, "sessions", "nested"))).mode & 0o777, 0o700);
+      }
       assert.equal(
-        await readFile(join(runtimeCodexHome, "sessions", "rollout-linked.jsonl"), "utf-8"),
+        await readFile(join(runtimeCodexHome, "sessions", "nested", "rollout-linked.jsonl"), "utf-8"),
         "linked-session\n",
       );
-      assert.equal(existsSync(join(runtimeCodexHome, "sessions", "nested-escape.jsonl")), false);
+      assert.equal(existsSync(join(runtimeCodexHome, "sessions", "nested", "nested-escape.jsonl")), false);
       assert.equal((await lstat(join(runtimeCodexHome, "history.jsonl"))).isSymbolicLink(), false);
       assert.equal(await readFile(join(runtimeCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked-session"}\n');
       assert.equal(existsSync(join(runtimeCodexHome, "session_index.jsonl")), false);
@@ -3176,6 +3186,67 @@ describe("project launch scope helpers", () => {
       );
 
       assert.equal(existsSync(join(runtimeCodexHome, "history.jsonl")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects source swaps and replaces nested destination links safely", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-toctou-"));
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      const sourceSessions = join(wd, "source-sessions");
+      const replacementSessions = join(wd, "replacement-sessions");
+      const outsideDestination = join(wd, "outside-destination.jsonl");
+      await mkdir(sourceCodexHome, { recursive: true });
+      await mkdir(sourceSessions, { recursive: true });
+      await mkdir(replacementSessions, { recursive: true });
+      await writeFile(join(sourceSessions, "rollout.jsonl"), "original\n");
+      await writeFile(join(replacementSessions, "rollout.jsonl"), "replacement\n");
+      await writeFile(outsideDestination, "must-remain\n");
+      await symlink(sourceSessions, join(sourceCodexHome, "sessions"), "dir");
+
+      const swappedSourceRuntime = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-source-swap",
+        sourceCodexHome,
+        {
+          includeHistoryArtifacts: true,
+          beforeHistoryEntryCopy: async (entryName, source) => {
+            if (entryName !== "sessions") return;
+            await rm(source, { force: true });
+            await symlink(replacementSessions, source, "dir");
+          },
+        },
+      );
+      assert.equal(existsSync(join(swappedSourceRuntime, "sessions")), false);
+      assert.equal(existsSync(join(swappedSourceRuntime, "sessions", "rollout.jsonl")), false);
+
+      const destinationSourceHome = join(wd, "destination-source-home");
+      const destinationSessions = join(wd, "destination-sessions");
+      await mkdir(destinationSourceHome, { recursive: true });
+      await mkdir(destinationSessions, { recursive: true });
+      await writeFile(join(destinationSessions, "rollout.jsonl"), "destination-safe\n");
+      await symlink(destinationSessions, join(destinationSourceHome, "sessions"), "dir");
+      const safeDestinationRuntime = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-destination-swap",
+        destinationSourceHome,
+        {
+          includeHistoryArtifacts: true,
+          beforeHistoryEntryCopy: async (entryName, _source, destination) => {
+            if (entryName !== "sessions") return;
+            await mkdir(destination, { recursive: true });
+            await symlink(outsideDestination, join(destination, "rollout.jsonl"));
+          },
+        },
+      );
+      assert.equal(await readFile(join(outsideDestination), "utf-8"), "must-remain\n");
+      assert.equal(
+        await readFile(join(safeDestinationRuntime, "sessions", "rollout.jsonl"), "utf-8"),
+        "destination-safe\n",
+      );
+      assert.equal((await lstat(join(safeDestinationRuntime, "sessions", "rollout.jsonl"))).isSymbolicLink(), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
