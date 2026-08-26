@@ -61,6 +61,7 @@ import {
   resolveOmxRootForLaunch,
   resolveDisposableWorktreeOmxRootForLaunch,
   prepareCodexHomeForLaunch,
+  prepareRuntimeCodexHomeForProjectLaunch,
   captureMadmaxWorktreeRuntimeContext,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
@@ -3079,6 +3080,44 @@ describe("project launch scope helpers", () => {
       assert.equal(await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked"}\n');
       assert.equal(await readFile(join(projectCodexHome, "session_index.jsonl"), "utf-8"), '{"id":"linked"}\n');
       assert.equal(existsSync(runtimeCodexHome), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes resolved history links and skips broken links", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-symlinks-"));
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      const targetSessions = join(wd, "project-sessions");
+      const targetHistory = join(wd, "project-history.jsonl");
+      const extraCodexHome = join(wd, "extra-codex-home");
+      await mkdir(sourceCodexHome, { recursive: true });
+      await mkdir(targetSessions, { recursive: true });
+      await mkdir(join(extraCodexHome, "sessions"), { recursive: true });
+      await writeFile(join(targetSessions, "rollout-linked.jsonl"), "linked-session\n");
+      await writeFile(targetHistory, '{"session_id":"linked-session"}\n');
+      await writeFile(join(extraCodexHome, "sessions", "rollout-extra.jsonl"), "extra-session\n");
+      await symlink(targetSessions, join(sourceCodexHome, "sessions"), "dir");
+      await symlink(targetHistory, join(sourceCodexHome, "history.jsonl"));
+      await symlink(join(wd, "missing-session-index.jsonl"), join(sourceCodexHome, "session_index.jsonl"));
+
+      const runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-symlinks",
+        sourceCodexHome,
+        { includeHistoryArtifacts: true, extraHistoryCodexHomes: [extraCodexHome] },
+      );
+
+      assert.equal((await stat(join(runtimeCodexHome, "sessions"))).isDirectory(), true);
+      assert.equal((await lstat(join(runtimeCodexHome, "sessions"))).isSymbolicLink(), false);
+      assert.equal(
+        await readFile(join(runtimeCodexHome, "sessions", "rollout-linked.jsonl"), "utf-8"),
+        "linked-session\n",
+      );
+      assert.equal((await lstat(join(runtimeCodexHome, "history.jsonl"))).isSymbolicLink(), false);
+      assert.equal(await readFile(join(runtimeCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked-session"}\n');
+      assert.equal(existsSync(join(runtimeCodexHome, "session_index.jsonl")), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }

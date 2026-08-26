@@ -992,6 +992,32 @@ function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
   return PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES.has(entryName);
 }
 
+function isMissingPathError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+async function resolveProjectLaunchRuntimeHistoryEntryStat(source: string) {
+  // Durable history names are an explicit allowlist. Follow only the named
+  // entry's top-level link so a directory link is classified as a directory;
+  // the destination remains the fixed runtime history path below.
+  let sourceStat;
+  try {
+    sourceStat = await lstat(source);
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
+  if (!sourceStat.isSymbolicLink()) return sourceStat;
+  try {
+    return await stat(source);
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
+}
+
 function uniqueJsonlLines(contents: string): string[] {
   const seen = new Set<string>();
   const lines: string[] = [];
@@ -1048,6 +1074,13 @@ async function ensureProjectLaunchRuntimeHistoryLinks(
     const runtimeEntry = join(runtimeCodexHome, entryName);
     if (existsSync(runtimeEntry)) continue;
     const projectEntry = join(projectCodexHome, entryName);
+    const projectEntryLinkStat = await lstat(projectEntry).catch((error) => {
+      if (isMissingPathError(error)) return undefined;
+      throw error;
+    });
+    if (projectEntryLinkStat?.isSymbolicLink() && !(await resolveProjectLaunchRuntimeHistoryEntryStat(projectEntry))) {
+      continue;
+    }
     if (entryName === "sessions") {
       await mkdir(projectEntry, { recursive: true });
     } else if (!existsSync(projectEntry)) {
@@ -1063,15 +1096,15 @@ async function materializeProjectLaunchRuntimeHistoryEntries(
 ): Promise<void> {
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
-    if (!existsSync(source)) continue;
+    const sourceStat = await resolveProjectLaunchRuntimeHistoryEntryStat(source);
+    if (!sourceStat) continue;
     const destination = join(runtimeCodexHome, entryName);
     await rm(destination, { recursive: true, force: true });
-    const sourceStat = await lstat(source);
     if (sourceStat.isDirectory()) {
       await cp(source, destination, { recursive: true, force: true, dereference: true, preserveTimestamps: true });
       continue;
     }
-    await copyFilePreservingTimestamps(source, destination);
+    if (sourceStat.isFile()) await copyFilePreservingTimestamps(source, destination);
   }
 }
 
@@ -1160,6 +1193,12 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
+    if (
+      PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entry.name) &&
+      !(await resolveProjectLaunchRuntimeHistoryEntryStat(source))
+    ) {
+      continue;
+    }
     if (entry.name === "config.toml") {
       const projectHooksPath = join(projectCodexHome, "hooks.json");
       const projectConfig = await readFile(source, "utf-8");
