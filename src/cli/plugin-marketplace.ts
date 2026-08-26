@@ -669,6 +669,7 @@ interface PublicationLockRecord {
 
 const PUBLICATION_LOCK_LEASE_MS = 120_000;
 const PUBLICATION_LOCK_PROCESS_TOKEN = randomUUID();
+const PUBLICATION_LOCK_HEARTBEAT_INTERVAL_MS = 30_000;
 
 function buildPublicationLockRecord(heartbeatAt: number = Date.now()): string {
 	return `${JSON.stringify({
@@ -703,6 +704,32 @@ function isPublicationLockStale(record: PublicationLockRecord, now = Date.now())
 	if (typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return false;
 	if (publicationLockLeaseExpired(record, now)) return true;
 	return !isProcessAlive(record.pid);
+}
+
+async function refreshPublicationLockRecord(
+	lockHandle: FileHandle,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
+	try {
+		const record = buildPublicationLockRecord();
+		const buf = Buffer.from(record, "utf-8");
+		await lockHandle.truncate(0);
+		await lockHandle.write(buf, 0, buf.length, 0);
+		const outcome = await syncRegularFile(lockHandle);
+		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
+	} catch {
+		// Heartbeat is best-effort; a slow filesystem or closed handle must not fail the
+		// already-claimed publication. The next interval will retry if the handle is still open.
+	}
+}
+
+function startPublicationLockHeartbeat(
+	lockHandle: FileHandle,
+	tracker?: RegularFileDurabilityTracker,
+): NodeJS.Timeout {
+	return setInterval(() => {
+		void refreshPublicationLockRecord(lockHandle, tracker);
+	}, PUBLICATION_LOCK_HEARTBEAT_INTERVAL_MS);
 }
 
 async function removeChildIfIdentity(
@@ -1795,8 +1822,12 @@ async function materializePackagedOmxPluginCacheImpl(
 		}
 		const durability: RegularFileDurabilityTracker = { degraded: false };
 		let lockHandle: FileHandle;
+		let publicationLockHeartbeat: NodeJS.Timeout | undefined;
 		try {
 			lockHandle = await claimPublicationLock(cacheBaseRef, cacheBase, noFollowFlags, durability);
+			// Keep heartbeatAt fresh while the critical section is held so a slow live
+			// publisher is never reclaimed by a concurrent claimant after LEASE_MS.
+			publicationLockHeartbeat = startPublicationLockHeartbeat(lockHandle, durability);
 		} catch (error) {
 			emitDegradedDurabilityWarning("plugin cache publication", durability);
 			if (ownsCacheBaseRef) await cacheBaseRef.handle.close();
@@ -1823,7 +1854,9 @@ async function materializePackagedOmxPluginCacheImpl(
 		let finalRef: DirectoryRef | undefined;
 		try {
 			lockIdentity = await lockHandle.stat();
-			await assertDirectoryRef(cacheBaseRef, "temporary staging");
+			// Refresh once under the held fd so the initial heartbeat is at most
+			// a few seconds old even on a fast publication path.
+			await refreshPublicationLockRecord(lockHandle, durability);
 			const candidateTempName = `.omx-plugin-${version}-${process.pid}-${randomUUID()}`;
 			await mkdirDirectoryChildExclusive(cacheBaseRef, candidateTempName);
 			await assertDirectoryRef(cacheBaseRef, "temporary staging");
@@ -1926,7 +1959,8 @@ async function materializePackagedOmxPluginCacheImpl(
 			launcherTarget: undefined,
 			retiredDirs: [],
 		};
-		} finally {
+	} finally {
+			if (publicationLockHeartbeat) clearInterval(publicationLockHeartbeat);
 			try { if (finalRef) await finalRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			try { if (snapshotRef) await snapshotRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			try { if (tempRef) await tempRef.handle.close(); } catch (error) { cleanupError ??= error; }
@@ -1934,7 +1968,18 @@ async function materializePackagedOmxPluginCacheImpl(
 			try { await lockHandle.close(); } catch (error) { cleanupError ??= error; }
 			try {
 				if (!lockIdentity) throw new Error(`publication lock identity unavailable at ${cacheBase}`);
-				await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity);
+				// Own-lock release must not quarantine a successor: only remove
+				// if the file on disk still has the dev/ino we created.
+				const cur = await lstat(join(cacheBaseRef.path, ".omx-publish.lock")).catch(() => null);
+				if (
+					cur &&
+					cur.isFile() &&
+					!cur.isSymbolicLink() &&
+					cur.dev === lockIdentity.dev &&
+					cur.ino === lockIdentity.ino
+				) {
+					await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity);
+				}
 				const syncOutcome = await syncDirectory(cacheBaseRef.handle);
 				recordDirectorySyncOutcome(durability, syncOutcome);
 			} catch (error) { cleanupError ??= error; }

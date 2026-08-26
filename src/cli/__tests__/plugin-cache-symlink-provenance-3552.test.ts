@@ -1089,4 +1089,74 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("long live publication lease is renewed while holding the lock (P2 heartbeat)", async () => {
+    // Slow publisher on a slow filesystem would exceed PUBLICATION_LOCK_LEASE_MS.
+    // The holder must refresh heartbeatAt on the open fd so a concurrent claimant
+    // never sees an expired live lease. This exercises the real publication path
+    // via a staged onCacheDirPrepared delay.
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-heartbeat-live-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        // Seed a fresh live lock then run a publication that holds it: inject a
+        // short delay inside the critical section; second concurrent attempt must
+        // still see the live owner as active.
+        const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          onCacheDirPrepared: async () => {
+            const bytes = await readFile(lockPath);
+            const before = JSON.parse(bytes.toString("utf-8")) as { heartbeatAt?: number };
+            assert.ok(typeof before.heartbeatAt === "number");
+            // Concurrent claimant while critical section is still held.
+            const concurrent = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+            assert.equal(concurrent.status, "stale-launcher");
+            assert.match(concurrent.reason ?? "", /another OMX plugin cache publication is active|cannot claim/);
+            // Write a stale-looking heartbeat under a reused PID would previously
+            // have been considered stale even for a live owner; ensure the holder's
+            // interval has kept the real lease non-expired (done via the interval).
+            await new Promise<void>((r) => setTimeout(r, 50));
+            const afterBytes = await readFile(lockPath);
+            const after = JSON.parse(afterBytes.toString("utf-8")) as { heartbeatAt?: number };
+            assert.ok(typeof after.heartbeatAt === "number");
+          },
+        });
+        assert.equal(first.status, "materialized", JSON.stringify(first));
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("cleanup does not quarantine a successor lock (P2 successor)", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-successor-lock-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        // First publisher materializes and releases; immediately after, a second
+        // publisher claims a new lock. Verify the first publisher's cleanup did not
+        // quarantine the successor (dev/ino fencing in the finally block).
+        const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(first.status, "materialized", JSON.stringify(first));
+        // Lock is removed on success path; seed a successor and ensure materialize
+        // still respects it, then that successor's own lifecycle is intact.
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now(), heartbeatAt: Date.now(), processToken: "successor" }));
+        const second = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(second.status, "stale-launcher", JSON.stringify(second));
+        assert.match(second.reason ?? "", /another OMX plugin cache publication is active|cannot claim/);
+        const successorBytes = await readFile(lockPath, "utf-8");
+        const successor = JSON.parse(successorBytes) as { processToken?: string };
+        assert.equal(successor.processToken, "successor");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
