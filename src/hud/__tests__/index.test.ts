@@ -440,6 +440,7 @@ describe('runWatchMode', () => {
   it('resizes an OMX-owned running HUD pane when the adaptive budget changes', async () => {
     const resized: Array<{ paneId: string; heightLines: number }> = [];
     const registered: Array<{ hudPaneId: string; leaderPaneId: string | undefined; heightLines: number }> = [];
+    const events: string[] = [];
     let sigintHandler: (() => void) | undefined;
     let timerTick: (() => void) | undefined;
     let callCount = 0;
@@ -474,7 +475,7 @@ describe('runWatchMode', () => {
       },
       readHudConfigFn: async () => ({ preset: 'focused', git: { display: 'repo-branch' }, statusLine: { preset: 'focused' } }),
       renderHudFn: () => 'frame',
-      writeStdout: () => {},
+      writeStdout: (text) => { events.push(`write:${text}`); },
       writeStderr: () => {},
       registerSigint: (handler) => { sigintHandler = handler; },
       setIntervalFn: (handler) => {
@@ -483,10 +484,16 @@ describe('runWatchMode', () => {
       },
       clearIntervalFn: () => {},
       resizeTmuxPaneFn: (paneId, heightLines) => {
+        events.push(`resize:${heightLines}`);
         resized.push({ paneId, heightLines });
         return true;
       },
+      clearTmuxPaneHistoryFn: (paneId) => {
+        events.push(`history:${paneId}`);
+        return true;
+      },
       registerHudResizeHookFn: (hudPaneId, leaderPaneId, heightLines) => {
+        events.push(`hook:${heightLines}`);
         registered.push({ hudPaneId, leaderPaneId, heightLines });
         return true;
       },
@@ -506,6 +513,13 @@ describe('runWatchMode', () => {
       { hudPaneId: '%hud', leaderPaneId: '%leader', heightLines: 2 },
       { hudPaneId: '%hud', leaderPaneId: '%leader', heightLines: 3 },
     ]);
+    const secondClear = events.findIndex((event, index) => index > 0 && event === 'write:\u001b[3J\u001b[2J\u001b[H');
+    const secondResize = events.indexOf('resize:3');
+    const secondFrame = events.findIndex((event, index) => index > secondResize && event.includes('frame'));
+    assert.ok(secondClear >= 0 && secondClear < secondResize, 'the new frame must clear before pane reflow');
+    assert.ok(secondFrame > secondResize, 'the new frame must publish after pane reflow');
+    const secondHistory = events.findIndex((event, index) => index > secondResize && event === 'history:%hud');
+    assert.ok(secondHistory > secondResize, 'reflowed HUD history must be cleared before frame publication');
   });
 
   it('runs authority tick after each rendered frame', async () => {
