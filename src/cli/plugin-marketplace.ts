@@ -1,6 +1,6 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
 import { randomUUID } from "crypto";
-import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
+import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
@@ -42,6 +42,7 @@ interface PluginManifest {
 }
 
 const OMX_PLUGIN_HOOK_LAUNCHER_FILE = "omx-command.json";
+const OMX_PLUGIN_CACHE_STAGING_PREFIX = ".omx-plugin-";
 const TEAM_MODE_PLUGIN_SKILL_NAMES = new Set(["team", "worker"]);
 
 export async function resolvePackagedOmxMarketplace(
@@ -104,6 +105,19 @@ async function readPluginManifest(
 	}
 }
 
+function isSafeCacheVersion(version: string): boolean {
+	return version.length > 0
+		&& version !== "."
+		&& version !== ".."
+		&& !version.includes("/")
+		&& !version.includes("\\")
+		&& !version.includes("\0");
+}
+
+function isPluginCacheStagingEntryName(name: string): boolean {
+	return name === "snapshot" || name.startsWith(OMX_PLUGIN_CACHE_STAGING_PREFIX) || name.includes(".reclaim-");
+}
+
 function directoryFdPath(fd: number): string | null {
 	if (process.platform === "linux") return `/proc/self/fd/${fd}`;
 	return null;
@@ -116,15 +130,43 @@ function isDirectoryDescriptorPath(path: string): boolean {
 function directoryOpenFlags(path: string, directoryFlags: number, noFollowFlags: number): number {
 	return fsConstants.O_RDONLY | directoryFlags | (isDirectoryDescriptorPath(path) ? 0 : noFollowFlags);
 }
-
 interface DirectoryRef {
 	handle: FileHandle;
 	path: string;
 	operationPath: string;
+	scanOperationPath: string;
+	mutationPath: string | null;
+}
+
+function directoryScanOperationPath(handle: FileHandle, path: string): string {
+	return directoryFdPath(handle.fd) ?? resolve(path);
 }
 
 function directoryOperationPath(handle: FileHandle, path: string): string | null {
-	return directoryFdPath(handle.fd) ?? resolve(path);
+	// #3552 blockers 1+2: Linux mutates through a descriptor-relative
+	// /proc/self/fd path. Darwin has no usable fd path, so mutations fail
+	// closed (ENOTSUP) instead of degrading to visible paths. Windows opens
+	// the directory without traversing reparse points
+	// (O_NOFOLLOW|O_DIRECTORY), so the validated visible path is the safe
+	// mutation anchor there.
+	if (process.platform === "linux") return `/proc/self/fd/${handle.fd}`;
+	if (process.platform === "win32") return resolve(path);
+	return null;
+}
+
+function unsupportedDirectoryOperationError(): NodeJS.ErrnoException {
+	return Object.assign(
+		new Error("platform cannot provide descriptor-relative directory operations"),
+		{ code: "ENOTSUP" },
+	);
+}
+
+function childMutationPath(parent: DirectoryRef, name: string): string {
+	if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+		throw new Error(`invalid descriptor-relative child name: ${name}`);
+	}
+	if (!parent.mutationPath) throw unsupportedDirectoryOperationError();
+	return join(parent.mutationPath, name);
 }
 
 function childOperationPath(parent: DirectoryRef, name: string): string {
@@ -156,12 +198,9 @@ async function openDirectoryRef(path: string): Promise<DirectoryRef> {
 	}
 	const visiblePath = resolve(path);
 	const handle = await open(visiblePath, directoryOpenFlags(visiblePath, directoryFlags, noFollowFlags));
-	const operationPath = directoryOperationPath(handle, visiblePath);
-	if (!operationPath) {
-		await handle.close();
-		throw new Error("platform cannot expose a descriptor-relative directory operation path");
-	}
-	const ref = { handle, path: visiblePath, operationPath };
+	const scanOperationPath = directoryScanOperationPath(handle, visiblePath);
+	const mutationPath = directoryOperationPath(handle, visiblePath);
+	const ref = { handle, path: visiblePath, operationPath: scanOperationPath, scanOperationPath, mutationPath };
 	try {
 		await assertDirectoryRef(ref, "open");
 		return ref;
@@ -181,12 +220,9 @@ async function openDirectoryChild(parent: DirectoryRef, name: string): Promise<D
 	const visiblePath = join(parent.path, name);
 	await assertDirectoryRef(parent, "open");
 	const handle = await open(operationPath, directoryOpenFlags(operationPath, directoryFlags, noFollowFlags));
-	const childOperation = directoryOperationPath(handle, visiblePath);
-	if (!childOperation) {
-		await handle.close();
-		throw new Error("platform cannot expose a descriptor-relative directory operation path");
-	}
-	const child = { handle, path: visiblePath, operationPath: childOperation };
+	const childScan = directoryScanOperationPath(handle, visiblePath);
+	const childMutation = directoryOperationPath(handle, visiblePath);
+	const child = { handle, path: visiblePath, operationPath: childScan, scanOperationPath: childScan, mutationPath: childMutation };
 	try {
 		await assertDirectoryRef(parent, "open");
 		await assertDirectoryRef(child, "open");
@@ -198,10 +234,10 @@ async function openDirectoryChild(parent: DirectoryRef, name: string): Promise<D
 }
 
 async function mkdirDirectoryChild(parent: DirectoryRef, name: string): Promise<void> {
-	const operationPath = childOperationPath(parent, name);
+	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "mkdir");
 	try {
-		await mkdir(operationPath);
+		await mkdir(mutationPath);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 	}
@@ -209,54 +245,59 @@ async function mkdirDirectoryChild(parent: DirectoryRef, name: string): Promise<
 }
 
 async function mkdirDirectoryChildExclusive(parent: DirectoryRef, name: string): Promise<void> {
-	const operationPath = childOperationPath(parent, name);
+	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "exclusive mkdir");
-	await mkdir(operationPath);
+	await mkdir(mutationPath);
 	await assertDirectoryRef(parent, "exclusive mkdir");
 }
 
 async function copyPackagedTree(
-	sourcePath: string,
+	source: DirectoryRef,
 	destination: DirectoryRef,
 	tracker?: RegularFileDurabilityTracker,
 ): Promise<void> {
-	const sourceStats = await lstat(sourcePath);
-	if (!sourceStats.isDirectory() || sourceStats.isSymbolicLink()) {
-		throw new Error(`refusing to copy a non-directory packaged plugin root: ${sourcePath}`);
-	}
-	const entries = await readdir(sourcePath, { withFileTypes: true });
+	await assertDirectoryRef(source, "packaged source copy");
+	const entries = await readdir(source.operationPath, { withFileTypes: true });
 	for (const entry of entries) {
-		const sourceChildPath = join(sourcePath, entry.name);
 		if (entry.isSymbolicLink()) {
-			throw new Error(`refusing to copy a symlinked packaged plugin entry: ${sourceChildPath}`);
+			throw new Error(`refusing to copy a symlinked packaged plugin entry: ${join(source.path, entry.name)}`);
 		}
 		if (entry.isDirectory()) {
 			await mkdirDirectoryChildExclusive(destination, entry.name);
+			const sourceChild = await openDirectoryChild(source, entry.name);
 			const child = await openDirectoryChild(destination, entry.name);
 			try {
-				await copyPackagedTree(sourceChildPath, child, tracker);
+				await copyPackagedTree(sourceChild, child, tracker);
 			} finally {
+				await sourceChild.handle.close();
 				await child.handle.close();
 			}
 			continue;
 		}
 		if (!entry.isFile()) {
-			throw new Error(`refusing to copy a non-regular packaged plugin entry: ${sourceChildPath}`);
+			throw new Error(`refusing to copy a non-regular packaged plugin entry: ${join(source.path, entry.name)}`);
 		}
-		const sourceHandle = await open(sourceChildPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		const sourceHandle = await openRegularFileChild(source, entry.name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
 		try {
 			const before = await sourceHandle.stat();
 			if (!before.isFile() || before.isSymbolicLink()) {
-				throw new Error(`packaged plugin entry changed while copying: ${sourceChildPath}`);
+				throw new Error(`packaged plugin entry changed while copying: ${join(source.path, entry.name)}`);
 			}
 			const content = await sourceHandle.readFile();
-			const after = await sourceHandle.stat();
-			if (
-				after.dev !== before.dev ||
-				after.ino !== before.ino ||
-				after.size !== before.size
-			) {
-				throw new Error(`packaged plugin entry changed while copying: ${sourceChildPath}`);
+			const verifyHandle = await openRegularFileChild(source, entry.name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+			try {
+				const verifyStats = await verifyHandle.stat();
+				const verifyContent = await verifyHandle.readFile();
+				if (
+					verifyStats.dev !== before.dev ||
+					verifyStats.ino !== before.ino ||
+					verifyStats.size !== before.size ||
+					!content.equals(verifyContent)
+				) {
+					throw new Error(`packaged plugin entry changed while copying: ${join(source.path, entry.name)}`);
+				}
+			} finally {
+				await verifyHandle.close();
 			}
 			const destinationHandle = await openRegularFileChild(
 				destination,
@@ -276,12 +317,13 @@ async function copyPackagedTree(
 			await sourceHandle.close();
 		}
 	}
+	await assertDirectoryRef(source, "packaged source copy");
 }
 
 async function openRegularFileChild(parent: DirectoryRef, name: string, flags: number, mode?: number): Promise<FileHandle> {
-	const operationPath = childOperationPath(parent, name);
+	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "file open");
-	const handle = await open(operationPath, flags, mode);
+	const handle = await open(mutationPath, flags, mode);
 	try {
 		await assertDirectoryRef(parent, "file open");
 		return handle;
@@ -347,20 +389,44 @@ async function createExclusiveFileChild(
 }
 
 async function removeChild(parent: DirectoryRef, name: string, options: { recursive?: boolean; force?: boolean } = {}): Promise<void> {
-	const operationPath = childOperationPath(parent, name);
+	const mutationPath = childMutationPath(parent, name);
 	await assertDirectoryRef(parent, "remove");
-	await rm(operationPath, options);
+	await rm(mutationPath, options);
 	await assertDirectoryRef(parent, "remove");
 }
 
 async function renameChild(sourceParent: DirectoryRef, sourceName: string, destinationParent: DirectoryRef, destinationName: string): Promise<void> {
-	const sourcePath = childOperationPath(sourceParent, sourceName);
-	const destinationPath = childOperationPath(destinationParent, destinationName);
+	const sourcePath = childMutationPath(sourceParent, sourceName);
+	const destinationPath = childMutationPath(destinationParent, destinationName);
 	await assertDirectoryRef(sourceParent, "rename");
 	await assertDirectoryRef(destinationParent, "rename");
 	await rename(sourcePath, destinationPath);
 	await assertDirectoryRef(sourceParent, "rename");
 	await assertDirectoryRef(destinationParent, "rename");
+}
+
+/**
+ * #3552 blocker 3: POSIX rename() silently replaces an empty same-version
+ * directory, and Node exposes no renameat2(RENAME_NOREPLACE). Publication
+ * therefore claims the destination with an atomic exclusive mkdir first:
+ * EEXIST means another actor already claimed or published `<version>` (empty
+ * or not) and the publication fails closed; success means this process owns
+ * the empty claim, and the subsequent rename can only ever replace that
+ * verified claim (inode re-checked immediately before the rename). The
+ * caller re-verifies the published inode afterwards.
+ */
+async function claimPublicationDestination(
+	destinationParent: DirectoryRef,
+	destinationName: string,
+): Promise<Stats> {
+	await mkdirDirectoryChildExclusive(destinationParent, destinationName);
+	const claimRef = await openDirectoryChild(destinationParent, destinationName);
+	try {
+		await assertDirectoryRef(claimRef, "publication claim");
+		return await claimRef.handle.stat();
+	} finally {
+		await claimRef.handle.close();
+	}
 }
 
 async function syncDirectoryTree(
@@ -407,9 +473,9 @@ export async function readOmxPluginCacheFileNoFollow(
 			anchorBefore = await anchorHandle.stat();
 			if (!anchorBefore.isDirectory()) return null;
 			if (typeof anchorBefore.dev !== "number" || typeof anchorBefore.ino !== "number") return null;
-			const fdPath = process.platform === "darwin"
-				? resolve(options.anchorDir)
-				: directoryFdPath(anchorHandle.fd);
+			const fdPath = process.platform === "linux"
+				? directoryFdPath(anchorHandle.fd)
+				: resolve(options.anchorDir);
 			if (!fdPath) return null;
 			const relativePath = relative(resolve(options.anchorDir), resolve(path));
 			if (!relativePath || relativePath.startsWith("..")) return null;
@@ -425,7 +491,7 @@ export async function readOmxPluginCacheFileNoFollow(
 					return null;
 				}
 				intermediateDirectories.push({ handle: childHandle, path: childPath, stats: childStats });
-				parentPath = process.platform === "darwin" ? childPath : directoryFdPath(childHandle.fd) ?? "";
+				parentPath = process.platform === "linux" ? directoryFdPath(childHandle.fd) ?? "" : childPath;
 				if (!parentPath) return null;
 			}
 			readPath = join(parentPath, components.at(-1)!);
@@ -516,9 +582,9 @@ export async function packagedOmxPluginVersion(
 	packagedMarketplace: PackagedOmxMarketplace,
 ): Promise<string | null> {
 	const manifest = await readPluginManifest(packagedMarketplace.pluginManifestPath);
-	return typeof manifest?.version === "string" && manifest.version.trim()
-		? manifest.version.trim()
-		: null;
+	if (typeof manifest?.version !== "string") return null;
+	const version = manifest.version.trim();
+	return isSafeCacheVersion(version) ? version : null;
 }
 
 export async function expectedPackagedOmxSkillNames(
@@ -555,12 +621,89 @@ function isProcessAlive(pid: number): boolean {
 	}
 }
 
+/**
+ * #3552 blocker 6: a recycled PID makes `process.kill(pid, 0)` report a dead
+ * publisher as alive, so a PID check alone can never prove the lock owner is
+ * the process that created the lock. Bind each lock to a per-process random
+ * token and treat the lock as reclaimable only when (a) the recorded process
+ * start identity is missing (legacy locks become lease-bounded) and the lease
+ * expired, (b) the process is dead (ESRCH — no live process holds the PID), or
+ * (c) the recorded lease expired. Live-owner locks with a valid lease are
+ * never reclaimed.
+ */
+interface PublicationLockRecord {
+	pid?: unknown;
+	createdAt?: unknown;
+	bootId?: unknown;
+	processToken?: unknown;
+	heartbeatAt?: unknown;
+}
+
+const PUBLICATION_LOCK_LEASE_MS = 120_000;
+const PUBLICATION_LOCK_PROCESS_TOKEN = randomUUID();
+
+function buildPublicationLockRecord(heartbeatAt: number = Date.now()): string {
+	return `${JSON.stringify({
+		pid: process.pid,
+		createdAt: heartbeatAt,
+		heartbeatAt,
+		processToken: PUBLICATION_LOCK_PROCESS_TOKEN,
+	})}\n`;
+}
+
+function parsePublicationLockRecord(bytes: Buffer): PublicationLockRecord | null {
+	try {
+		const parsed = JSON.parse(bytes.toString("utf-8")) as PublicationLockRecord;
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+function publicationLockLeaseExpired(record: PublicationLockRecord, now = Date.now()): boolean {
+	const heartbeat = typeof record.heartbeatAt === "number" && Number.isFinite(record.heartbeatAt)
+		? record.heartbeatAt
+		: typeof record.createdAt === "number" && Number.isFinite(record.createdAt)
+			? record.createdAt
+			: null;
+	if (heartbeat === null) return true;
+	return now - heartbeat > PUBLICATION_LOCK_LEASE_MS;
+}
+
+function isPublicationLockStale(record: PublicationLockRecord, now = Date.now()): boolean {
+	if (typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return false;
+	if (publicationLockLeaseExpired(record, now)) return true;
+	return !isProcessAlive(record.pid);
+}
+
+async function removeChildIfIdentity(
+	cacheBaseRef: DirectoryRef,
+	childName: string,
+	childStats: Stats,
+	options: { recursive?: boolean; force?: boolean },
+): Promise<void> {
+	const quarantineName = `.${childName}.reclaim-${process.pid}-${randomUUID()}`;
+	await renameChild(cacheBaseRef, childName, cacheBaseRef, quarantineName);
+	const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
+	let quarantineStats: Stats;
+	try {
+		quarantineStats = await lstat(quarantinePath);
+	} catch (error) {
+		throw new Error(`identity-bound removal target disappeared during reclamation: ${(error as Error).message}`);
+	}
+	if (quarantineStats.dev !== childStats.dev || quarantineStats.ino !== childStats.ino) {
+		throw new Error("identity-bound removal target changed during reclamation");
+	}
+	await removeChild(cacheBaseRef, quarantineName, options);
+}
+
 async function reclaimStalePublicationLock(
 	cacheBaseRef: DirectoryRef,
 	lockName: string,
 	lockStats: Stats,
 ): Promise<void> {
-	const quarantineName = `${lockName}.reclaim-${process.pid}-${randomUUID()}`;
+	const quarantineName = `.${lockName}.reclaim-${process.pid}-${randomUUID()}`;
 	await renameChild(cacheBaseRef, lockName, cacheBaseRef, quarantineName);
 	const quarantinePath = childOperationPath(cacheBaseRef, quarantineName);
 	let quarantineStats: Stats;
@@ -571,9 +714,10 @@ async function reclaimStalePublicationLock(
 	}
 	if (quarantineStats.dev !== lockStats.dev || quarantineStats.ino !== lockStats.ino) {
 		try {
-			await renameChild(cacheBaseRef, quarantineName, cacheBaseRef, lockName);
+			await link(quarantinePath, childOperationPath(cacheBaseRef, lockName));
+			await removeChild(cacheBaseRef, quarantineName, { force: true });
 		} catch {
-			// Preserve a replacement lock if another publisher claimed the name.
+			// Preserve a replacement lock and its contents without overwriting it.
 		}
 		throw new Error("publication lock changed during stale-lock reclamation");
 	}
@@ -595,7 +739,7 @@ async function claimPublicationLock(
 				0o600,
 			);
 			try {
-				await lockHandle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`);
+				await lockHandle.writeFile(buildPublicationLockRecord());
 				const outcome = await syncRegularFile(lockHandle);
 				if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 			} catch (error) {
@@ -622,12 +766,8 @@ async function claimPublicationLock(
 			if (lockAfter.dev !== lockBefore.dev || lockAfter.ino !== lockBefore.ino) continue;
 			let stale = false;
 			if (lockBytes !== null) {
-				try {
-					const record = JSON.parse(lockBytes.toString("utf-8")) as { pid?: unknown };
-					stale = typeof record.pid === "number" && Number.isInteger(record.pid) && record.pid > 0 && !isProcessAlive(record.pid);
-				} catch {
-					stale = false;
-				}
+				const record = parsePublicationLockRecord(lockBytes);
+				stale = record !== null && isPublicationLockStale(record);
 			}
 			if (!stale) {
 				throw new Error(`another OMX plugin cache publication is active at ${cacheBase}; refusing concurrent publication`);
@@ -900,7 +1040,7 @@ async function openManagedCacheNamespace(
 			handles.push(childRef.handle);
 			parentRef = childRef;
 		}
-		return { handle: parentRef.handle, fdPath: parentRef.operationPath, path: parentRef.path, handles };
+		return { handle: parentRef.handle, fdPath: parentRef.mutationPath ?? parentRef.scanOperationPath, path: parentRef.path, handles };
 	} catch (error) {
 		for (const handle of handles.reverse()) {
 			try { await handle.close(); } catch { /* preserve the primary failure */ }
@@ -933,6 +1073,55 @@ async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "director
 		}
 }
 
+async function validateStagedPluginSnapshot(
+	snapshot: DirectoryRef,
+	packagedMarketplace: PackagedOmxMarketplace,
+	version: string,
+	teamMode: SetupTeamMode | undefined,
+): Promise<void> {
+	const snapshotPath = snapshot.operationPath;
+	const manifestReason = await omxPluginCacheManifestProvenanceReason(snapshotPath, version);
+	if (manifestReason) throw new Error(`Packaged OMX plugin snapshot has invalid provenance: ${manifestReason}`);
+	const expectedSkillNames = await expectedPackagedOmxSkillNames(packagedMarketplace, { teamMode });
+	if (!expectedSkillNames) throw new Error("Packaged OMX plugin snapshot cannot determine expected skills");
+	const skillsReason = await omxPluginCacheSkillsProvenanceReason(snapshotPath, packagedMarketplace, expectedSkillNames);
+	if (skillsReason) throw new Error(`Packaged OMX plugin snapshot has invalid provenance: ${skillsReason}`);
+	const companionReason = await omxPluginCacheCompanionMetadataProvenanceReason(snapshotPath, packagedMarketplace);
+	if (companionReason) throw new Error(`Packaged OMX plugin snapshot has invalid provenance: ${companionReason}`);
+	for (const relativePath of [".mcp.json", ".app.json", "hooks/hooks.json", "hooks/codex-native-hook.mjs", `hooks/${OMX_PLUGIN_HOOK_LAUNCHER_FILE}`]) {
+		const path = join(snapshotPath, relativePath);
+		let stats;
+		try {
+			stats = await lstat(path);
+		} catch {
+			throw new Error(`Packaged OMX plugin snapshot is missing required surface: ${path}`);
+		}
+		if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+			throw new Error(`Packaged OMX plugin snapshot has an invalid required surface: ${path}`);
+		}
+		if (await readOmxPluginCacheFileNoFollow(path, { anchorDir: snapshotPath }) === null) {
+			throw new Error(`Packaged OMX plugin snapshot cannot read required surface: ${path}`);
+		}
+}
+	for (const relativePath of [".mcp.json", ".app.json", "hooks/hooks.json"] as const) {
+		const bytes = await readOmxPluginCacheFileNoFollow(join(snapshotPath, relativePath), { anchorDir: snapshotPath });
+		try {
+			if (!bytes) throw new Error("missing");
+			JSON.parse(bytes.toString("utf-8"));
+		} catch {
+			throw new Error(`Packaged OMX plugin snapshot has invalid JSON: ${join(snapshot.path, relativePath)}`);
+		}
+	}
+	if (!(await fileContentsEqual(join(snapshotPath, "hooks", "hooks.json"), join(packagedMarketplace.pluginRoot, "hooks", "hooks.json"), snapshotPath))) {
+		throw new Error(`Packaged OMX plugin snapshot hooks.json differs from packaged hooks`);
+	}
+	if (!(await fileContentsEqual(join(snapshotPath, "hooks", "codex-native-hook.mjs"), join(packagedMarketplace.pluginRoot, "hooks", "codex-native-hook.mjs"), snapshotPath))) {
+		throw new Error(`Packaged OMX plugin snapshot native hook differs from packaged hook`);
+	}
+	const launcherReason = await getPinnedLauncherIncompatibilityReason(snapshotPath, packagedMarketplace);
+	if (launcherReason) throw new Error(`Packaged OMX plugin snapshot has invalid launcher provenance: ${launcherReason.reason}`);
+}
+
 async function stageCompletePluginSnapshot(
 	stagingParent: DirectoryRef,
 	packagedMarketplace: PackagedOmxMarketplace,
@@ -945,7 +1134,12 @@ async function stageCompletePluginSnapshot(
 	const snapshot = await openDirectoryChild(stagingParent, "snapshot");
 	try {
 		await createExclusiveFileChild(snapshot, ".omx-incomplete", `${process.pid}\n`, tracker);
-		await copyPackagedTree(packagedMarketplace.pluginRoot, snapshot, tracker);
+		const packagedSource = await openDirectoryRef(packagedMarketplace.pluginRoot);
+		try {
+			await copyPackagedTree(packagedSource, snapshot, tracker);
+		} finally {
+			await packagedSource.handle.close();
+		}
 		await assertDirectoryRef(snapshot, "snapshot staging");
 		await applyTeamModeToPluginCache(snapshot, teamMode);
 		const hooksDir = await openDirectoryChild(snapshot, "hooks");
@@ -954,17 +1148,7 @@ async function stageCompletePluginSnapshot(
 		} finally {
 			await hooksDir.handle.close();
 		}
-		const manifest = await readRegularOmxPluginCacheManifest(snapshot.operationPath, snapshot.operationPath);
-		const skillsDir = await openDirectoryChild(snapshot, "skills");
-		await skillsDir.handle.close();
-		if (
-			manifest?.name !== OMX_PLUGIN_NAME ||
-			manifest.version !== version ||
-			manifest.skills !== "./skills/" ||
-			manifest.hooks !== "./hooks/hooks.json"
-		) {
-			throw new Error(`Packaged OMX plugin snapshot is incomplete or has invalid provenance: ${snapshot.path}`);
-		}
+		await validateStagedPluginSnapshot(snapshot, packagedMarketplace, version, teamMode);
 		return snapshot;
 	} catch (error) {
 		await snapshot.handle.close();
@@ -1017,6 +1201,12 @@ export async function discoverOmxPluginCacheDirs(
 		for (const entry of entries) {
 			if (!entry.isDirectory()) continue;
 			if (entry.name === ".git" || entry.name === "node_modules") continue;
+			// #3552 blocker 5: staging trees (`.omx-plugin-*` and reclaim
+			// quarantines) live inside the scanned namespace only until
+			// publication; discovery must never descend into them, so a
+			// marker-committed snapshot can never be observed at its staging
+			// path before the final no-replace publication.
+			if (isPluginCacheStagingEntryName(entry.name)) continue;
 			queue.push({
 				path: join(current.path, entry.name),
 				depth: current.depth + 1,
@@ -1378,6 +1568,7 @@ async function retireUnpinnedManagedSnapshots(
 	codexHomeDir: string,
 	currentVersion: string,
 	anchoredCacheBaseRef?: DirectoryRef,
+	publicationLockHeld = false,
 ): Promise<string[]> {
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
@@ -1387,11 +1578,19 @@ async function retireUnpinnedManagedSnapshots(
 	}
 	let baseRef = anchoredCacheBaseRef;
 	let ownsBaseRef = false;
+	let publicationLock: FileHandle | undefined;
+	let publicationLockIdentity: Stats | undefined;
+	const durability: RegularFileDurabilityTracker = { degraded: false };
 	const candidateRefs: DirectoryRef[] = [];
+	let cleanupError: unknown = null;
 	try {
 		if (!baseRef) {
 			baseRef = await openDirectoryRef(cacheBase);
 			ownsBaseRef = true;
+		}
+		if (!publicationLockHeld) {
+			publicationLock = await claimPublicationLock(baseRef, cacheBase, noFollowFlags, durability);
+			publicationLockIdentity = await publicationLock.stat();
 		}
 		const entries = await readdir(baseRef.operationPath, { withFileTypes: true });
 		const managed: Array<{ path: string; version: string; mtimeMs: number; ref: DirectoryRef; stats: Stats }> = [];
@@ -1409,10 +1608,10 @@ async function retireUnpinnedManagedSnapshots(
 				continue;
 			}
 			candidateRefs.push(candidateRef);
-			const manifest = await readRegularOmxPluginCacheManifest(candidateRef.path, candidateRef.path);
+			const manifest = await readRegularOmxPluginCacheManifest(candidateRef.operationPath, candidateRef.operationPath);
 			if (manifest?.name !== OMX_PLUGIN_NAME || manifest.version !== entry.name) continue;
-			if (!(await hasRegularPublicationMarker(candidateRef.path, ".omx-complete")) || await hasRegularPublicationMarker(candidateRef.path, ".omx-incomplete")) continue;
-			if (await readOmxPluginCacheFileNoFollow(join(candidateRef.path, ".omx-live-pin"), { anchorDir: candidateRef.path }) !== null) continue;
+			if (!(await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-complete")) || await hasRegularPublicationMarker(candidateRef.operationPath, ".omx-incomplete")) continue;
+			if (await readOmxPluginCacheFileNoFollow(join(candidateRef.operationPath, ".omx-live-pin"), { anchorDir: candidateRef.operationPath }) !== null) continue;
 			managed.push({ path: join(cacheBase, entry.name), version: entry.name, mtimeMs: candidateStats.mtimeMs, ref: candidateRef, stats: candidateStats });
 		}
 		managed.sort((left, right) =>
@@ -1422,17 +1621,29 @@ async function retireUnpinnedManagedSnapshots(
 		const retired: string[] = [];
 		for (const candidate of managed.slice(1)) {
 			await assertDirectoryRef(baseRef, "retirement");
-			const currentStats = await lstat(candidate.ref.path);
+			const currentStats = await candidate.ref.handle.stat();
 			if (!currentStats.isDirectory() || currentStats.isSymbolicLink() || currentStats.dev !== candidate.stats.dev || currentStats.ino !== candidate.stats.ino) {
 				throw new Error(`managed cache retirement target changed before removal: ${candidate.path}`);
 			}
-			await removeChild(baseRef, candidate.version, { recursive: true, force: true });
+			await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true });
 			retired.push(candidate.path);
 		}
 		return retired;
 	} finally {
-		for (const candidateRef of candidateRefs.reverse()) await candidateRef.handle.close();
-		if (ownsBaseRef && baseRef) await baseRef.handle.close();
+		for (const candidateRef of candidateRefs.reverse()) {
+			try { await candidateRef.handle.close(); } catch (error) { cleanupError ??= error; }
+		}
+		if (publicationLock) {
+			try { await publicationLock.close(); } catch (error) { cleanupError ??= error; }
+			if (publicationLockIdentity) {
+				try { await reclaimStalePublicationLock(baseRef!, ".omx-publish.lock", publicationLockIdentity); } catch (error) { cleanupError ??= error; }
+			}
+		}
+		emitDegradedDurabilityWarning("plugin cache publication", durability);
+		if (ownsBaseRef && baseRef) {
+			try { await baseRef.handle.close(); } catch (error) { cleanupError ??= error; }
+		}
+		if (cleanupError) throw cleanupError;
 	}
 }
 
@@ -1581,42 +1792,96 @@ async function materializePackagedOmxPluginCacheImpl(
 		try {
 			lockIdentity = await lockHandle.stat();
 			await assertDirectoryRef(cacheBaseRef, "temporary staging");
-			const tempDir = await mkdtemp(join(cacheBaseRef.path, `.omx-plugin-${version}-`));
+			const candidateTempName = `.omx-plugin-${version}-${process.pid}-${randomUUID()}`;
+			await mkdirDirectoryChildExclusive(cacheBaseRef, candidateTempName);
 			await assertDirectoryRef(cacheBaseRef, "temporary staging");
-			tempName = tempDir.slice(cacheBaseRef.path.length + 1);
-			if (!tempName || tempName.includes("/")) throw new Error("temporary staging directory escaped the anchored cache namespace");
+			tempName = candidateTempName;
 			tempRef = await openDirectoryChild(cacheBaseRef, tempName);
 			snapshotRef = await stageCompletePluginSnapshot(tempRef, packagedMarketplace, version, options.teamMode, durability);
 			await syncDirectoryTree(snapshotRef, durability);
 			await options.onCacheDirPrepared?.(cacheDir);
 			try {
+				// #3552 blockers 3+5: commit the complete marker while the snapshot
+				// is still only reachable under the staging parent (discovery never
+				// descends into `.omx-plugin-*` staging trees), then claim the
+				// destination with an atomic exclusive mkdir so a concurrently
+				// created `<version>` directory (empty or not) can never be
+				// silently replaced by the final rename.
 				await createExclusiveFileChild(snapshotRef, ".omx-complete", `${process.pid}\n`, durability);
 				await removeChild(snapshotRef, ".omx-incomplete", { force: true });
 				await syncDirectoryTree(snapshotRef, durability);
-				await renameChild(tempRef, "snapshot", cacheBaseRef, version);
-				await snapshotRef.handle.close();
-				snapshotRef = undefined;
-				finalRef = await openDirectoryChild(cacheBaseRef, version);
-				await assertDirectoryRef(finalRef, "publication validation");
-				const finalPathStats = await lstat(finalRef.path);
-				const finalDescriptorStats = await finalRef.handle.stat();
-				if (!finalPathStats.isDirectory() || finalPathStats.isSymbolicLink() || finalPathStats.dev !== finalDescriptorStats.dev || finalPathStats.ino !== finalDescriptorStats.ino) {
-					throw new Error(`published cache directory changed before validation: ${cacheDir}`);
+				let published = true;
+				try {
+					await claimPublicationDestination(cacheBaseRef, version);
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+						published = false;
+					} else {
+						throw error;
+					}
 				}
-				const syncOutcome = await syncDirectory(cacheBaseRef.handle);
-				recordDirectorySyncOutcome(durability, syncOutcome);
+				if (!published) {
+					outcome = {
+						status: "stale-launcher",
+						cacheDir,
+						version,
+						reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
+						launcherTarget: undefined,
+						retiredDirs: [],
+					};
+				} else {
+					const snapshotStats = await snapshotRef.handle.stat();
+					await renameChild(tempRef, "snapshot", cacheBaseRef, version);
+					await snapshotRef.handle.close();
+					snapshotRef = undefined;
+					finalRef = await openDirectoryChild(cacheBaseRef, version);
+					await assertDirectoryRef(finalRef, "publication validation");
+					const finalPathStats = await lstat(finalRef.path);
+					const finalDescriptorStats = await finalRef.handle.stat();
+					if (
+						!finalPathStats.isDirectory() ||
+						finalPathStats.isSymbolicLink() ||
+						finalPathStats.dev !== finalDescriptorStats.dev ||
+						finalPathStats.ino !== finalDescriptorStats.ino ||
+						finalDescriptorStats.dev !== snapshotStats.dev ||
+						finalDescriptorStats.ino !== snapshotStats.ino
+					) {
+						throw new Error(`published cache directory changed before validation: ${cacheDir}`);
+					}
+					const syncOutcome = await syncDirectory(cacheBaseRef.handle);
+					recordDirectorySyncOutcome(durability, syncOutcome);
+				}
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "EEXIST") {
 					outcome = {
-					status: "stale-launcher",
-					cacheDir,
-					version,
-					reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
-					launcherTarget: undefined,
-					retiredDirs: [],
+						status: "stale-launcher",
+						cacheDir,
+						version,
+						reason: `same-version OMX plugin cache appeared concurrently at ${cacheDir}; refusing to replace an immutable cache`,
+						launcherTarget: undefined,
+						retiredDirs: [],
 					};
 				} else {
 					throw error;
+				}
+			}
+			if (outcome.status === "materialized") {
+				try {
+					outcome.retiredDirs = await retireUnpinnedManagedSnapshots(
+						codexHomeDir,
+						version,
+						cacheBaseRef,
+						true,
+					);
+				} catch (error) {
+					outcome = {
+						status: "stale-launcher",
+						cacheDir,
+						version,
+						reason: `immutable OMX plugin cache retirement failed closed: ${(error as Error).message}`,
+						launcherTarget: undefined,
+						retiredDirs: [],
+					};
 				}
 			}
 		} catch (error) {
@@ -1655,24 +1920,6 @@ async function materializePackagedOmxPluginCacheImpl(
 				launcherTarget: undefined,
 				retiredDirs: [],
 			};
-		}
-		if (outcome.status === "materialized" && !options.dryRun) {
-			try {
-				outcome.retiredDirs = await retireUnpinnedManagedSnapshots(
-					codexHomeDir,
-					version,
-					options.anchoredCacheBaseRef,
-				);
-			} catch (error) {
-				return {
-					status: "stale-launcher",
-					cacheDir,
-					version,
-					reason: `immutable OMX plugin cache retirement failed closed: ${(error as Error).message}`,
-					launcherTarget: undefined,
-					retiredDirs: [],
-				};
-			}
 		}
 		return outcome;
 	}
@@ -1740,6 +1987,8 @@ export async function materializePackagedOmxPluginCache(
 					handle: namespace.handle,
 					path: namespace.path,
 					operationPath: cacheBaseFdPath,
+					scanOperationPath: cacheBaseFdPath,
+					mutationPath: cacheBaseFdPath,
 				},
 				anchoredCacheDir: join(namespace.fdPath, version),
 			},

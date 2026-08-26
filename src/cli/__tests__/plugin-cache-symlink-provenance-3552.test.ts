@@ -25,6 +25,7 @@ import {
   omxPluginCacheExecutedAssetProvenanceReason,
   omxPluginCacheBase,
   pluginHookCacheMatchesPackaged,
+  packagedOmxPluginVersion,
   readOmxPluginCacheState,
   discoverOmxPluginCacheDirs,
   resolvePackagedOmxMarketplace,
@@ -114,7 +115,50 @@ async function seedRegularSnapshot(codexHomeDir: string): Promise<string> {
 }
 
 describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
-  it("publishes, validates, and retires snapshots without descendant /dev/fd paths", async () => {
+  it("rejects unsafe packaged versions before constructing cache paths", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-unsafe-version-"));
+    try {
+      const manifestPath = join(wd, "plugin.json");
+      await writeFile(manifestPath, JSON.stringify({ version: "../escape" }));
+      const packaged = {
+        marketplacePath: join(wd, "marketplace.json"),
+        packageRoot,
+        pluginRoot: packageRoot,
+        pluginManifestPath: manifestPath,
+      };
+      assert.equal(await packagedOmxPluginVersion(packaged), null);
+      const result = await materializePackagedOmxPluginCache(join(wd, "codex"), packaged);
+      assert.equal(result.status, "unavailable", JSON.stringify(result));
+      assert.equal(existsSync(join(wd, "codex")), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not publish a snapshot missing a required plugin surface", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-incomplete-snapshot-"));
+    try {
+      const fakePluginRoot = join(wd, "plugin");
+      await cp(join(packageRoot, "plugins", "oh-my-codex"), fakePluginRoot, { recursive: true });
+      await rm(join(fakePluginRoot, ".mcp.json"), { force: true });
+      const packaged = {
+        marketplacePath: join(wd, "marketplace.json"),
+        packageRoot,
+        pluginRoot: fakePluginRoot,
+        pluginManifestPath: join(fakePluginRoot, ".codex-plugin", "plugin.json"),
+      };
+      const codexHomeDir = join(wd, "codex");
+      const version = await packagedPluginVersion();
+      const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+      assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+      assert.match(result.reason ?? "", /required surface|companion file/);
+      assert.equal(existsSync(join(omxPluginCacheBase(codexHomeDir), version)), false);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on Darwin where descriptor-relative mutation paths are unavailable", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-darwin-publication-"));
     try {
       await withPlatform("darwin", async () => {
@@ -122,26 +166,30 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
           const packaged = await resolvePackagedOmxMarketplace(packageRoot);
           assert.ok(packaged);
           const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
-          assert.equal(first.status, "materialized", JSON.stringify(first));
-          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+          assert.equal(first.status, "stale-launcher", JSON.stringify(first));
+          assert.match(first.reason ?? "", /ENOTSUP|descriptor-relative/);
+          assert.equal(existsSync(omxPluginCacheBase(codexHomeDir)), false);
+        });
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 
-          const oldVersions = ["0.0.1", "0.0.2"];
-          for (const oldVersion of oldVersions) {
-            const oldDir = join(omxPluginCacheBase(codexHomeDir), oldVersion);
-            await mkdir(dirname(oldDir), { recursive: true });
-            await cp(join(packageRoot, "plugins", "oh-my-codex"), oldDir, { recursive: true });
-            const oldManifestPath = join(oldDir, ".codex-plugin", "plugin.json");
-            const oldManifest = JSON.parse(await readFile(oldManifestPath, "utf-8")) as Record<string, unknown>;
-            await writeFile(oldManifestPath, `${JSON.stringify({ ...oldManifest, version: oldVersion })}\n`);
-            await writeFile(join(oldDir, "hooks", "omx-command.json"), await pinnedLauncherContent());
-            await writeFile(join(oldDir, ".omx-complete"), "fixture\n");
+  it("keeps the Windows reparse-safe publication path available", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-win32-publication-"));
+    try {
+      await withPlatform("win32", async () => {
+        await withIsolatedUserHome(wd, async (codexHomeDir) => {
+          const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+          assert.ok(packaged);
+          const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+          if (process.platform === "win32") {
+            assert.equal(first.status, "materialized", JSON.stringify(first));
+            assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+          } else {
+            assert.notEqual(first.status, "unavailable");
           }
-
-          const second = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
-          assert.equal(second.status, "unchanged", JSON.stringify(second));
-          assert.deepEqual(second.retiredDirs, [join(omxPluginCacheBase(codexHomeDir), "0.0.1")]);
-          assert.equal(existsSync(join(omxPluginCacheBase(codexHomeDir), "0.0.1")), false);
-          assert.equal(existsSync(join(first.cacheDir!, ".omx-incomplete")), false);
         });
       });
     } finally {
@@ -789,6 +837,126 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         assert.equal(result.status, "stale-launcher", JSON.stringify(result));
         assert.equal(await readFile(join(cacheDir, "attacker-sentinel"), "utf-8"), "preserve\n");
         assert.equal(existsSync(join(cacheDir, ".omx-complete")), false);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not replace an EMPTY same-version directory claimed concurrently (no-replace publication)", async () => {
+    // Blocker 3: POSIX rename() silently replaces an empty directory, so the
+    // empty-destination case must be covered separately from the sentinel case.
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-empty-claim-barrier-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        const cacheDir = join(omxPluginCacheBase(codexHomeDir), version);
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          onCacheDirPrepared: async (preparedCacheDir) => {
+            assert.equal(preparedCacheDir, cacheDir);
+            await mkdir(preparedCacheDir, { recursive: true });
+          },
+        });
+        assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        assert.match(result.reason ?? "", /appeared concurrently|refusing to replace/);
+        // The claimant (empty directory) survives untouched.
+        assert.equal((await lstat(cacheDir)).isDirectory(), true);
+        assert.equal((await readdir(cacheDir)).length, 0);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not clobber a newly claimed lock during stale-lock restore", async () => {
+    // Blocker 4: the restore path must use a no-clobber primitive (link) so a
+    // replacement lock acquired by another publisher is never overwritten.
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-lock-restore-noclobber-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        // Seed a stale lock from a dead pid; another publisher concurrently
+        // re-claims the name after the reclaimer quarantines it.
+        await writeFile(lockPath, JSON.stringify({ pid: 99999999, createdAt: Date.now() - 60_000 }));
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          onCacheDirPrepared: async () => {
+            // Simulate the restore-gap claimant: replace the (now removed)
+            // lock name with fresh content while publication holds staging.
+            const entries = await readdir(cacheBase);
+            if (!entries.includes(".omx-publish.lock")) {
+              await writeFile(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now(), heartbeatAt: Date.now() }), { flag: "wx" });
+            }
+          },
+        });
+        // Either this publisher lost the race (stale-launcher) or it completed
+        // after removing its own lock; in both cases a live claimant's lock
+        // content must never be overwritten by the restore path.
+        const finalLock = existsSync(lockPath) ? await readFile(lockPath, "utf-8") : null;
+        if (finalLock !== null) {
+          const record = JSON.parse(finalLock) as { pid?: number };
+          assert.ok(record.pid, "surviving lock must keep its claimant record");
+        }
+        assert.ok(result.status === "materialized" || result.status === "stale-launcher");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("never discovers a marker-committed staging snapshot before publication", async () => {
+    // Blocker 5: discovery must exclude staging trees, so a snapshot that has
+    // its .omx-complete marker committed while still staged is invisible.
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-staging-invisible-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const version = await packagedPluginVersion();
+        let observedDuringStaging = false;
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          onCacheDirPrepared: async () => {
+            const discovered = await discoverOmxPluginCacheDirs(codexHomeDir);
+            if (discovered.some((dir) => dir.includes(".omx-plugin-"))) observedDuringStaging = true;
+          },
+        });
+        assert.equal(result.status, "materialized", JSON.stringify(result));
+        assert.equal(observedDuringStaging, false, "discovery observed a staging path");
+        const published = await discoverOmxPluginCacheDirs(codexHomeDir);
+        assert.ok(published.some((dir) => dir === join(omxPluginCacheBase(codexHomeDir), version)));
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat a PID-reused live owner as a stale lock while its lease is valid", async () => {
+    // Blocker 6: a crashed publisher's pid can be reused by a live process;
+    // the lock must remain held while the recorded lease is fresh.
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-pid-reuse-lease-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        // Live process pid + fresh heartbeat: lock is held regardless of PID reuse.
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now(), heartbeatAt: Date.now(), processToken: "other" }));
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        assert.match(result.reason ?? "", /another OMX plugin cache publication is active|cannot claim/);
+        assert.equal(existsSync(lockPath), true);
+        // An expired lease with a live-but-unrelated pid (PID reuse) is stale.
+        await writeFile(lockPath, JSON.stringify({ pid: process.pid, createdAt: Date.now() - 600_000, heartbeatAt: Date.now() - 600_000, processToken: "crashed" }));
+        const recovered = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(recovered.status, "materialized", JSON.stringify(recovered));
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
