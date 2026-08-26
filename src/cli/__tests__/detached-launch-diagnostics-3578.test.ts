@@ -251,5 +251,51 @@ describe('#3578 detached launch diagnostics', () => {
       assert.ok(kill);
       assert.deepEqual(kill.args, ['kill-session', '-t', 'omx-3578-target']);
     });
+
+    it('preserves without mutation when the exact session disappears before cleanup (destroyed session)', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-destroyed';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'owner-destroyed');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        fixture.run(['kill-session', '-t', sessionName]);
+        assert.throws(
+          () => cleanupDetachedPreReportSession(authority),
+          /topology changed before cleanup/,
+          'destroyed exact session must fail closed without mutation',
+        );
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'replacement-after-destroy']);
+        assert.throws(
+          () => cleanupDetachedPreReportSession(authority),
+          /topology changed before cleanup/,
+          'replacement after destroyed session must never be killed',
+        );
+        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'replacement session must survive');
+      });
+    });
+
+    it('preserves without mutation when owner drifts after probe but before pane-targeted sink (race)', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-probe-sink-race';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        const hudPaneId = fixture.run([
+          'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300',
+        ]);
+        const authority = captureSession(fixture, sessionName, 'owner-race');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'foreign-race-owner']);
+        assert.throws(
+          () => cleanupDetachedPreReportSession(authority),
+          /topology changed before cleanup/,
+          'probe present but sink owner drift must fail closed without pane-targeted mutation',
+        );
+        assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(hudPaneId), true, 'HUD pane must survive race');
+        assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(authority.paneId), true, 'leader pane must survive race');
+        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'HUD session must survive race');
+      });
+    });
   });
 });

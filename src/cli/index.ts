@@ -2602,16 +2602,18 @@ function detachedPreReportSessionCleanupCondition(authority: DetachedLeaderAutho
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
 
-function detachedPreReportLeaderPaneAbsent(authority: DetachedLeaderAuthority): boolean {
+function detachedPreReportLeaderPaneAbsent(authority: DetachedLeaderAuthority): "absent" | "present" | "unknown" {
   // Enumerate every pane id of the exact named session; the leader pane must
-  // be absent. Enumeration failures are fail-closed (no cleanup).
+  // be absent for the session-scoped fence to apply. Enumeration failures
+  // (notably the exact session no longer exists) are fail-closed: unknown
+  // topology preserves without mutation and is surfaced as a topology change.
   try {
     const output = execTmuxFileSync(["list-panes", "-s", "-t", authority.sessionName, "-F", "#{pane_id}"], {
       encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     });
-    return !output.split("\n").map((line) => line.trim()).filter(Boolean).includes(authority.paneId);
+    return !output.split("\n").map((line) => line.trim()).filter(Boolean).includes(authority.paneId) ? "absent" : "present";
   } catch {
-    return false;
+    return "unknown";
   }
 }
 
@@ -2622,7 +2624,9 @@ export function cleanupDetachedPreReportSession(authority: DetachedLeaderAuthori
   // no longer exist — a missing -t target can terminate the server. Probe pane
   // membership of the exact named session first; only a pane that still exists
   // may take the original retained-dead-pane fence.
-  if (detachedPreReportLeaderPaneAbsent(authority)) {
+  const absence = detachedPreReportLeaderPaneAbsent(authority);
+  if (absence === "unknown") throw new Error("detached pre-report topology changed before cleanup");
+  if (absence === "absent") {
     // #3578: the leader pane was removed entirely (normal exit with
     // remain-on-exit off). Clean up through the session-scoped fence instead.
     const sessionScoped = execTmuxFileSync([
@@ -2632,10 +2636,15 @@ export function cleanupDetachedPreReportSession(authority: DetachedLeaderAuthori
     if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");
     return;
   }
-  const output = execTmuxFileSync([
-    "if-shell", "-F", "-t", authority.paneId, detachedPreReportCleanupCondition(authority),
-    success, "display-message -p ''",
-  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  let output: string;
+  try {
+    output = execTmuxFileSync([
+      "if-shell", "-F", "-t", authority.paneId, detachedPreReportCleanupCondition(authority),
+      success, "display-message -p ''",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    throw new Error("detached pre-report topology changed before cleanup");
+  }
   if (output !== receipt) throw new Error("detached pre-report topology changed before cleanup");
 }
 
