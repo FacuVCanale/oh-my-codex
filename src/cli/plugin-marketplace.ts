@@ -502,6 +502,8 @@ interface RemoveChildOptions {
 	force?: boolean;
 	preserveRecursive?: boolean;
 	expectedManagedVersion?: string;
+	preservedPaths?: string[];
+	beforeDestructiveRemove?: () => Promise<boolean>;
 }
 
 async function removeChild(parent: DirectoryRef, name: string, options: RemoveChildOptions = {}): Promise<boolean> {
@@ -541,6 +543,7 @@ async function removeChild(parent: DirectoryRef, name: string, options: RemoveCh
 		if (!final || !sameFileIdentity(before, final)) {
 			throw new Error(`identity-bound removal target changed before removal syscall: ${mutationPath}`);
 		}
+		if (options.beforeDestructiveRemove && !await options.beforeDestructiveRemove()) return false;
 	}
 	await rm(mutationPath, options);
 	if (before) {
@@ -746,13 +749,13 @@ async function readRegularFileTextNoFollow(path: string, options: { anchorDir?: 
 	return bytes?.toString("utf-8") ?? null;
 }
 
-async function computeImmutableClaimDigest(root: string): Promise<string> {
+export async function computeOmxPluginCacheClaimDigest(root: string): Promise<string> {
 	const hash = createHash("sha256");
-	const visit = async (directory: string): Promise<void> => {
+	const visit = async (directory: string, isRoot: boolean): Promise<void> => {
 		const entries = await readdir(directory, { withFileTypes: true });
 		entries.sort((left, right) => left.name.localeCompare(right.name));
 		for (const entry of entries) {
-			if (entry.name === ".omx-complete" || entry.name === ".omx-live-pin") continue;
+			if (isRoot && (entry.name === ".omx-complete" || entry.name === ".omx-live-pin")) continue;
 			const path = join(directory, entry.name);
 			const stats = await lstat(path);
 			if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile()) || (stats.isFile() && stats.nlink !== 1)) {
@@ -760,7 +763,7 @@ async function computeImmutableClaimDigest(root: string): Promise<string> {
 			}
 			hash.update(`${entry.name}\0${stats.isDirectory() ? "d" : "f"}\0${stats.dev}\0${stats.ino}\0${stats.size}\0`);
 			if (stats.isDirectory()) {
-				await visit(path);
+				await visit(path, false);
 			} else {
 				const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: directory });
 				if (bytes === null) throw new Error(`claim entry cannot be read: ${path}`);
@@ -768,7 +771,7 @@ async function computeImmutableClaimDigest(root: string): Promise<string> {
 			}
 		}
 	};
-	await visit(root);
+	await visit(root, true);
 	return hash.digest("hex");
 }
 
@@ -778,14 +781,10 @@ async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complet
 	if (name !== ".omx-complete") return true;
 	try {
 		const record = JSON.parse(bytes.toString("utf-8")) as { claimDigest?: unknown };
-		if (typeof record.claimDigest !== "string") {
-			const managed = await readOmxPluginCacheFileNoFollow(join(cacheDir, OMX_PLUGIN_MANAGED_MARKER), { anchorDir: cacheDir });
-			return managed === null || managed.toString("utf-8").trim() === "fixture";
-		}
-		return record.claimDigest === await computeImmutableClaimDigest(cacheDir);
+		if (typeof record.claimDigest !== "string") return false;
+		return record.claimDigest === await computeOmxPluginCacheClaimDigest(cacheDir);
 	} catch {
-		const managed = await readOmxPluginCacheFileNoFollow(join(cacheDir, OMX_PLUGIN_MANAGED_MARKER), { anchorDir: cacheDir });
-		return managed === null || managed.toString("utf-8").trim() === "fixture";
+		return false;
 	}
 }
 
@@ -1038,6 +1037,7 @@ export async function removeChildIfIdentity(
 		throw new Error(`identity-bound removal target changed during reclamation; preserved quarantine ${quarantinePath}`);
 	}
 	if (options.expectedManagedVersion) {
+		const verifyQuarantineOwnership = async (): Promise<boolean> => {
 		const manifest = await readRegularOmxPluginCacheManifest(quarantinePath, quarantinePath);
 		const owned = manifest?.name === OMX_PLUGIN_NAME
 			&& manifest.version === options.expectedManagedVersion
@@ -1046,8 +1046,20 @@ export async function removeChildIfIdentity(
 			&& await hasRegularPublicationMarker(quarantinePath, OMX_PLUGIN_MANAGED_MARKER);
 		const livePin = await readOmxPluginCacheFileNoFollow(join(quarantinePath, ".omx-live-pin"), { anchorDir: quarantinePath }) !== null;
 		if (!owned || livePin) {
-			throw new Error(`managed cache ownership changed during reclamation; preserved quarantine ${quarantinePath}`);
+			return false;
 		}
+		return true;
+		};
+		await pluginCacheMutationTestHooks?.beforeRemove?.(quarantinePath, quarantineStats);
+		if (!await verifyQuarantineOwnership()) {
+			options.preservedPaths?.push(join(cacheBaseRef.path, quarantineName));
+			return false;
+		}
+		return removeChild(cacheBaseRef, quarantineName, {
+			...options,
+			preserveRecursive: true,
+			beforeDestructiveRemove: verifyQuarantineOwnership,
+		});
 	}
 	return removeChild(cacheBaseRef, quarantineName, {
 		...options,
@@ -1181,10 +1193,10 @@ async function claimPublicationLock(
 export async function omxPluginCacheExecutedAssetProvenanceReason(
 	cacheDir: string,
 ): Promise<string | null> {
-	if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete"))) {
+	if ((await readOmxPluginCacheFileNoFollow(join(cacheDir, ".omx-complete"), { anchorDir: cacheDir })) === null) {
 		return `cache snapshot publication marker is missing at ${cacheDir}`;
 	}
-	if (await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) {
+	if ((await readOmxPluginCacheFileNoFollow(join(cacheDir, ".omx-incomplete"), { anchorDir: cacheDir })) !== null) {
 		return `cache snapshot publication is incomplete at ${cacheDir}`;
 	}
 	const expectations: Array<{ path: string; kind: "file" | "directory"; label: string }> = [
@@ -1357,7 +1369,12 @@ export async function omxPluginCacheProvenanceReason(
 	if (!expectedSkillNames) return "packaged skill names are unavailable";
 	const skillsReason = await omxPluginCacheSkillsProvenanceReason(cacheDir, packagedMarketplace, expectedSkillNames);
 	if (skillsReason) return skillsReason;
-	return omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
+	const assetReason = await omxPluginCacheExecutedAssetProvenanceReason(cacheDir);
+	if (assetReason) return assetReason;
+	if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete"))) {
+		return `cache snapshot completion marker is malformed or does not match the immutable claim at ${cacheDir}`;
+	}
+	return null;
 }
 
 async function openManagedCacheNamespace(
@@ -1436,7 +1453,8 @@ async function inspectCacheRoot(cacheDir: string): Promise<"missing" | "director
 			if (!stats.isDirectory() || stats.isSymbolicLink()) {
 				return "untrusted";
 			}
-			if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete")) || await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) return "untrusted";
+			if (await hasRegularPublicationMarker(cacheDir, ".omx-incomplete")) return "untrusted";
+			if (!(await hasRegularPublicationMarker(cacheDir, ".omx-complete"))) return "directory";
 			const manifest = await readRegularOmxPluginCacheManifest(cacheDir);
 			if (!manifest) {
 				const manifestPath = join(cacheDir, ".codex-plugin", "plugin.json");
@@ -1956,6 +1974,7 @@ export async function retireUnpinnedManagedSnapshots(
 	anchoredCacheBaseRef?: DirectoryRef,
 	publicationLockHeld = false,
 	preservedDirs?: string[],
+	heldPublicationLockGuard?: PublicationLockGuard,
 ): Promise<string[]> {
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
@@ -1968,7 +1987,8 @@ export async function retireUnpinnedManagedSnapshots(
 	let publicationLock: FileHandle | undefined;
 	let publicationLockIdentity: Stats | undefined;
 	const durability: RegularFileDurabilityTracker = { degraded: false };
-	let publicationLockGuard: PublicationLockGuard | undefined;
+	let publicationLockGuard: PublicationLockGuard | undefined = heldPublicationLockGuard;
+	let ownsPublicationLockGuard = false;
 	const candidateRefs: DirectoryRef[] = [];
 	let cleanupError: unknown = null;
 	try {
@@ -1981,6 +2001,7 @@ export async function retireUnpinnedManagedSnapshots(
 			publicationLockIdentity = await publicationLock.stat();
 			await refreshPublicationLockRecord(join(cacheBase, ".omx-publish.lock"), publicationLock, publicationLockIdentity!, durability);
 			publicationLockGuard = startPublicationLockHeartbeat(join(cacheBase, ".omx-publish.lock"), publicationLock, publicationLockIdentity!, durability);
+			ownsPublicationLockGuard = true;
 		}
 		await publicationLockGuard?.assertOwned();
 		const entries = await readdir(baseRef.operationPath, { withFileTypes: true });
@@ -2021,7 +2042,7 @@ export async function retireUnpinnedManagedSnapshots(
 			if (await readOmxPluginCacheFileNoFollow(join(candidate.ref.operationPath, ".omx-live-pin"), { anchorDir: candidate.ref.operationPath }) !== null) {
 				continue;
 			}
-			if (await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true, expectedManagedVersion: candidate.version })) {
+			if (await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true, expectedManagedVersion: candidate.version, preservedPaths: preservedDirs })) {
 				retired.push(candidate.path);
 			} else {
 				preservedDirs?.push(candidate.path);
@@ -2029,7 +2050,7 @@ export async function retireUnpinnedManagedSnapshots(
 		}
 		return retired;
 	} finally {
-		if (publicationLockGuard) clearInterval(publicationLockGuard.timer);
+		if (ownsPublicationLockGuard && publicationLockGuard) clearInterval(publicationLockGuard.timer);
 		for (const candidateRef of candidateRefs.reverse()) {
 			try { await candidateRef.handle.close(); } catch (error) { cleanupError ??= error; }
 		}
@@ -2270,7 +2291,7 @@ async function materializePackagedOmxPluginCacheImpl(
 					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);
 					await syncDirectoryTree(claimRef, durability);
 					await publicationLockGuard.assertOwned();
-					const claimDigest = await computeImmutableClaimDigest(claimRef.path);
+					const claimDigest = await computeOmxPluginCacheClaimDigest(claimRef.path);
 					await createExclusiveFileChild(claimRef, ".omx-complete", `${JSON.stringify({ version, claimDigest })}\n`, durability);
 					const claimDirSyncOutcome = await syncDirectory(claimRef.handle);
 					recordDirectorySyncOutcome(durability, claimDirSyncOutcome);
@@ -2303,6 +2324,7 @@ async function materializePackagedOmxPluginCacheImpl(
 						cacheBaseRef,
 						true,
 						preservedDirs,
+						publicationLockGuard,
 					);
 					if (preservedDirs.length > 0) outcome.preservedDirs = preservedDirs;
 				} catch (error) {

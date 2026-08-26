@@ -42,6 +42,7 @@ import {
 	buildManagedCodexNativeHookCommand,
 	buildManagedCodexNativeHookWindowsShimContent,
 } from "../../config/codex-hooks.js";
+import { computeOmxPluginCacheClaimDigest } from "../plugin-marketplace.js";
 
 const MANAGED_HOOK_EVENTS = [
 	"SessionStart",
@@ -137,7 +138,8 @@ async function installPluginCacheFixture(codexDir: string): Promise<string> {
 			2,
 		)}\n`,
 	);
-	await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
+	const claimDigest = await computeOmxPluginCacheClaimDigest(cacheDir);
+	await writeFile(join(cacheDir, ".omx-complete"), `${JSON.stringify({ claimDigest })}\n`);
 	return cacheDir;
 }
 

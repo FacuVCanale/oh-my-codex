@@ -23,6 +23,7 @@ import {
   omxPluginCacheBase,
   upsertLocalOmxMarketplaceRegistration,
   upsertLocalOmxPluginEnablement,
+  computeOmxPluginCacheClaimDigest,
 } from "../plugin-marketplace.js";
 import { doctor } from "../doctor.js";
 
@@ -140,7 +141,6 @@ async function seedCurrentLauncher(codexHomeDir: string): Promise<string> {
   await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
     recursive: true,
   });
-  await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
   await writeFile(
     join(cacheDir, "hooks", "omx-command.json"),
     JSON.stringify(
@@ -152,7 +152,14 @@ async function seedCurrentLauncher(codexHomeDir: string): Promise<string> {
       2,
     ) + "\n",
   );
+  const claimDigest = await computeOmxPluginCacheClaimDigest(cacheDir);
+  await writeFile(join(cacheDir, ".omx-complete"), `${JSON.stringify({ claimDigest })}\n`);
   return cacheDir;
+}
+
+async function writeBoundCompletionMarker(cacheDir: string): Promise<void> {
+	const claimDigest = await computeOmxPluginCacheClaimDigest(cacheDir);
+	await writeFile(join(cacheDir, ".omx-complete"), `${JSON.stringify({ claimDigest })}\n`);
 }
 
 async function makeFakePackageRoot(
@@ -303,7 +310,6 @@ describe("issue 3558 launcher provenance", () => {
           await cp(join(fakeRoot, "plugins", "oh-my-codex"), cacheDir, {
             recursive: true,
           });
-          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             JSON.stringify(
@@ -315,6 +321,7 @@ describe("issue 3558 launcher provenance", () => {
               2,
             ) + "\n",
           );
+          await writeBoundCompletionMarker(cacheDir);
           assert.equal(
             existsSync(join(fakeRoot, "dist", "cli", "omx.js")),
             true,
@@ -439,7 +446,6 @@ describe("issue 3558 launcher provenance", () => {
           await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
             recursive: true,
           });
-          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             JSON.stringify(
@@ -449,6 +455,7 @@ describe("issue 3558 launcher provenance", () => {
             ) + "\n",
           );
           await writeFile(join(cacheDir, ".omx-live-pin"), "pinned\n");
+          await writeBoundCompletionMarker(cacheDir);
           const before = await readFile(
             join(cacheDir, "hooks", "omx-command.json"),
             "utf-8",
@@ -533,12 +540,12 @@ describe("issue 3558 launcher provenance", () => {
             join(packageRoot, "plugins", "oh-my-codex", ".app.json"),
             join(cacheDir, ".app.json"),
           );
-          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             "{ malformed",
             "utf-8",
           );
+          await writeBoundCompletionMarker(cacheDir);
           let raw = await readPinnedLauncherRaw(cacheDir);
           assert.match(raw.error!, /malformed/);
           let r = await materializePackagedOmxPluginCache(
@@ -620,6 +627,7 @@ describe("issue 3558 launcher provenance", () => {
               argsPrefix: [aliasLauncherPath],
             }) + "\n",
           );
+          await writeBoundCompletionMarker(cacheDir);
           // ensure file exists via alias
           assert.equal(existsSync(aliasLauncherPath), true);
           const incompat = await getPinnedLauncherIncompatibilityReason(
@@ -650,7 +658,6 @@ describe("issue 3558 launcher provenance", () => {
           await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, {
             recursive: true,
           });
-          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await writeFile(
             join(cacheDir, "hooks", "omx-command.json"),
             JSON.stringify(
@@ -659,6 +666,7 @@ describe("issue 3558 launcher provenance", () => {
               2,
             ) + "\n",
           );
+          await writeBoundCompletionMarker(cacheDir);
           // Also ensure doctor's expected plugin-scoped check triggers: need config that enables plugin-scoped hooks
           // Minimal config: ensure checkPluginScopedNativeHooks path via doctor() invocation (not just helpers).
           // Instead of full doctor (which checks many things), directly invoke the exported doctor helper via spawning logic:
@@ -716,8 +724,8 @@ describe("issue 3558 launcher provenance", () => {
           const cacheDir = await packagedPluginCacheDir(codexHomeDir);
           await mkdir(dirname(cacheDir), { recursive: true });
           await cp(join(packageRoot, "plugins", "oh-my-codex"), cacheDir, { recursive: true });
-          await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
           await rm(join(cacheDir, "hooks", "omx-command.json"), { force: true });
+          await writeBoundCompletionMarker(cacheDir);
           const packaged = await resolvePackagedOmxMarketplace(packageRoot);
           assert.ok(packaged);
           const incompat = await getPinnedLauncherIncompatibilityReason(cacheDir, packaged);

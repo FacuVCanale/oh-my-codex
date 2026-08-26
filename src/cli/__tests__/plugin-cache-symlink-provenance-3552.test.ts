@@ -29,6 +29,7 @@ import {
   packagedOmxPluginVersion,
   readOmxPluginCacheState,
   discoverOmxPluginCacheDirs,
+  computeOmxPluginCacheClaimDigest,
   resolvePackagedOmxMarketplace,
   setPluginCacheMutationHooksForTest,
 } from "../plugin-marketplace.js";
@@ -117,7 +118,8 @@ async function seedRegularSnapshot(codexHomeDir: string): Promise<string> {
     join(cacheDir, "hooks", "omx-command.json"),
     await pinnedLauncherContent(),
   );
-  await writeFile(join(cacheDir, ".omx-complete"), "fixture\n");
+  const claimDigest = await computeOmxPluginCacheClaimDigest(cacheDir);
+  await writeFile(join(cacheDir, ".omx-complete"), `${JSON.stringify({ version, claimDigest })}\n`);
   return cacheDir;
 }
 
@@ -1223,10 +1225,10 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         for (const v of ["0.20.0", "0.20.1", "0.20.2"]) {
           const dir = join(cacheBase, v);
           await mkdir(dir, { recursive: true });
-          await writeFile(join(dir, ".omx-complete"), "ok\n");
           await writeFile(join(dir, ".omx-managed"), "fixture\n");
           await mkdir(join(dir, ".codex-plugin"), { recursive: true });
           await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: v, skills: "./skills/", hooks: "./hooks/hooks.json" }));
+          await writeFile(join(dir, ".omx-complete"), `${JSON.stringify({ version: v, claimDigest: await computeOmxPluginCacheClaimDigest(dir) })}\n`);
         }
         const version = await packagedPluginVersion();
         const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js") as unknown as { retireUnpinnedManagedSnapshots: (a: string, b: string) => Promise<string[]> };
@@ -1714,7 +1716,7 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         const foreign = join(cacheBase, "0.20.0");
         await mkdir(join(foreign, ".codex-plugin"), { recursive: true });
         await writeFile(join(foreign, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: "0.20.0" }));
-        await writeFile(join(foreign, ".omx-complete"), "foreign\n");
+        await writeFile(join(foreign, ".omx-complete"), `${JSON.stringify({ version: "0.20.0", claimDigest: await computeOmxPluginCacheClaimDigest(foreign) })}\n`);
         const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js");
         assert.deepEqual(await retireUnpinnedManagedSnapshots(codexHomeDir, "0.21.0"), []);
         assert.equal(existsSync(foreign), true);
@@ -1732,13 +1734,13 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         const victim = join(cacheBase, "0.20.0");
         await mkdir(join(victim, ".codex-plugin"), { recursive: true });
         await writeFile(join(victim, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: "0.20.0" }));
-        await writeFile(join(victim, ".omx-complete"), "fixture\n");
         await writeFile(join(victim, ".omx-managed"), "fixture\n");
+        await writeFile(join(victim, ".omx-complete"), `${JSON.stringify({ version: "0.20.0", claimDigest: await computeOmxPluginCacheClaimDigest(victim) })}\n`);
         const newer = join(cacheBase, "0.20.1");
         await mkdir(join(newer, ".codex-plugin"), { recursive: true });
         await writeFile(join(newer, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: "0.20.1" }));
-        await writeFile(join(newer, ".omx-complete"), "fixture\n");
         await writeFile(join(newer, ".omx-managed"), "fixture\n");
+        await writeFile(join(newer, ".omx-complete"), `${JSON.stringify({ version: "0.20.1", claimDigest: await computeOmxPluginCacheClaimDigest(newer) })}\n`);
         let interposed = false;
         const resetHooks = setPluginCacheMutationHooksForTest({
           beforeRename: async (sourcePath) => {
@@ -1749,18 +1751,13 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
         });
         try {
           const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js");
-          let retirementError: unknown;
-          try {
-            await retireUnpinnedManagedSnapshots(codexHomeDir, "0.21.0");
-          } catch (error) {
-            retirementError = error;
-          }
+          const preservedDirs: string[] = [];
+          assert.deepEqual(await retireUnpinnedManagedSnapshots(codexHomeDir, "0.21.0", undefined, false, preservedDirs), []);
           assert.equal(interposed, true, "retirement interposition did not reach the candidate quarantine rename");
-          assert.match(String((retirementError as Error | undefined)?.message ?? ""), /managed cache ownership changed during reclamation/);
+          assert.ok(preservedDirs.some((path) => existsSync(join(path, ".omx-live-pin"))));
         } finally {
           resetHooks();
         }
-        assert.ok((await readdir(cacheBase)).some((name) => name.includes(".reclaim-") && existsSync(join(cacheBase, name, ".omx-live-pin"))));
       });
     } finally {
       await rm(wd, { recursive: true, force: true });
