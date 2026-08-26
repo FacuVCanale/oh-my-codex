@@ -1159,10 +1159,56 @@ function isDiscardableHistoryCopyError(error: unknown): boolean {
 
 const HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS = 5_000;
 const HISTORY_PERSISTENCE_LOCK_STALE_MS = 30_000;
+const HISTORY_PERSISTENCE_LOCK_HEARTBEAT_MS = 5_000;
 
-async function withHistoryPersistenceLock<T>(root: string, action: () => Promise<T>): Promise<T> {
+interface HistoryPersistenceLockOptions {
+  timeoutMs?: number;
+  staleMs?: number;
+  heartbeatMs?: number;
+}
+
+interface HistoryPersistenceLockLease {
+  lockPath: string;
+  token: string;
+  heartbeat: ReturnType<typeof setInterval>;
+}
+
+async function readHistoryPersistenceLockOwner(lockPath: string): Promise<{ token: string; pid: number } | undefined> {
+  try {
+    const owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf-8")) as { token?: unknown; pid?: unknown };
+    if (typeof owner.token !== "string" || typeof owner.pid !== "number") return undefined;
+    return { token: owner.token, pid: owner.pid };
+  } catch {
+    return undefined;
+  }
+}
+
+function isHistoryProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+export async function releaseHistoryPersistenceLock(lease: HistoryPersistenceLockLease): Promise<void> {
+  clearInterval(lease.heartbeat);
+  const owner = await readHistoryPersistenceLockOwner(lease.lockPath);
+  if (owner?.token !== lease.token) return;
+  await rm(lease.lockPath, { recursive: true, force: true }).catch(() => undefined);
+}
+
+export async function acquireHistoryPersistenceLock(
+  root: string,
+  options: HistoryPersistenceLockOptions = {},
+): Promise<HistoryPersistenceLockLease> {
   const lockPath = join(root, ".omx-history.lock");
-  const deadline = Date.now() + HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS;
+  const ownerPath = join(lockPath, "owner.json");
+  const timeoutMs = options.timeoutMs ?? HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS;
+  const staleMs = options.staleMs ?? HISTORY_PERSISTENCE_LOCK_STALE_MS;
+  const heartbeatMs = options.heartbeatMs ?? HISTORY_PERSISTENCE_LOCK_HEARTBEAT_MS;
+  const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
       await mkdir(lockPath);
@@ -1171,22 +1217,47 @@ async function withHistoryPersistenceLock<T>(root: string, action: () => Promise
         throw new Error(`history persistence lock is not a private directory: ${lockPath}`);
       }
       await assertHistoryPathWithin(lockPath, root);
-      try {
-        return await action();
-      } finally {
-        await rm(lockPath, { recursive: true, force: true });
-      }
+      const token = randomUUID();
+      await writeFile(ownerPath, JSON.stringify({ token, pid: process.pid, heartbeatAt: Date.now() }), { flag: "wx" });
+      const heartbeat = setInterval(async () => {
+        try {
+          const owner = await readHistoryPersistenceLockOwner(lockPath);
+          if (owner?.token !== token) return;
+          await writeFile(ownerPath, JSON.stringify({ token, pid: process.pid, heartbeatAt: Date.now() }));
+        } catch {
+          // A contender may have removed a dead owner's lock between checks.
+        }
+      }, heartbeatMs);
+      heartbeat.unref?.();
+      return { lockPath, token, heartbeat };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const lockStat = await lstat(lockPath).catch(() => undefined);
       if (lockStat?.isSymbolicLink()) throw new Error(`history persistence lock is a symlink: ${lockPath}`);
-      if (lockStat && Date.now() - lockStat.mtimeMs > HISTORY_PERSISTENCE_LOCK_STALE_MS) {
+      const owner = await readHistoryPersistenceLockOwner(lockPath);
+      const lockAge = lockStat ? Date.now() - lockStat.mtimeMs : 0;
+      if (owner && !isHistoryProcessAlive(owner.pid)) {
+        const ownerStat = await stat(join(lockPath, "owner.json")).catch(() => undefined);
+        if (ownerStat && Date.now() - ownerStat.mtimeMs > staleMs) {
+          await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+          continue;
+        }
+      } else if (!owner && lockAge > staleMs) {
         await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
         continue;
       }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for history persistence lock: ${lockPath}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+  }
+}
+
+async function withHistoryPersistenceLock<T>(root: string, action: () => Promise<T>): Promise<T> {
+  const lease = await acquireHistoryPersistenceLock(root);
+  try {
+    return await action();
+  } finally {
+    await releaseHistoryPersistenceLock(lease);
   }
 }
 

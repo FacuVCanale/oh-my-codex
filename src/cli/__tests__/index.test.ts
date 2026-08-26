@@ -63,6 +63,8 @@ import {
   prepareCodexHomeForLaunch,
   prepareRuntimeCodexHomeForProjectLaunch,
   historyDestinationMode,
+  acquireHistoryPersistenceLock,
+  releaseHistoryPersistenceLock,
   captureMadmaxWorktreeRuntimeContext,
   persistProjectLaunchRuntimeAuthState,
   persistProjectLaunchRuntimeProjectTrustState,
@@ -3571,6 +3573,39 @@ describe("project launch scope helpers", () => {
       const persisted = await readFile(join(projectCodexHome, "history.jsonl"), "utf-8");
       assert.match(persisted, /"session_id":"one"/);
       assert.match(persisted, /"session_id":"two"/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a live history lock through its stale age", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-lock-lease-"));
+    try {
+      const first = await acquireHistoryPersistenceLock(wd, { staleMs: 30, heartbeatMs: 5 });
+      let contenderAcquired = false;
+      const contender = acquireHistoryPersistenceLock(wd, { timeoutMs: 500, staleMs: 30, heartbeatMs: 5 }).then((lease) => {
+        contenderAcquired = true;
+        return lease;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(contenderAcquired, false);
+      await releaseHistoryPersistenceLock(first);
+      const second = await contender;
+      await releaseHistoryPersistenceLock(second);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let an old lock owner remove a replacement lock", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-lock-owner-"));
+    try {
+      const oldLease = await acquireHistoryPersistenceLock(wd);
+      await rm(oldLease.lockPath, { recursive: true, force: true });
+      const newLease = await acquireHistoryPersistenceLock(wd);
+      await releaseHistoryPersistenceLock(oldLease);
+      assert.equal((await lstat(newLease.lockPath)).isDirectory(), true);
+      await releaseHistoryPersistenceLock(newLease);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
