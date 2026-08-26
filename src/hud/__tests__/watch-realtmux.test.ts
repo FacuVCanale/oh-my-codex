@@ -93,11 +93,13 @@ async function stopAttachedClient(child: ChildProcess): Promise<void> {
 function buildDeterministicWatchRunner(
 	modulePath: string,
 	markerDir: string,
+	trackDestructiveClear = true,
 ): string {
 	return `
 const { runWatchMode } = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
 const { writeFile } = await import('node:fs/promises');
 const markerDir = ${JSON.stringify(markerDir)};
+const trackDestructiveClear = ${JSON.stringify(trackDestructiveClear)};
 let readCount = 0;
 const empty = {
   version: 'test', gitBranch: null, ralph: null, ultrawork: null, autopilot: null,
@@ -144,6 +146,12 @@ await runWatchMode(process.cwd(), { watch: true, json: false, tmux: false, prese
       ? 'NEW_FRAME_T2\\nNEW_FRAME_T2_BODY\\nNEW_FRAME_T2_TAIL'
       : 'LATEST_FRAME_T3\\nLATEST_FRAME_T3_TAIL',
   runAuthorityTickFn: async () => {},
+  writeStdout: (text) => {
+    if (trackDestructiveClear && text.includes('\\x1b[3J')) {
+      void writeFile(markerDir + '/destructive-clear', 'unexpected');
+    }
+    process.stdout.write(text);
+  },
   registerHudResizeHookFn: () => true,
 });
 `;
@@ -299,6 +307,93 @@ describe("HUD watch real PTY/tmux publication", () => {
 					2,
 					"the regression must keep exactly one leader and one HUD watcher",
 				);
+			});
+		} finally {
+			if (attachedClient) await stopAttachedClient(attachedClient);
+			await rm(workDir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves user scrollback for a non-owned tmux watch pane", async (t) => {
+		if (!skipUnlessRealTmux(t)) return;
+
+		const workDir = await mkdtemp(
+			join(tmpdir(), "omx-hud-refresh-unowned-realtmux-"),
+		);
+		const markerDir = join(workDir, "markers");
+		const runnerPath = join(workDir, "watch-runner.mjs");
+		await import("node:fs/promises").then(({ mkdir }) => mkdir(markerDir));
+		let attachedClient: ChildProcess | undefined;
+		try {
+			await writeFile(
+				runnerPath,
+				buildDeterministicWatchRunner(
+					join(process.cwd(), "dist", "hud", "index.js"),
+					markerDir,
+				),
+			);
+			await chmod(runnerPath, 0o755);
+
+			await withTempTmuxSession(async (fixture) => {
+				const hudCommand = `printf 'USER_SCROLLBACK_SENTINEL\\n'; exec env -u OMX_TMUX_HUD_OWNER -u OMX_TMUX_HUD_LEADER_PANE node ${quoteSh(runnerPath)}`;
+				const hudPaneId = fixture.run([
+					"split-window",
+					"-v",
+					"-l",
+					"2",
+					"-d",
+					"-P",
+					"-F",
+					"#{pane_id}",
+					"-t",
+					fixture.leaderPaneId,
+					"-c",
+					workDir,
+					hudCommand,
+				]);
+				assert.match(hudPaneId, /^%\d+$/);
+				await waitForFile(join(markerDir, "read-1"));
+				attachedClient = startAttachedClient(fixture);
+				await waitForTmuxValue(
+					fixture,
+					[
+						"display-message",
+						"-p",
+						"-t",
+						fixture.sessionName,
+						"#{session_attached}",
+					],
+					"1",
+				);
+				await waitForFile(join(markerDir, "read-2"));
+				await writeFile(join(markerDir, "release"), "go");
+				await new Promise((resolve) => setTimeout(resolve, 300));
+				await writeFile(join(markerDir, "final-release"), "go");
+				await waitForFile(join(markerDir, "read-3"));
+				await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+				assert.equal(
+					fixture.run([
+						"display-message",
+						"-p",
+						"-t",
+						hudPaneId,
+						"#{pane_height}",
+					]),
+					"2",
+				);
+				const scrollback = fixture.run([
+					"capture-pane",
+					"-p",
+					"-t",
+					hudPaneId,
+					"-S",
+					"-",
+				]);
+				const visible = fixture.run(["capture-pane", "-p", "-t", hudPaneId]);
+				assert.match(scrollback, /USER_SCROLLBACK_SENTINEL/);
+				assert.match(visible, /LATEST_FRAME_T3/);
+				await assert.rejects(readFile(join(markerDir, "destructive-clear")));
 			});
 		} finally {
 			if (attachedClient) await stopAttachedClient(attachedClient);

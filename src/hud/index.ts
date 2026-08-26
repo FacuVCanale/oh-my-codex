@@ -259,16 +259,22 @@ export async function runWatchMode(
           maxWidth: process.stdout.columns ?? undefined,
           maxLines,
         });
-        const clearFrame = '\x1b[3J\x1b[2J\x1b[H';
-        if (maxLines !== lastDesiredHeight) {
+        const hudPaneId = dependencies.env.TMUX_PANE?.trim();
+        const ownedHudPane = Boolean(
+          dependencies.env.TMUX
+          && dependencies.env[OMX_TMUX_HUD_OWNER_ENV] === '1'
+          && hudPaneId?.startsWith('%'),
+        );
+        const changingHeight = maxLines !== lastDesiredHeight;
+        const clearFrame = ownedHudPane && changingHeight
+          ? '\x1b[3J\x1b[2J\x1b[H'
+          : '\x1b[2J\x1b[H';
+        if (changingHeight) {
           // Clear before a pane resize so tmux cannot reflow stale HUD rows
           // into visible output or scrollback while changing the pane height.
           dependencies.writeStdout(clearFrame);
           reconcileRunningHudPaneHeight(maxLines, dependencies);
-          if (dependencies.env.TMUX && dependencies.env[OMX_TMUX_HUD_OWNER_ENV] === '1') {
-            const hudPaneId = dependencies.env.TMUX_PANE?.trim();
-            if (hudPaneId?.startsWith('%')) dependencies.clearTmuxPaneHistoryFn(hudPaneId);
-          }
+          if (ownedHudPane && hudPaneId) dependencies.clearTmuxPaneHistoryFn(hudPaneId);
           lastDesiredHeight = maxLines;
           dependencies.writeStdout(`\x1b[H${line}\x1b[K\x1b[J`);
         } else {
