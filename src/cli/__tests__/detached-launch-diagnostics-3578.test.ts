@@ -15,7 +15,6 @@ import {
   isDetachedSessionPointerAbortCarried,
   reportDetachedSessionPointerGuidance,
   resolveDetachedLeaderPaneForTest,
-  scheduleDetachedPreReportCleanupRetryForTest,
   type DetachedBootstrapReport,
 } from '../index.js';
 import { isRealTmuxAvailable, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
@@ -207,6 +206,19 @@ describe('#3578 detached launch diagnostics', () => {
         const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
         assert.equal(sessions.includes(sessionName), false, 'failed leader must clean its exact owned session');
         assert.equal(sessions.includes(foreignSessionName), true, 'failed leader cleanup must not touch unrelated sessions');
+      });
+    });
+
+    it('rejects empty ownership after the tag phase was attempted', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-owner-phase-fence';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'owner-phase-fence');
+        fixture.run(['set-option', '-t', sessionName, '@omx_detached_owner_tag_attempted', '1']);
+        cleanupDetachedLeaderSessionAfterFailureForTest(authority, authority.ownerId);
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'empty owner after tag attempt must preserve');
       });
     });
 
@@ -486,7 +498,7 @@ describe('#3578 detached launch diagnostics', () => {
       });
     });
 
-    it('keeps timeout rollback nonblocking and asynchronously cleans a later authenticated failure', async (t) => {
+    it('keeps timeout rollback nonblocking and lets the leader clean a later authenticated failure', async (t) => {
       if (!skipUnlessTmux(t)) return;
       await withTempTmuxSession(async (fixture) => {
         const sessionName = 'omx-3578-late-failure-async';
@@ -512,7 +524,6 @@ describe('#3578 detached launch diagnostics', () => {
           paneId: string;
           leaderPid: number;
         } | undefined;
-        let cleaned = false;
         const timeoutStartedAt = Date.now();
         cleanupDetachedPreReportSessionForTest(authority, () => {}, false, () => false);
         assert.ok(Date.now() - timeoutStartedAt < 1_000, 'plain timeout must return without synchronous retry wait');
@@ -527,20 +538,14 @@ describe('#3578 detached launch diagnostics', () => {
             paneId: authority.paneId,
             leaderPid: authority.panePid,
           };
+          cleanupDetachedLeaderSessionAfterFailureForTest(authority, authority.ownerId);
         }, 100);
-        scheduleDetachedPreReportCleanupRetryForTest(
-          authority,
-          () => false,
-          () => isDetachedFailedReportAuthorizedForTest(failedReport, expected, 'linux'),
-          () => { cleaned = true; },
-          5_000,
-        );
-        for (let attempt = 0; attempt < 300 && !cleaned; attempt += 1) {
+        for (let attempt = 0; attempt < 100 && fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
-        assert.equal(cleaned, true, 'late authenticated failure must trigger asynchronous cleanup after exit');
+        assert.equal(isDetachedFailedReportAuthorizedForTest(failedReport, expected, 'linux'), true, 'late failure must be authenticated');
         const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
-        assert.equal(sessions.includes(sessionName), false, 'the exact late-failed session must be cleaned');
+        assert.equal(sessions.includes(sessionName), false, 'the leader-owned late-failed session must be cleaned');
         assert.equal(sessions.includes(foreignSessionName), true, 'the unrelated session must survive');
       });
     });

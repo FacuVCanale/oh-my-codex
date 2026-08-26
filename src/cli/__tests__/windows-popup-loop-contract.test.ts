@@ -75,14 +75,15 @@ describe('detached tmux authority contract', () => {
 
   it('does not extend ordinary timeout rollback with the failed-report retry wait', () => {
     const cleanup = cliIndex.slice(cliIndex.indexOf('function cleanupDetachedPreReportSessionWithRetry'));
-    assert.match(cleanup, /result === "cleaned" \|\| !authenticatedFailedReportProbe\?\.\(\)/);
+    assert.match(cleanup, /result === "cleaned" \|\| !retryAuthenticatedFailure \|\| !authenticatedFailedReportProbe\?\.\(\)/);
   });
 
-  it('authenticates failed reports before complete selects rollback and retains async timeout cleanup', () => {
+  it('authenticates failed reports before complete and delegates late cleanup to the leader', () => {
     const complete = cliIndex.slice(cliIndex.indexOf('complete: async () =>'));
     assert.match(complete, /if \(!isDetachedFailedReportAuthorized\(report,/);
     assert.match(complete, /rollbackFromPreReportAuthority = detachedLeaderAuthority !== null/);
-    assert.match(cliIndex, /scheduleDetachedPreReportCleanupRetry\(/);
+    assert.doesNotMatch(cliIndex, /scheduleDetachedPreReportCleanupRetry\(/);
+    assert.match(cliIndex, /@omx_detached_owner_tag_attempted/);
     assert.match(cliIndex, /cleanupDetachedLeaderSessionAfterFailure\(pane, payload\)/);
   });
 

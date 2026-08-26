@@ -2615,6 +2615,18 @@ function runDetachedLeaderMutation(
   throw new Error(`detached leader authority blocked tmux mutation ${mutation}: ${describeDetachedLeaderAuthorityMismatch(authority)}`);
 }
 
+function runDetachedLeaderTagMutation(authority: DetachedLeaderAuthority, ownerId: string): void {
+  const receipt = detachedAuthorityReceipt();
+  const phaseMarker = ["set-option", "-t", authority.sessionName, "@omx_detached_owner_tag_attempted", "1"].map(quoteShellArg).join(" ");
+  const ownerTag = ["set-option", "-t", authority.sessionName, OMX_INSTANCE_OPTION, ownerId].map(quoteShellArg).join(" ");
+  const success = `${phaseMarker} ; ${ownerTag} ; display-message -p ${quoteShellArg(receipt)}`;
+  const output = execTmuxFileSync([
+    "if-shell", "-F", "-t", authority.paneId, detachedLeaderAuthorityCondition(authority, false),
+    success, "display-message -p ''",
+  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  if (output !== receipt) throw new Error(`detached leader authority blocked tmux mutation tag-session: ${describeDetachedLeaderAuthorityMismatch(authority)}`);
+}
+
 /**
  * #3578: session-scoped fence for pre-report cleanup when the leader pane no
  * longer exists at all. A normal leader exit with `remain-on-exit off` (set by
@@ -2737,6 +2749,7 @@ function cleanupDetachedPreReportSessionWithRetry(
   allowUnownedPreTag: boolean,
   authenticatedReadyOrTerminalProbe?: () => boolean,
   authenticatedFailedReportProbe?: () => boolean,
+  retryAuthenticatedFailure = true,
 ): DetachedPreReportCleanupResult {
   let result: DetachedPreReportCleanupResult;
   try {
@@ -2748,7 +2761,7 @@ function cleanupDetachedPreReportSessionWithRetry(
     if (authenticatedFailedReportProbe?.() && !detachedSessionExists(authority.sessionName)) return "cleaned";
     throw error;
   }
-  if (result === "cleaned" || !authenticatedFailedReportProbe?.()) return result;
+  if (result === "cleaned" || !retryAuthenticatedFailure || !authenticatedFailedReportProbe?.()) return result;
   // A failed report may be published while the leader pane is still live. Do
   // not treat that observation as successful cleanup: retain the marker and
   // retry the identity-fenced decision after the leader exits. A later ready,
@@ -2767,62 +2780,14 @@ function cleanupDetachedPreReportSessionWithRetry(
   throw new Error("detached leader remained live before pre-report cleanup retry");
 }
 
-function scheduleDetachedPreReportCleanupRetry(
-  authority: DetachedLeaderAuthority,
-  allowUnownedPreTag: boolean,
-  authenticatedReadyOrTerminalProbe: () => boolean,
-  authenticatedFailedReportProbe: () => boolean,
-  onCleaned: () => void,
-  maxWaitMs = 30_000,
-): void {
-  const deadline = Date.now() + maxWaitMs;
-  const poll = (): void => {
-    if (Date.now() >= deadline) return;
-    try {
-      if (authenticatedReadyOrTerminalProbe()) return;
-      if (!authenticatedFailedReportProbe()) {
-        setTimeout(poll, 20);
-        return;
-      }
-      if (cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe) === "cleaned") {
-        onCleaned();
-        return;
-      }
-    } catch {
-      // Readiness, finalization, identity, and ownership changes all preserve
-      // the marker and stop this watcher rather than attempting cleanup.
-      return;
-    }
-    setTimeout(poll, 20);
-  };
-  setTimeout(poll, 20);
-}
-
-/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
-export function scheduleDetachedPreReportCleanupRetryForTest(
-  authority: DetachedLeaderAuthority,
-  authenticatedReadyOrTerminalProbe: () => boolean,
-  authenticatedFailedReportProbe: () => boolean,
-  onCleaned: () => void,
-  maxWaitMs = 30_000,
-): void {
-  scheduleDetachedPreReportCleanupRetry(
-    authority,
-    false,
-    authenticatedReadyOrTerminalProbe,
-    authenticatedFailedReportProbe,
-    onCleaned,
-    maxWaitMs,
-  );
-}
-
 export function cleanupDetachedPreReportSession(
   authority: DetachedLeaderAuthority,
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
   authenticatedFailedReportProbe?: () => boolean,
+  retryAuthenticatedFailure = true,
 ): DetachedPreReportCleanupResult {
-  return cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, authenticatedFailedReportProbe);
+  return cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, authenticatedFailedReportProbe, retryAuthenticatedFailure);
 }
 
 /** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
@@ -8088,6 +8053,7 @@ async function runCodex(
     let detachedHudAuthority: DetachedHudAuthority | null = null;
     let detachedLeaderPid: number | null = null;
     let rollbackFromPreReportAuthority = false;
+    let rollbackFromAuthenticatedFailure = false;
 
     let attachStep: DetachedSessionTmuxStep | null = null;
 
@@ -8124,7 +8090,7 @@ async function runCodex(
             const authority = detachedLeaderAuthority;
             if (!authority) throw new Error("detached leader authority missing before tmux mutation");
             if (step.name === "tag-session") {
-              runDetachedLeaderMutation(authority, step.args, false);
+              runDetachedLeaderTagMutation(authority, sessionId);
               detachedLeaderOwnerTagInstalled = true;
               // tmux can acknowledge the session tag before the first owner-format
               // evaluation sees it. Retrying this idempotent first owner-guarded
@@ -8201,6 +8167,7 @@ async function runCodex(
                 // the wait-for-finalization path, which only a ready leader can
                 // satisfy and would otherwise stall 30s and skip rollback.
                 rollbackFromPreReportAuthority = detachedLeaderAuthority !== null;
+                rollbackFromAuthenticatedFailure = rollbackFromPreReportAuthority;
                 return { kind: "failure", operation: "session-instructions", error: detachedLeaderFailureError(report) };
               }
               if (Date.now() >= readyDeadline) {
@@ -8356,6 +8323,7 @@ async function runCodex(
                         leaderPaneId: detachedLeaderPaneId,
                         leaderPanePid: leaderAuthority.panePid,
                       }),
+                      rollbackFromAuthenticatedFailure,
                     );
                     sessionCleanupCompleted = cleanupResult === "cleaned";
                     return;
@@ -8366,32 +8334,6 @@ async function runCodex(
             }
             if (sessionCleanupCompleted) {
               await attempt("rollback", removeReleaseMarkers);
-            } else if (rollbackFromPreReportAuthority && detachedLeaderAuthority) {
-              scheduleDetachedPreReportCleanupRetry(
-                detachedLeaderAuthority,
-                !detachedLeaderOwnerTagInstalled,
-                () => {
-                  const expected = {
-                    nonce: detachedLaunchNonce,
-                    sessionId,
-                    sessionName,
-                    shouldAttach: detachedPreflight.shouldAttach,
-                    leaderPaneId: detachedLeaderPaneId,
-                    leaderPanePid: detachedLeaderAuthority!.panePid,
-                  };
-                  const report = readDetachedLeaderReport(releaseMarkerPath);
-                  return isDetachedReadyReportAuthorized(report, expected) ||
-                    isDetachedTerminalReportAuthorized(report, expected);
-                },
-                () => isDetachedFailedReportAuthorized(readDetachedLeaderReport(releaseMarkerPath), {
-                  nonce: detachedLaunchNonce,
-                  sessionId,
-                  sessionName,
-                  leaderPaneId: detachedLeaderPaneId,
-                  leaderPanePid: detachedLeaderAuthority!.panePid,
-                }),
-                removeReleaseMarkers,
-              );
             }
           },
         },
@@ -8648,7 +8590,12 @@ function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLea
 
 function cleanupDetachedLeaderSessionWithAuthority(authority: DetachedLeaderAuthority, ownerId: string): void {
   try {
-    const owner = `#{||:#{==:#{@omx_instance_id},${ownerId}},#{==:#{@omx_instance_id},}}`;
+    const tagAttempted = execTmuxFileSync(["show-options", "-qv", "-t", authority.sessionName, "@omx_detached_owner_tag_attempted"], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+    }).trim() === "1";
+    const owner = tagAttempted
+      ? `#{==:#{@omx_instance_id},${ownerId}}`
+      : `#{||:#{==:#{@omx_instance_id},${ownerId}},#{==:#{@omx_instance_id},}}`;
     const condition = [
       `#{==:#{session_name},${authority.sessionName}}`,
       `#{==:#{session_id},${authority.sessionId}}`,
