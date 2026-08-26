@@ -8,7 +8,8 @@ export type DurabilityWarningSubsystem =
 	| "session pointer end"
 	| "native-hook setup"
 	| "native-hook uninstall"
-	| "native-hook claim-journal recovery";
+	| "native-hook claim-journal recovery"
+	| "plugin cache publication";
 
 export interface RegularFileDurabilityTracker {
 	degraded: boolean;

@@ -4,6 +4,14 @@ import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, t
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
 import { teamModeEnabled, type SetupTeamMode } from "../config/team-mode.js";
+import {
+	emitDegradedDurabilityWarning,
+	recordDirectorySyncOutcome,
+	recordRegularFileSyncOutcome,
+	syncDirectory,
+	syncRegularFile,
+	type RegularFileDurabilityTracker,
+} from "../utils/file-durability.js";
 
 export const OMX_LOCAL_MARKETPLACE_NAME = "oh-my-codex-local";
 export const OMX_PLUGIN_NAME = "oh-my-codex";
@@ -207,7 +215,11 @@ async function mkdirDirectoryChildExclusive(parent: DirectoryRef, name: string):
 	await assertDirectoryRef(parent, "exclusive mkdir");
 }
 
-async function copyPackagedTree(sourcePath: string, destination: DirectoryRef): Promise<void> {
+async function copyPackagedTree(
+	sourcePath: string,
+	destination: DirectoryRef,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
 	const sourceStats = await lstat(sourcePath);
 	if (!sourceStats.isDirectory() || sourceStats.isSymbolicLink()) {
 		throw new Error(`refusing to copy a non-directory packaged plugin root: ${sourcePath}`);
@@ -222,7 +234,7 @@ async function copyPackagedTree(sourcePath: string, destination: DirectoryRef): 
 			await mkdirDirectoryChildExclusive(destination, entry.name);
 			const child = await openDirectoryChild(destination, entry.name);
 			try {
-				await copyPackagedTree(sourceChildPath, child);
+				await copyPackagedTree(sourceChildPath, child, tracker);
 			} finally {
 				await child.handle.close();
 			}
@@ -255,7 +267,8 @@ async function copyPackagedTree(sourcePath: string, destination: DirectoryRef): 
 			try {
 				await destinationHandle.writeFile(content);
 				await destinationHandle.chmod(before.mode & 0o7777);
-				await destinationHandle.sync();
+				const outcome = await syncRegularFile(destinationHandle);
+				if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 			} finally {
 				await destinationHandle.close();
 			}
@@ -278,38 +291,55 @@ async function openRegularFileChild(parent: DirectoryRef, name: string, flags: n
 	}
 }
 
-async function syncRegularFileChild(parent: DirectoryRef, name: string): Promise<void> {
+async function syncRegularFileChild(
+	parent: DirectoryRef,
+	name: string,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
 	const handle = await openRegularFileChild(parent, name, fsConstants.O_RDONLY | noFollowFlags);
 	try {
-		await handle.sync();
+		const outcome = await syncRegularFile(handle);
+		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 	} finally {
 		await handle.close();
 	}
 	await assertDirectoryRef(parent, "file sync");
 }
 
-async function writeRegularFileChild(parent: DirectoryRef, name: string, content: string): Promise<void> {
+async function writeRegularFileChild(
+	parent: DirectoryRef,
+	name: string,
+	content: string,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
 	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | noFollowFlags, 0o600);
 	try {
 		await handle.writeFile(content);
-		await handle.sync();
+		const outcome = await syncRegularFile(handle);
+		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 	} finally {
 		await handle.close();
 	}
 	await assertDirectoryRef(parent, "file write");
 }
 
-async function createExclusiveFileChild(parent: DirectoryRef, name: string, content: string): Promise<void> {
+async function createExclusiveFileChild(
+	parent: DirectoryRef,
+	name: string,
+	content: string,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
 	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags, 0o600);
 	try {
 		await handle.writeFile(content);
-		await handle.sync();
+		const outcome = await syncRegularFile(handle);
+		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 	} finally {
 		await handle.close();
 	}
@@ -333,7 +363,10 @@ async function renameChild(sourceParent: DirectoryRef, sourceName: string, desti
 	await assertDirectoryRef(destinationParent, "rename");
 }
 
-async function syncDirectoryTree(directory: DirectoryRef): Promise<void> {
+async function syncDirectoryTree(
+	directory: DirectoryRef,
+	tracker?: RegularFileDurabilityTracker,
+): Promise<void> {
 	await assertDirectoryRef(directory, "directory sync");
 	const entries = await readdir(directory.operationPath, { withFileTypes: true });
 	for (const entry of entries) {
@@ -341,16 +374,17 @@ async function syncDirectoryTree(directory: DirectoryRef): Promise<void> {
 		if (entry.isDirectory()) {
 			const child = await openDirectoryChild(directory, entry.name);
 			try {
-				await syncDirectoryTree(child);
+				await syncDirectoryTree(child, tracker);
 			} finally {
 				await child.handle.close();
 			}
 		} else {
-			await syncRegularFileChild(directory, entry.name);
+			await syncRegularFileChild(directory, entry.name, tracker);
 		}
 	}
 	await assertDirectoryRef(directory, "directory sync");
-	await directory.handle.sync();
+	const outcome = await syncDirectory(directory.handle);
+	if (tracker) recordDirectorySyncOutcome(tracker, outcome);
 }
 
 export async function readOmxPluginCacheFileNoFollow(
@@ -550,6 +584,7 @@ async function claimPublicationLock(
 	cacheBaseRef: DirectoryRef,
 	cacheBase: string,
 	noFollowFlags: number,
+	tracker?: RegularFileDurabilityTracker,
 ): Promise<FileHandle> {
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
@@ -561,10 +596,15 @@ async function claimPublicationLock(
 			);
 			try {
 				await lockHandle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`);
-				await lockHandle.sync();
+				const outcome = await syncRegularFile(lockHandle);
+				if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
 			} catch (error) {
+				let lockIdentity: Stats | undefined;
+				try { lockIdentity = await lockHandle.stat(); } catch { /* preserve the primary failure */ }
 				try { await lockHandle.close(); } catch { /* preserve the primary failure */ }
-				try { await removeChild(cacheBaseRef, ".omx-publish.lock", { force: true }); } catch { /* preserve the primary failure */ }
+				if (lockIdentity) {
+					try { await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity); } catch { /* preserve the primary failure */ }
+				}
 				throw error;
 			}
 			return lockHandle;
@@ -898,18 +938,19 @@ async function stageCompletePluginSnapshot(
 	packagedMarketplace: PackagedOmxMarketplace,
 	version: string,
 	teamMode: SetupTeamMode | undefined,
+	tracker?: RegularFileDurabilityTracker,
 ): Promise<DirectoryRef> {
 	await assertDirectoryRef(stagingParent, "snapshot staging");
 	await mkdirDirectoryChildExclusive(stagingParent, "snapshot");
 	const snapshot = await openDirectoryChild(stagingParent, "snapshot");
 	try {
-		await createExclusiveFileChild(snapshot, ".omx-incomplete", `${process.pid}\n`);
-		await copyPackagedTree(packagedMarketplace.pluginRoot, snapshot);
+		await createExclusiveFileChild(snapshot, ".omx-incomplete", `${process.pid}\n`, tracker);
+		await copyPackagedTree(packagedMarketplace.pluginRoot, snapshot, tracker);
 		await assertDirectoryRef(snapshot, "snapshot staging");
 		await applyTeamModeToPluginCache(snapshot, teamMode);
 		const hooksDir = await openDirectoryChild(snapshot, "hooks");
 		try {
-			await writePinnedHookLauncher(hooksDir, packagedMarketplace);
+			await writePinnedHookLauncher(hooksDir, packagedMarketplace, tracker);
 		} finally {
 			await hooksDir.handle.close();
 		}
@@ -1172,11 +1213,13 @@ async function pinnedHookLauncherMatchesPackaged(
 async function writePinnedHookLauncher(
 	hooksDir: DirectoryRef,
 	packagedMarketplace: PackagedOmxMarketplace,
+	tracker?: RegularFileDurabilityTracker,
 ): Promise<void> {
 	await writeRegularFileChild(
 		hooksDir,
 		OMX_PLUGIN_HOOK_LAUNCHER_FILE,
 		buildPinnedHookLauncherContent(packagedMarketplace),
+		tracker,
 	);
 }
 
@@ -1507,10 +1550,12 @@ async function materializePackagedOmxPluginCacheImpl(
 			cacheBaseRef = await openDirectoryRef(cacheBase);
 			ownsCacheBaseRef = true;
 		}
+		const durability: RegularFileDurabilityTracker = { degraded: false };
 		let lockHandle: FileHandle;
 		try {
-			lockHandle = await claimPublicationLock(cacheBaseRef, cacheBase, noFollowFlags);
+			lockHandle = await claimPublicationLock(cacheBaseRef, cacheBase, noFollowFlags, durability);
 		} catch (error) {
+			emitDegradedDurabilityWarning("plugin cache publication", durability);
 			if (ownsCacheBaseRef) await cacheBaseRef.handle.close();
 			return {
 				status: "stale-launcher",
@@ -1541,13 +1586,13 @@ async function materializePackagedOmxPluginCacheImpl(
 			tempName = tempDir.slice(cacheBaseRef.path.length + 1);
 			if (!tempName || tempName.includes("/")) throw new Error("temporary staging directory escaped the anchored cache namespace");
 			tempRef = await openDirectoryChild(cacheBaseRef, tempName);
-			snapshotRef = await stageCompletePluginSnapshot(tempRef, packagedMarketplace, version, options.teamMode);
-			await syncDirectoryTree(snapshotRef);
+			snapshotRef = await stageCompletePluginSnapshot(tempRef, packagedMarketplace, version, options.teamMode, durability);
+			await syncDirectoryTree(snapshotRef, durability);
 			await options.onCacheDirPrepared?.(cacheDir);
 			try {
-				await createExclusiveFileChild(snapshotRef, ".omx-complete", `${process.pid}\n`);
+				await createExclusiveFileChild(snapshotRef, ".omx-complete", `${process.pid}\n`, durability);
 				await removeChild(snapshotRef, ".omx-incomplete", { force: true });
-				await syncDirectoryTree(snapshotRef);
+				await syncDirectoryTree(snapshotRef, durability);
 				await renameChild(tempRef, "snapshot", cacheBaseRef, version);
 				await snapshotRef.handle.close();
 				snapshotRef = undefined;
@@ -1558,7 +1603,8 @@ async function materializePackagedOmxPluginCacheImpl(
 				if (!finalPathStats.isDirectory() || finalPathStats.isSymbolicLink() || finalPathStats.dev !== finalDescriptorStats.dev || finalPathStats.ino !== finalDescriptorStats.ino) {
 					throw new Error(`published cache directory changed before validation: ${cacheDir}`);
 				}
-				await cacheBaseRef.handle.sync();
+				const syncOutcome = await syncDirectory(cacheBaseRef.handle);
+				recordDirectorySyncOutcome(durability, syncOutcome);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "EEXIST") {
 					outcome = {
@@ -1591,13 +1637,15 @@ async function materializePackagedOmxPluginCacheImpl(
 			try {
 				if (!lockIdentity) throw new Error(`publication lock identity unavailable at ${cacheBase}`);
 				await reclaimStalePublicationLock(cacheBaseRef, ".omx-publish.lock", lockIdentity);
-				await cacheBaseRef.handle.sync();
+				const syncOutcome = await syncDirectory(cacheBaseRef.handle);
+				recordDirectorySyncOutcome(durability, syncOutcome);
 			} catch (error) { cleanupError ??= error; }
 			if (ownsCacheBaseRef) {
 				try { await cacheBaseRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			}
 		}
 
+		emitDegradedDurabilityWarning("plugin cache publication", durability);
 		if (cleanupError) {
 			return {
 				status: "stale-launcher",
