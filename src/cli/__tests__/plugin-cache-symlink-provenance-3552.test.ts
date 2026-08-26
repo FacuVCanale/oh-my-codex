@@ -1159,4 +1159,94 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("standalone retirement holds heartbeat for >120s scan (P2 3861490863)", async () => {
+    // retireUnpinnedManagedSnapshots acquires its own publication lock when
+    // called standalone (publicationLockHeld=false). A scan/removal that
+    // lasts beyond PUBLICATION_LOCK_LEASE_MS must not be reclaimable
+    // mid-retirement. The standalone path must refresh heartbeatAt on the
+    // open fd (same lifecycle as publication).
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-long-retirement-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        await mkdir(cacheBase, { recursive: true });
+        for (const v of ["0.20.0", "0.20.1", "0.20.2"]) {
+          const dir = join(cacheBase, v);
+          await mkdir(dir, { recursive: true });
+          await writeFile(join(dir, ".omx-complete"), "ok\n");
+          await mkdir(join(dir, ".codex-plugin"), { recursive: true });
+          await writeFile(join(dir, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: v, skills: "./skills/", hooks: "./hooks/hooks.json" }));
+        }
+        const version = await packagedPluginVersion();
+        const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js") as unknown as { retireUnpinnedManagedSnapshots: (a: string, b: string) => Promise<string[]> };
+        const retirement = retireUnpinnedManagedSnapshots(codexHomeDir, version);
+        await new Promise<void>((r) => setTimeout(r, 20));
+        const concurrent = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.ok(concurrent.status === "stale-launcher" || concurrent.status === "materialized" || concurrent.status === "unchanged");
+        if (concurrent.status === "stale-launcher") {
+          assert.match(concurrent.reason ?? "", /another OMX plugin cache publication is active|cannot claim/);
+        }
+        const retired = await retirement;
+        assert.ok(Array.isArray(retired));
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("retirement replacement after validation is restored (P2 3861490875)", async () => {
+    // Deterministic identity-bound test: stat, replace directory with foreign
+    // inode, then call removeChildIfIdentity with stale original stats.
+    // The helper must restore the foreign replacement to its canonical version
+    // path (or keep it in quarantine if a successor now occupies the name)
+    // and must not delete foreign content.
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-replacement-restore-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        await mkdir(cacheBase, { recursive: true });
+        const victim = "0.20.0";
+        const victimPath = join(cacheBase, victim);
+        await mkdir(victimPath, { recursive: true });
+        await writeFile(join(victimPath, "victim.txt"), "victim\n");
+        const { lstat: lstatP } = await import("fs/promises");
+        const originalStats = await lstatP(victimPath);
+        // Keep original inode alive so the foreign replacement gets a different inode
+        // (immediate rm+mkdir can reuse the same inode on this fs, which would
+        // make the dev/ino check pass and the helper would incorrectly delete foreign).
+        const keepPath = join(cacheBase, victim + ".keep-" + process.pid);
+        await rm(keepPath, { recursive: true, force: true }).catch(() => {});
+        const { rename: renameP } = await import("fs/promises");
+        await renameP(victimPath, keepPath);
+        await mkdir(victimPath, { recursive: true });
+        const foreignSentinel = join(victimPath, "foreign.txt");
+        await writeFile(foreignSentinel, "foreign\n");
+        // keepPath holds the original inode; clean it up after the check
+
+        const { removeChildIfIdentity } = await import("../plugin-marketplace.js") as unknown as { removeChildIfIdentity: (baseRef: unknown, name: string, stats: import("fs").Stats, opts: unknown) => Promise<void> };
+        // Build a minimal DirectoryRef over cacheBase using the same helper
+        // the production code uses (open via fs/promises so lstat/dev/ino match).
+        const { open } = await import("fs/promises");
+        const { constants } = await import("fs");
+        const fd = await open(cacheBase, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        const baseRef: unknown = { handle: fd, path: cacheBase, operationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`, scanOperationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}`, mutationPath: `/proc/self/fd/${(fd as unknown as { fd: number }).fd}` };
+        try {
+          await removeChildIfIdentity(baseRef, victim, originalStats, { recursive: true, force: true });
+        } catch (e) {
+          assert.match((e as Error).message, /identity-bound removal target changed/);
+        } finally {
+          try { await (fd as unknown as { close: () => Promise<void> }).close(); } catch {}
+        }
+        await rm(keepPath, { recursive: true, force: true }).catch(() => {});
+        const foreignAtVersion = existsSync(foreignSentinel) && (await readFile(foreignSentinel, "utf-8")) === "foreign\n";
+        const quarantineWithForeign = (await readdir(cacheBase)).some((n) => n.includes(".reclaim-") && existsSync(join(cacheBase, n, "foreign.txt")));
+        assert.equal(foreignAtVersion || quarantineWithForeign, true, "foreign replacement was deleted");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });

@@ -732,7 +732,7 @@ function startPublicationLockHeartbeat(
 	}, PUBLICATION_LOCK_HEARTBEAT_INTERVAL_MS);
 }
 
-async function removeChildIfIdentity(
+export async function removeChildIfIdentity(
 	cacheBaseRef: DirectoryRef,
 	childName: string,
 	childStats: Stats,
@@ -748,6 +748,33 @@ async function removeChildIfIdentity(
 		throw new Error(`identity-bound removal target disappeared during reclamation: ${(error as Error).message}`);
 	}
 	if (quarantineStats.dev !== childStats.dev || quarantineStats.ino !== childStats.ino) {
+		// Quarantined the wrong inode (replacement after validation): restore it
+		// to its version path without clobbering a successor. For directories
+		// link(2) is EPERM, so rename the quarantine back only if the version
+		// name is still free; for regular files use link to avoid clobbering a
+		// successor that may have appeared.
+		const isDirQuarantine = quarantineStats.isDirectory();
+		try {
+			if (isDirQuarantine) {
+				const versionPath = join(cacheBaseRef.path, childName);
+				let versionExists = false;
+				try {
+					await lstat(versionPath);
+					versionExists = true;
+				} catch (e) {
+					if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+				}
+				if (!versionExists) {
+					await renameChild(cacheBaseRef, quarantineName, cacheBaseRef, childName);
+				}
+			} else {
+				await link(quarantinePath, childOperationPath(cacheBaseRef, childName));
+				await removeChild(cacheBaseRef, quarantineName, { force: true });
+			}
+		} catch {
+			// Preserve replacement without overwriting a successor that appeared
+			// between the quarantine and the restore attempt; quarantine remains.
+		}
 		throw new Error("identity-bound removal target changed during reclamation");
 	}
 	await removeChild(cacheBaseRef, quarantineName, options);
@@ -1623,7 +1650,7 @@ export async function getPinnedLauncherIncompatibilityReason(
 	return null;
 }
 
-async function retireUnpinnedManagedSnapshots(
+export async function retireUnpinnedManagedSnapshots(
 	codexHomeDir: string,
 	currentVersion: string,
 	anchoredCacheBaseRef?: DirectoryRef,
@@ -1640,6 +1667,7 @@ async function retireUnpinnedManagedSnapshots(
 	let publicationLock: FileHandle | undefined;
 	let publicationLockIdentity: Stats | undefined;
 	const durability: RegularFileDurabilityTracker = { degraded: false };
+	let publicationLockHeartbeat: NodeJS.Timeout | undefined;
 	const candidateRefs: DirectoryRef[] = [];
 	let cleanupError: unknown = null;
 	try {
@@ -1650,6 +1678,8 @@ async function retireUnpinnedManagedSnapshots(
 		if (!publicationLockHeld) {
 			publicationLock = await claimPublicationLock(baseRef, cacheBase, noFollowFlags, durability);
 			publicationLockIdentity = await publicationLock.stat();
+			await refreshPublicationLockRecord(publicationLock, durability);
+			publicationLockHeartbeat = startPublicationLockHeartbeat(publicationLock, durability);
 		}
 		const entries = await readdir(baseRef.operationPath, { withFileTypes: true });
 		const managed: Array<{ path: string; version: string; mtimeMs: number; ref: DirectoryRef; stats: Stats }> = [];
@@ -1689,13 +1719,23 @@ async function retireUnpinnedManagedSnapshots(
 		}
 		return retired;
 	} finally {
+		if (publicationLockHeartbeat) clearInterval(publicationLockHeartbeat);
 		for (const candidateRef of candidateRefs.reverse()) {
 			try { await candidateRef.handle.close(); } catch (error) { cleanupError ??= error; }
 		}
 		if (publicationLock) {
 			try { await publicationLock.close(); } catch (error) { cleanupError ??= error; }
 			if (publicationLockIdentity) {
-				try { await reclaimStalePublicationLock(baseRef!, ".omx-publish.lock", publicationLockIdentity); } catch (error) { cleanupError ??= error; }
+				const cur = await lstat(join(baseRef!.path, ".omx-publish.lock")).catch(() => null);
+				if (
+					cur &&
+					cur.isFile() &&
+					!cur.isSymbolicLink() &&
+					cur.dev === publicationLockIdentity.dev &&
+					cur.ino === publicationLockIdentity.ino
+				) {
+					try { await reclaimStalePublicationLock(baseRef!, ".omx-publish.lock", publicationLockIdentity); } catch (error) { cleanupError ??= error; }
+				}
 			}
 		}
 		emitDegradedDurabilityWarning("plugin cache publication", durability);
