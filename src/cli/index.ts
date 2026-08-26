@@ -992,28 +992,28 @@ function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
   return PROJECT_LAUNCH_PERSISTED_RUNTIME_ENTRY_NAMES.has(entryName);
 }
 
-function isMissingPathError(error: unknown): boolean {
+function isUnresolvableHistoryLinkError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const code = (error as NodeJS.ErrnoException).code;
-  return code === "ENOENT" || code === "ENOTDIR";
+  return code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP";
 }
 
-async function resolveProjectLaunchRuntimeHistoryEntryStat(source: string) {
+async function inspectProjectLaunchRuntimeHistoryEntry(source: string) {
   // Durable history names are an explicit allowlist. Follow only the named
   // entry's top-level link so a directory link is classified as a directory;
   // the destination remains the fixed runtime history path below.
-  let sourceStat;
+  let linkStat;
   try {
-    sourceStat = await lstat(source);
+    linkStat = await lstat(source);
   } catch (error) {
-    if (isMissingPathError(error)) return undefined;
+    if (isUnresolvableHistoryLinkError(error)) return undefined;
     throw error;
   }
-  if (!sourceStat.isSymbolicLink()) return sourceStat;
+  if (!linkStat.isSymbolicLink()) return { linkStat, targetStat: linkStat };
   try {
-    return await stat(source);
+    return { linkStat, targetStat: await stat(source) };
   } catch (error) {
-    if (isMissingPathError(error)) return undefined;
+    if (isUnresolvableHistoryLinkError(error)) return { linkStat, targetStat: undefined };
     throw error;
   }
 }
@@ -1074,11 +1074,8 @@ async function ensureProjectLaunchRuntimeHistoryLinks(
     const runtimeEntry = join(runtimeCodexHome, entryName);
     if (existsSync(runtimeEntry)) continue;
     const projectEntry = join(projectCodexHome, entryName);
-    const projectEntryLinkStat = await lstat(projectEntry).catch((error) => {
-      if (isMissingPathError(error)) return undefined;
-      throw error;
-    });
-    if (projectEntryLinkStat?.isSymbolicLink() && !(await resolveProjectLaunchRuntimeHistoryEntryStat(projectEntry))) {
+    const projectEntryInspection = await inspectProjectLaunchRuntimeHistoryEntry(projectEntry);
+    if (projectEntryInspection?.linkStat.isSymbolicLink() && !projectEntryInspection.targetStat) {
       continue;
     }
     if (entryName === "sessions") {
@@ -1093,18 +1090,39 @@ async function ensureProjectLaunchRuntimeHistoryLinks(
 async function materializeProjectLaunchRuntimeHistoryEntries(
   runtimeCodexHome: string,
   sourceCodexHome: string,
+  options: { onlySymlinks?: boolean } = {},
 ): Promise<void> {
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(sourceCodexHome, entryName);
-    const sourceStat = await resolveProjectLaunchRuntimeHistoryEntryStat(source);
-    if (!sourceStat) continue;
+    const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
+    if (!sourceInspection || !sourceInspection.targetStat) continue;
+    if (options.onlySymlinks === true && !sourceInspection.linkStat.isSymbolicLink()) continue;
     const destination = join(runtimeCodexHome, entryName);
     await rm(destination, { recursive: true, force: true });
+    const sourceStat = sourceInspection.targetStat;
     if (sourceStat.isDirectory()) {
-      await cp(source, destination, { recursive: true, force: true, dereference: true, preserveTimestamps: true });
+      await copyProjectLaunchRuntimeHistoryDirectory(source, destination);
       continue;
     }
     if (sourceStat.isFile()) await copyFilePreservingTimestamps(source, destination);
+  }
+}
+
+async function copyProjectLaunchRuntimeHistoryDirectory(source: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const sourceEntry = join(source, entry.name);
+    const destinationEntry = join(destination, entry.name);
+    const entryStat = await lstat(sourceEntry).catch((error) => {
+      if (isUnresolvableHistoryLinkError(error)) return undefined;
+      throw error;
+    });
+    if (!entryStat || entryStat.isSymbolicLink()) continue;
+    if (entryStat.isDirectory()) {
+      await copyProjectLaunchRuntimeHistoryDirectory(sourceEntry, destinationEntry);
+    } else if (entryStat.isFile()) {
+      await copyFilePreservingTimestamps(sourceEntry, destinationEntry);
+    }
   }
 }
 
@@ -1122,7 +1140,7 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
     const sourceStat = await stat(source);
     if (sourceStat.isDirectory()) {
       await mkdir(destination, { recursive: true });
-      await cp(source, destination, { recursive: true, force: true, dereference: true, preserveTimestamps: true });
+      await copyProjectLaunchRuntimeHistoryDirectory(source, destination);
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
@@ -1193,11 +1211,9 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     if (PROJECT_LAUNCH_RUNTIME_SKIPPED_ENTRY_NAMES.has(entry.name)) continue;
     const source = join(projectCodexHome, entry.name);
     const destination = join(runtimeCodexHome, entry.name);
-    if (
-      PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entry.name) &&
-      !(await resolveProjectLaunchRuntimeHistoryEntryStat(source))
-    ) {
-      continue;
+    if (PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES.has(entry.name)) {
+      const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
+      if (!sourceInspection?.targetStat) continue;
     }
     if (entry.name === "config.toml") {
       const projectHooksPath = join(projectCodexHome, "hooks.json");
@@ -1219,14 +1235,18 @@ export async function prepareRuntimeCodexHomeForProjectLaunch(
     await linkOrCopyCodexHomeEntry(source, destination);
   }
   await ensureProjectLaunchRuntimeHistoryLinks(runtimeCodexHome, projectCodexHome);
-  if (options.includeHistoryArtifacts === true && (options.extraHistoryCodexHomes?.length ?? 0) > 0) {
+  if (options.includeHistoryArtifacts === true) {
+    const extraHistoryCodexHomes = options.extraHistoryCodexHomes ?? [];
+    const mergingHistory = extraHistoryCodexHomes.length > 0;
     const mergedHistorySourceRealpaths = new Set<string>();
     for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
       const source = join(projectCodexHome, entryName);
       if (existsSync(source)) mergedHistorySourceRealpaths.add(realpathSync(source));
     }
-    await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome);
-    for (const extraCodexHome of options.extraHistoryCodexHomes ?? []) {
+    await materializeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, projectCodexHome, {
+      onlySymlinks: !mergingHistory,
+    });
+    for (const extraCodexHome of extraHistoryCodexHomes) {
       await mergeProjectLaunchRuntimeHistoryEntries(runtimeCodexHome, extraCodexHome, mergedHistorySourceRealpaths);
     }
   }

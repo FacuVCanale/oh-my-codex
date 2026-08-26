@@ -399,7 +399,6 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       const associatedRun = join(runsRoot, 'run-associated');
       const runtimeHomes = join(associatedRun, '.omx', 'runtime', 'codex-home');
       const sourceCodexHome = join(runtimeHomes, 'omx-z-source');
-      const extraCodexHome = join(runtimeHomes, 'omx-a-extra');
       const linkedSessions = join(wd, 'project-sessions');
       const fakeBin = join(wd, 'bin');
       const fakeCodexPath = join(fakeBin, 'codex');
@@ -408,10 +407,8 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       await mkdir(home, { recursive: true });
       await mkdir(sourceCodexHome, { recursive: true });
       await mkdir(linkedSessions, { recursive: true });
-      await mkdir(join(extraCodexHome, 'sessions'), { recursive: true });
       await mkdir(fakeBin, { recursive: true });
       await writeFile(join(linkedSessions, 'rollout-linked.jsonl'), 'linked-session\n');
-      await writeFile(join(extraCodexHome, 'sessions', 'rollout-extra.jsonl'), 'extra-session\n');
       await symlink(linkedSessions, join(sourceCodexHome, 'sessions'), 'dir');
       await writeFile(join(runsRoot, 'registry.jsonl'), `${JSON.stringify({ source_cwd: wd, run_dir: associatedRun })}\n`);
       await writeFile(fakeCodexPath, `#!/bin/sh
@@ -435,7 +432,6 @@ if [ -f "$CODEX_HOME/sessions/rollout-extra.jsonl" ]; then echo extra=yes; else 
       assert.equal(result.status, 0, result.error || result.stderr || result.stdout);
       assert.match(result.stdout, /fake-codex:resume\b/);
       assert.match(result.stdout, /linked=yes/);
-      assert.match(result.stdout, /extra=yes/);
       assert.doesNotMatch(result.stderr, /EISDIR|ENOTSUP/);
     } finally {
       await rm(wd, { recursive: true, force: true });

@@ -3091,13 +3091,13 @@ describe("project launch scope helpers", () => {
       const sourceCodexHome = join(wd, "source-codex-home");
       const targetSessions = join(wd, "project-sessions");
       const targetHistory = join(wd, "project-history.jsonl");
-      const extraCodexHome = join(wd, "extra-codex-home");
+      const outsideHistory = join(wd, "outside-history.jsonl");
       await mkdir(sourceCodexHome, { recursive: true });
       await mkdir(targetSessions, { recursive: true });
-      await mkdir(join(extraCodexHome, "sessions"), { recursive: true });
       await writeFile(join(targetSessions, "rollout-linked.jsonl"), "linked-session\n");
+      await writeFile(outsideHistory, "must-not-follow\n");
+      await symlink(outsideHistory, join(targetSessions, "nested-escape.jsonl"));
       await writeFile(targetHistory, '{"session_id":"linked-session"}\n');
-      await writeFile(join(extraCodexHome, "sessions", "rollout-extra.jsonl"), "extra-session\n");
       await symlink(targetSessions, join(sourceCodexHome, "sessions"), "dir");
       await symlink(targetHistory, join(sourceCodexHome, "history.jsonl"));
       await symlink(join(wd, "missing-session-index.jsonl"), join(sourceCodexHome, "session_index.jsonl"));
@@ -3106,7 +3106,7 @@ describe("project launch scope helpers", () => {
         wd,
         "session-history-symlinks",
         sourceCodexHome,
-        { includeHistoryArtifacts: true, extraHistoryCodexHomes: [extraCodexHome] },
+        { includeHistoryArtifacts: true },
       );
 
       assert.equal((await stat(join(runtimeCodexHome, "sessions"))).isDirectory(), true);
@@ -3115,6 +3115,7 @@ describe("project launch scope helpers", () => {
         await readFile(join(runtimeCodexHome, "sessions", "rollout-linked.jsonl"), "utf-8"),
         "linked-session\n",
       );
+      assert.equal(existsSync(join(runtimeCodexHome, "sessions", "nested-escape.jsonl")), false);
       assert.equal((await lstat(join(runtimeCodexHome, "history.jsonl"))).isSymbolicLink(), false);
       assert.equal(await readFile(join(runtimeCodexHome, "history.jsonl"), "utf-8"), '{"session_id":"linked-session"}\n');
       assert.equal(existsSync(join(runtimeCodexHome, "session_index.jsonl")), false);
