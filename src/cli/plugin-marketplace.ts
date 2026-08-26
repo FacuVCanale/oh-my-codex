@@ -1952,6 +1952,8 @@ async function materializePackagedOmxPluginCacheImpl(
 					snapshotRef = undefined;
 					await syncDirectoryTree(claimRef, durability);
 					await createExclusiveFileChild(claimRef, ".omx-complete", `${process.pid}\n`, durability);
+					const claimDirSyncOutcome = await syncDirectory(claimRef.handle);
+					recordDirectorySyncOutcome(durability, claimDirSyncOutcome);
 					await assertDirectoryRef(claimRef, "publication commit");
 					finalRef = claimRef;
 					const syncOutcome = await syncDirectory(cacheBaseRef.handle);
