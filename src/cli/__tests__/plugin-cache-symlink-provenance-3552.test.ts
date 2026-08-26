@@ -250,6 +250,46 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("fails closed on malformed completion markers and ignores the mutable live pin", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-marker-integrity-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(first.status, "materialized");
+        const completePath = join(first.cacheDir!, ".omx-complete");
+        for (const marker of ["{\n", "not-json\n"]) {
+          await writeFile(completePath, marker);
+          assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), false, marker);
+        }
+        const second = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(second.status, "stale-launcher");
+
+        const clean = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(clean.status, "stale-launcher");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not invalidate a healthy claim when a live pin is added", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-live-pin-digest-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const first = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(first.status, "materialized");
+        await writeFile(join(first.cacheDir!, ".omx-live-pin"), "pinned\n");
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("rejects extra skill directories from immutable provenance", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-3552-extra-skill-"));
     try {

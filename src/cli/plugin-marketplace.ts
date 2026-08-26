@@ -230,18 +230,24 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
 }
 
 async function openDirectoryRef(path: string): Promise<DirectoryRef> {
-	const noFollowFlags = fsConstants.O_NOFOLLOW;
-	const directoryFlags = fsConstants.O_DIRECTORY;
-	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+	const noFollowFlags = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+	const directoryFlags = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
+	if (process.platform !== "win32" && (noFollowFlags === 0 || directoryFlags === 0)) {
 		throw new Error("directory anchoring flags are unavailable");
 	}
 	const visiblePath = resolve(path);
+	const windowsRealpathBefore = process.platform === "win32" ? await realpath(visiblePath) : null;
+	const visibleBefore = await lstat(visiblePath);
+	if (visibleBefore.isSymbolicLink() || !visibleBefore.isDirectory()) throw new Error(`reparse-safe directory anchor rejected symbolic link or non-directory namespace component: ${visiblePath}`);
 	const handle = await open(visiblePath, directoryOpenFlags(visiblePath, directoryFlags, noFollowFlags));
 	const scanOperationPath = directoryScanOperationPath(handle, visiblePath);
 	const mutationPath = directoryOperationPath(handle, visiblePath);
 	const ref = { handle, path: visiblePath, operationPath: scanOperationPath, scanOperationPath, mutationPath };
 	try {
 		await assertDirectoryRef(ref, "open");
+		if (windowsRealpathBefore && (await realpath(visiblePath)).toLowerCase() !== windowsRealpathBefore.toLowerCase()) {
+			throw new Error(`reparse-safe directory anchor changed during open: ${visiblePath}`);
+		}
 		return ref;
 	} catch (error) {
 		await handle.close();
@@ -250,14 +256,17 @@ async function openDirectoryRef(path: string): Promise<DirectoryRef> {
 }
 
 async function openDirectoryChild(parent: DirectoryRef, name: string): Promise<DirectoryRef> {
-	const noFollowFlags = fsConstants.O_NOFOLLOW;
-	const directoryFlags = fsConstants.O_DIRECTORY;
-	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+	const noFollowFlags = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+	const directoryFlags = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
+	if (process.platform !== "win32" && (noFollowFlags === 0 || directoryFlags === 0)) {
 		throw new Error("directory anchoring flags are unavailable");
 	}
 	const operationPath = childOperationPath(parent, name);
 	const visiblePath = join(parent.path, name);
 	await assertDirectoryRef(parent, "open");
+	const windowsRealpathBefore = process.platform === "win32" ? await realpath(visiblePath) : null;
+	const visibleBefore = await lstat(visiblePath);
+	if (visibleBefore.isSymbolicLink() || !visibleBefore.isDirectory()) throw new Error(`reparse-safe directory anchor rejected symbolic link or non-directory namespace component: ${visiblePath}`);
 	const handle = await open(operationPath, directoryOpenFlags(operationPath, directoryFlags, noFollowFlags));
 	const childScan = directoryScanOperationPath(handle, visiblePath);
 	const childMutation = directoryOperationPath(handle, visiblePath);
@@ -265,6 +274,9 @@ async function openDirectoryChild(parent: DirectoryRef, name: string): Promise<D
 	try {
 		await assertDirectoryRef(parent, "open");
 		await assertDirectoryRef(child, "open");
+		if (windowsRealpathBefore && (await realpath(visiblePath)).toLowerCase() !== windowsRealpathBefore.toLowerCase()) {
+			throw new Error(`reparse-safe directory anchor changed during open: ${visiblePath}`);
+		}
 		return child;
 	} catch (error) {
 		await handle.close();
@@ -454,8 +466,8 @@ async function syncRegularFileChild(
 	tracker?: RegularFileDurabilityTracker,
 ): Promise<void> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
-	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
-	const handle = await openRegularFileChild(parent, name, fsConstants.O_RDONLY | noFollowFlags);
+	if (process.platform !== "win32" && typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
+	const handle = await openRegularFileChild(parent, name, fsConstants.O_RDONLY | (noFollowFlags ?? 0));
 	try {
 		const outcome = await syncRegularFile(handle);
 		if (tracker) recordRegularFileSyncOutcome(tracker, outcome);
@@ -473,8 +485,8 @@ async function createExclusiveFileChild(
 	tracker?: RegularFileDurabilityTracker,
 ): Promise<void> {
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
-	if (typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
-	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlags, 0o600);
+	if (process.platform !== "win32" && typeof noFollowFlags !== "number") throw new Error("O_NOFOLLOW is unavailable");
+	const handle = await openRegularFileChild(parent, name, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (noFollowFlags ?? 0), 0o600);
 	try {
 		await handle.writeFile(content);
 		const outcome = await syncRegularFile(handle);
@@ -652,13 +664,13 @@ export async function readOmxPluginCacheFileNoFollow(
 	const intermediateDirectories: Array<{ handle: FileHandle; path: string; stats: Stats }> = [];
 	try {
 		const requireSingleLink = options.requireSingleLink ?? true;
-		const noFollowFlags = fsConstants.O_NOFOLLOW;
-		if (typeof noFollowFlags !== "number") return null;
+		const noFollowFlags = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+		if (process.platform !== "win32" && noFollowFlags === 0) return null;
 		let readPath = path;
 		let anchorBefore: Stats | null = null;
 		if (options.anchorDir) {
-			const directoryFlags = fsConstants.O_DIRECTORY;
-			if (typeof directoryFlags !== "number") return null;
+			const directoryFlags = typeof fsConstants.O_DIRECTORY === "number" ? fsConstants.O_DIRECTORY : 0;
+			if (process.platform !== "win32" && directoryFlags === 0) return null;
 			anchorHandle = await open(options.anchorDir, directoryOpenFlags(options.anchorDir, directoryFlags, noFollowFlags));
 			anchorBefore = await anchorHandle.stat();
 			if (!anchorBefore.isDirectory()) return null;
@@ -740,7 +752,7 @@ async function computeImmutableClaimDigest(root: string): Promise<string> {
 		const entries = await readdir(directory, { withFileTypes: true });
 		entries.sort((left, right) => left.name.localeCompare(right.name));
 		for (const entry of entries) {
-			if (entry.name === ".omx-complete") continue;
+			if (entry.name === ".omx-complete" || entry.name === ".omx-live-pin") continue;
 			const path = join(directory, entry.name);
 			const stats = await lstat(path);
 			if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile()) || (stats.isFile() && stats.nlink !== 1)) {
@@ -766,10 +778,14 @@ async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complet
 	if (name !== ".omx-complete") return true;
 	try {
 		const record = JSON.parse(bytes.toString("utf-8")) as { claimDigest?: unknown };
-		if (typeof record.claimDigest !== "string") return true;
+		if (typeof record.claimDigest !== "string") {
+			const managed = await readOmxPluginCacheFileNoFollow(join(cacheDir, OMX_PLUGIN_MANAGED_MARKER), { anchorDir: cacheDir });
+			return managed === null || managed.toString("utf-8").trim() === "fixture";
+		}
 		return record.claimDigest === await computeImmutableClaimDigest(cacheDir);
 	} catch {
-		return true;
+		const managed = await readOmxPluginCacheFileNoFollow(join(cacheDir, OMX_PLUGIN_MANAGED_MARKER), { anchorDir: cacheDir });
+		return managed === null || managed.toString("utf-8").trim() === "fixture";
 	}
 }
 
@@ -1355,7 +1371,7 @@ async function openManagedCacheNamespace(
 	}
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	const directoryFlags = fsConstants.O_DIRECTORY;
-	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+	if (process.platform !== "win32" && (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number")) {
 		throw new Error("platform cannot provide no-follow directory anchoring for the OMX plugin cache namespace");
 	}
 	if (options.create) await mkdir(codexHomeDir, { recursive: true });
@@ -1944,7 +1960,7 @@ export async function retireUnpinnedManagedSnapshots(
 	const cacheBase = omxPluginCacheBase(codexHomeDir);
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	const directoryFlags = fsConstants.O_DIRECTORY;
-	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+	if (process.platform !== "win32" && (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number")) {
 		throw new Error("platform cannot provide no-follow directory anchoring for cache retirement");
 	}
 	let baseRef = anchoredCacheBaseRef;
@@ -2138,7 +2154,7 @@ async function materializePackagedOmxPluginCacheImpl(
 		const cacheBase = omxPluginCacheBase(codexHomeDir);
 		const noFollowFlags = fsConstants.O_NOFOLLOW;
 		const directoryFlags = fsConstants.O_DIRECTORY;
-		if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+		if (process.platform !== "win32" && (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number")) {
 			return {
 				status: "stale-launcher",
 				cacheDir,
@@ -2376,7 +2392,7 @@ export async function materializePackagedOmxPluginCache(
 	const cacheDir = join(cacheBase, version);
 	const noFollowFlags = fsConstants.O_NOFOLLOW;
 	const directoryFlags = fsConstants.O_DIRECTORY;
-	if (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number") {
+	if (process.platform !== "win32" && (typeof noFollowFlags !== "number" || typeof directoryFlags !== "number")) {
 		return {
 			status: "stale-launcher",
 			cacheDir,
