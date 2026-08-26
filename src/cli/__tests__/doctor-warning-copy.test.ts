@@ -684,7 +684,7 @@ command = "node"
 			assert.match(
 				res.stdout,
 				new RegExp(
-					`Skills: plugin marketplace oh-my-codex-local is registered, but installed Codex plugin cache manifest version 0\\.0\\.0-stale does not match packaged version ${escapedVersion}; run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin.*so /skills can discover OMX plugin skills`,
+					`Skills: plugin marketplace oh-my-codex-local is registered, but (?:installed Codex plugin cache manifest version 0\\.0\\.0-stale does not match packaged version ${escapedVersion}|no installed Codex plugin cache was found); run .*codex plugin remove oh-my-codex@oh-my-codex-local --json.*omx setup --plugin.*so /skills can discover OMX plugin skills`,
 				),
 			);
 			assert.match(

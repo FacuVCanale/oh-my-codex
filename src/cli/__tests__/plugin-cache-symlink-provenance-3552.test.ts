@@ -1684,4 +1684,47 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("preserves a live pin inserted before retirement quarantine", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-live-pin-race-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const victim = join(cacheBase, "0.20.0");
+        await mkdir(join(victim, ".codex-plugin"), { recursive: true });
+        await writeFile(join(victim, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: "0.20.0" }));
+        await writeFile(join(victim, ".omx-complete"), "fixture\n");
+        await writeFile(join(victim, ".omx-managed"), "fixture\n");
+        const newer = join(cacheBase, "0.20.1");
+        await mkdir(join(newer, ".codex-plugin"), { recursive: true });
+        await writeFile(join(newer, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: "0.20.1" }));
+        await writeFile(join(newer, ".omx-complete"), "fixture\n");
+        await writeFile(join(newer, ".omx-managed"), "fixture\n");
+        let interposed = false;
+        const resetHooks = setPluginCacheMutationHooksForTest({
+          beforeRename: async (sourcePath) => {
+            if (interposed || !sourcePath.includes("0.20.0")) return;
+            interposed = true;
+            await writeFile(join(sourcePath, ".omx-live-pin"), "late pin\n");
+          },
+        });
+        try {
+          const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js");
+          let retirementError: unknown;
+          try {
+            await retireUnpinnedManagedSnapshots(codexHomeDir, "0.21.0");
+          } catch (error) {
+            retirementError = error;
+          }
+          assert.equal(interposed, true, "retirement interposition did not reach the candidate quarantine rename");
+          assert.match(String((retirementError as Error | undefined)?.message ?? ""), /managed cache ownership changed during reclamation/);
+        } finally {
+          resetHooks();
+        }
+        assert.ok((await readdir(cacheBase)).some((name) => name.includes(".reclaim-") && existsSync(join(cacheBase, name, ".omx-live-pin"))));
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });

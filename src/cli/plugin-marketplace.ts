@@ -1,5 +1,5 @@
 import { constants as fsConstants, existsSync, type Stats } from "fs";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, type FileHandle } from "fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../config/omx-first-party-mcp.js";
@@ -489,6 +489,7 @@ interface RemoveChildOptions {
 	recursive?: boolean;
 	force?: boolean;
 	preserveRecursive?: boolean;
+	expectedManagedVersion?: string;
 }
 
 async function removeChild(parent: DirectoryRef, name: string, options: RemoveChildOptions = {}): Promise<boolean> {
@@ -733,8 +734,43 @@ async function readRegularFileTextNoFollow(path: string, options: { anchorDir?: 
 	return bytes?.toString("utf-8") ?? null;
 }
 
+async function computeImmutableClaimDigest(root: string): Promise<string> {
+	const hash = createHash("sha256");
+	const visit = async (directory: string): Promise<void> => {
+		const entries = await readdir(directory, { withFileTypes: true });
+		entries.sort((left, right) => left.name.localeCompare(right.name));
+		for (const entry of entries) {
+			if (entry.name === ".omx-complete") continue;
+			const path = join(directory, entry.name);
+			const stats = await lstat(path);
+			if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile()) || (stats.isFile() && stats.nlink !== 1)) {
+				throw new Error(`claim entry is not a singly-linked regular file or directory: ${path}`);
+			}
+			hash.update(`${entry.name}\0${stats.isDirectory() ? "d" : "f"}\0${stats.dev}\0${stats.ino}\0${stats.size}\0`);
+			if (stats.isDirectory()) {
+				await visit(path);
+			} else {
+				const bytes = await readOmxPluginCacheFileNoFollow(path, { anchorDir: directory });
+				if (bytes === null) throw new Error(`claim entry cannot be read: ${path}`);
+				hash.update(bytes);
+			}
+		}
+	};
+	await visit(root);
+	return hash.digest("hex");
+}
+
 async function hasRegularPublicationMarker(cacheDir: string, name: ".omx-complete" | ".omx-incomplete" | ".omx-managed"): Promise<boolean> {
-	return (await readOmxPluginCacheFileNoFollow(join(cacheDir, name), { anchorDir: cacheDir })) !== null;
+	const bytes = await readOmxPluginCacheFileNoFollow(join(cacheDir, name), { anchorDir: cacheDir });
+	if (bytes === null) return false;
+	if (name !== ".omx-complete") return true;
+	try {
+		const record = JSON.parse(bytes.toString("utf-8")) as { claimDigest?: unknown };
+		if (typeof record.claimDigest !== "string") return true;
+		return record.claimDigest === await computeImmutableClaimDigest(cacheDir);
+	} catch {
+		return true;
+	}
 }
 
 async function listChildDirectoryNames(dir: string): Promise<string[] | null> {
@@ -829,6 +865,7 @@ interface PublicationLockRecord {
 }
 
 const PUBLICATION_LOCK_LEASE_MS = 120_000;
+const PUBLICATION_LOCK_MAX_FUTURE_SKEW_MS = 300_000;
 const PUBLICATION_LOCK_PROCESS_TOKEN = randomUUID();
 const PUBLICATION_LOCK_HEARTBEAT_INTERVAL_MS = 30_000;
 
@@ -867,11 +904,13 @@ function publicationLockFileAgeExpired(stats: Stats, now = Date.now()): boolean 
 		&& now - stats.mtimeMs > PUBLICATION_LOCK_LEASE_MS;
 }
 
-function publicationLockRecordStructurallyValid(record: PublicationLockRecord): boolean {
+function publicationLockRecordStructurallyValid(record: PublicationLockRecord, now = Date.now()): boolean {
 	const hasPid = typeof record.pid === "number" && Number.isInteger(record.pid) && record.pid > 0;
 	const hasHeartbeat = typeof record.heartbeatAt === "number" && Number.isFinite(record.heartbeatAt);
 	const hasCreatedAt = typeof record.createdAt === "number" && Number.isFinite(record.createdAt);
-	return hasPid && (hasHeartbeat || hasCreatedAt);
+	const heartbeatPlausible = !hasHeartbeat || (record.heartbeatAt as number) <= now + PUBLICATION_LOCK_MAX_FUTURE_SKEW_MS;
+	const createdPlausible = !hasCreatedAt || (record.createdAt as number) <= now + PUBLICATION_LOCK_MAX_FUTURE_SKEW_MS;
+	return hasPid && (hasHeartbeat || hasCreatedAt) && heartbeatPlausible && createdPlausible;
 }
 
 function isPublicationLockStale(record: PublicationLockRecord, now = Date.now()): boolean {
@@ -981,6 +1020,18 @@ export async function removeChildIfIdentity(
 			// between the quarantine and the restore attempt; quarantine remains.
 		}
 		throw new Error(`identity-bound removal target changed during reclamation; preserved quarantine ${quarantinePath}`);
+	}
+	if (options.expectedManagedVersion) {
+		const manifest = await readRegularOmxPluginCacheManifest(quarantinePath, quarantinePath);
+		const owned = manifest?.name === OMX_PLUGIN_NAME
+			&& manifest.version === options.expectedManagedVersion
+			&& await hasRegularPublicationMarker(quarantinePath, ".omx-complete")
+			&& !(await hasRegularPublicationMarker(quarantinePath, ".omx-incomplete"))
+			&& await hasRegularPublicationMarker(quarantinePath, OMX_PLUGIN_MANAGED_MARKER);
+		const livePin = await readOmxPluginCacheFileNoFollow(join(quarantinePath, ".omx-live-pin"), { anchorDir: quarantinePath }) !== null;
+		if (!owned || livePin) {
+			throw new Error(`managed cache ownership changed during reclamation; preserved quarantine ${quarantinePath}`);
+		}
 	}
 	return removeChild(cacheBaseRef, quarantineName, {
 		...options,
@@ -1954,7 +2005,7 @@ export async function retireUnpinnedManagedSnapshots(
 			if (await readOmxPluginCacheFileNoFollow(join(candidate.ref.operationPath, ".omx-live-pin"), { anchorDir: candidate.ref.operationPath }) !== null) {
 				continue;
 			}
-			if (await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true })) {
+			if (await removeChildIfIdentity(baseRef, candidate.version, currentStats, { recursive: true, force: true, expectedManagedVersion: candidate.version })) {
 				retired.push(candidate.path);
 			} else {
 				preservedDirs?.push(candidate.path);
@@ -2202,7 +2253,9 @@ async function materializePackagedOmxPluginCacheImpl(
 					await pluginCacheMutationTestHooks?.beforeCompleteMarker?.(claimRef.path);
 					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);
 					await syncDirectoryTree(claimRef, durability);
-					await createExclusiveFileChild(claimRef, ".omx-complete", `${process.pid}\n`, durability);
+					await publicationLockGuard.assertOwned();
+					const claimDigest = await computeImmutableClaimDigest(claimRef.path);
+					await createExclusiveFileChild(claimRef, ".omx-complete", `${JSON.stringify({ version, claimDigest })}\n`, durability);
 					const claimDirSyncOutcome = await syncDirectory(claimRef.handle);
 					recordDirectorySyncOutcome(durability, claimDirSyncOutcome);
 					await assertDirectoryRef(claimRef, "publication commit");

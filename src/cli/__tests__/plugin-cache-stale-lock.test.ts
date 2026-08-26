@@ -51,4 +51,30 @@ describe("issue 3552 stale publication lock recovery", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
+
+  it("uses inode age when a lock heartbeat is materially in the future", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-future-heartbeat-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        await mkdir(cacheBase, { recursive: true });
+        await writeFile(lockPath, JSON.stringify({
+          pid: 99999999,
+          createdAt: Date.now() - 600_000,
+          heartbeatAt: Date.now() + 3_600_000,
+          processToken: "implausible-future",
+        }));
+        const expired = new Date(Date.now() - 10 * 60_000);
+        await utimes(lockPath, expired, expired);
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged);
+        assert.equal(result.status, "materialized", JSON.stringify(result));
+        assert.equal(await hasExpectedOmxPluginCache(codexHomeDir, packaged), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
 });
