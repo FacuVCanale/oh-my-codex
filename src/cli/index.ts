@@ -1256,7 +1256,9 @@ async function readHistoryPersistenceLockOwner(
   lockPath: string,
 ): Promise<HistoryPersistenceLockOwner | null | undefined> {
   try {
-    const owner = JSON.parse(await readFile(join(lockPath, "owner.json"), "utf-8")) as {
+    const raw = await readFile(join(lockPath, "owner.json"), "utf-8");
+    const completeLines = raw.endsWith("\n") ? raw.split("\n").filter(Boolean) : raw.split("\n").slice(0, -1).filter(Boolean);
+    const owner = JSON.parse(completeLines.at(-1) ?? "") as {
       token?: unknown;
       pid?: unknown;
       startIdentity?: unknown;
@@ -1359,7 +1361,7 @@ export async function acquireHistoryPersistenceLock(
       const initialOwnerPath = `${ownerPath}.${randomUUID()}.tmp`;
       await writeFile(
         initialOwnerPath,
-        JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
+        `${JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() })}\n`,
         { flag: "wx", mode: 0o600 },
       );
       await rename(initialOwnerPath, ownerPath);
@@ -1368,10 +1370,17 @@ export async function acquireHistoryPersistenceLock(
         try {
           const owner = await readHistoryPersistenceLockOwner(lockPath);
           if (owner?.token !== token) return;
+          if (process.platform === "win32") {
+            const currentLockStat = await lstat(lockPath);
+            if (!hasSameHistoryIdentity(currentLockStat, lockIdentity)) return;
+            await utimes(lockPath, new Date(), new Date());
+            await writeFile(ownerPath, `${JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() })}\n`, { flag: "a" });
+            return;
+          }
           temporaryOwnerPath = `${ownerPath}.${randomUUID()}.tmp`;
           await writeFile(
             temporaryOwnerPath,
-            JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
+            `${JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() })}\n`,
             { flag: "wx", mode: 0o600 },
           );
           const currentLockStat = await lstat(lockPath);
