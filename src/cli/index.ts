@@ -2304,6 +2304,8 @@ async function prepareResumeCodexHomeForLaunch(
       args: selection.args,
       prepared: {
         codexHomeOverride: runtimeCodexHome,
+        projectLocalCodexHomeForCleanup: resolveProjectLocalCodexHomeForLaunch(cwd, env),
+        runtimeCodexHomeForCleanup: runtimeCodexHome,
       },
     };
   }

@@ -38,13 +38,16 @@ describe('omx resume', () => {
     try {
       const home = join(wd, 'home');
       const projectCodexHome = join(wd, '.codex');
+      const discoveredRuntimeHome = join(wd, '.omx', 'runtime', 'codex-home', 'omx-existing-runtime');
       const fakeBin = join(wd, 'bin');
-      const rolloutPath = join(projectCodexHome, 'sessions', '2026', '06', '17', 'rollout-windows.jsonl');
+      const rolloutPath = join(discoveredRuntimeHome, 'sessions', '2026', '06', '17', 'rollout-windows.jsonl');
       await mkdir(home, { recursive: true });
       await mkdir(fakeBin, { recursive: true });
       await mkdir(dirname(rolloutPath), { recursive: true });
       await mkdir(join(wd, '.omx'), { recursive: true });
       await writeFile(join(wd, '.omx', 'setup-scope.json'), JSON.stringify({ scope: 'project' }));
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(join(projectCodexHome, 'config.toml'), 'model = "gpt-5.6-sol"\n');
       await writeFile(rolloutPath, 'windows-session\n');
       await writeFile(join(fakeBin, 'codex.cmd'), '@echo off\r\necho fake-codex\r\nif exist "%CODEX_HOME%\\sessions\\2026\\06\\17\\rollout-windows.jsonl" echo rollout-present=yes\r\n');
 
@@ -414,12 +417,13 @@ printf '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n' > "$COD
       assert.match(result.stdout, /fake-codex:resume\b/);
       assert.match(result.stdout, /runtime-rollout-present=yes/);
       assert.match(result.stdout, /project-rollout-present=no/);
-      const runtimeDirs = await readdir(join(wd, '.omx', 'runtime', 'codex-home'));
-      const persistedNewTranscript = await Promise.all(runtimeDirs.map(async (dir) => {
-        const transcript = join(wd, '.omx', 'runtime', 'codex-home', dir, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl');
-        return readFile(transcript, 'utf-8').catch(() => '');
-      }));
-      assert.ok(persistedNewTranscript.some((content) => content.includes('new-project-resume')));
+      assert.equal(
+        await readFile(
+          join(projectCodexHome, 'sessions', '2026', '06', '18', 'rollout-new-project-resume.jsonl'),
+          'utf-8',
+        ),
+        '{"type":"session_meta","payload":{"id":"new-project-resume"}}\n',
+      );
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
