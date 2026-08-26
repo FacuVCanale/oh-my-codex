@@ -8178,7 +8178,14 @@ async function runCodex(
                 rollbackFromPreReportAuthority = detachedLeaderAuthority !== null;
                 return { kind: "failure", operation: "session-instructions", error: detachedLeaderFailureError(report) };
               }
-              if (Date.now() >= readyDeadline) return { kind: "failure", operation: "session-instructions", error: new Error("detached leader readiness timed out") };
+              if (Date.now() >= readyDeadline) {
+                // A timeout still owns the created pre-report topology. Keep
+                // the marker and authorize the asynchronous watcher so a
+                // failed report published just after this boundary can trigger
+                // cleanup after the leader exits without blocking completion.
+                rollbackFromPreReportAuthority = detachedLeaderAuthority !== null;
+                return { kind: "failure", operation: "session-instructions", error: new Error("detached leader readiness timed out") };
+              }
               blockMs(20);
             }
           },

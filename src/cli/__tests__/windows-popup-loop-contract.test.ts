@@ -81,6 +81,7 @@ describe('detached tmux authority contract', () => {
   it('authenticates failed reports before complete selects rollback and retains async timeout cleanup', () => {
     const complete = cliIndex.slice(cliIndex.indexOf('complete: async () =>'));
     assert.match(complete, /if \(!isDetachedFailedReportAuthorized\(report,/);
+    assert.match(complete, /rollbackFromPreReportAuthority = detachedLeaderAuthority !== null/);
     assert.match(cliIndex, /scheduleDetachedPreReportCleanupRetry\(/);
   });
 
