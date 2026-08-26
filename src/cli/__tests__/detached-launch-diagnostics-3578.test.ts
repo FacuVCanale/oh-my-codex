@@ -354,7 +354,7 @@ describe('#3578 detached launch diagnostics', () => {
         assert.throws(
           () => cleanupDetachedPreReportSessionForTest(authority, () => {
             // This callback is the deterministic interposition point between
-            // detachedPreReportLeaderPaneAbsent and the destructive sink.
+            // detachedPreReportLeaderPaneState and the destructive sink.
             fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'foreign-race-owner']);
           }),
           /topology changed before cleanup/,
@@ -371,13 +371,11 @@ describe('#3578 detached launch diagnostics', () => {
       if (!skipUnlessTmux(t)) return;
       await withTempTmuxSession(async (fixture) => {
         const sessionName = 'omx-3578-ready-handoff-race';
-        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
         fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
         const authority = captureSession(fixture, sessionName, 'ready-handoff-owner');
         fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
-        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
-        await new Promise((resolve) => setTimeout(resolve, 5_500));
-        assert.equal(fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']), '1');
+        assert.equal(fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']), '0');
         const foreignSessionName = `${sessionName}-foreign`;
         fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
         let lateReadyReport: {
@@ -397,29 +395,29 @@ describe('#3578 detached launch diagnostics', () => {
           leaderPaneId: authority.paneId,
           leaderPanePid: authority.panePid,
         };
-        assert.throws(
-          () => cleanupDetachedPreReportSessionForTest(
-            authority,
-            () => {
-              // Deterministic completion-timeout/rollback barrier: the valid
-              // ready report is published only after topology probing and
-              // before the destructive session sink.
-              lateReadyReport = {
-                version: 1,
-                kind: 'ready',
-                nonce: expected.nonce,
-                sessionId: expected.sessionId,
-                sessionName: expected.sessionName,
-                paneId: authority.paneId,
-                leaderPid: authority.panePid,
-              };
-            },
-            false,
-            () => isDetachedReadyReportAuthorized(lateReadyReport, expected),
-          ),
-          /became ready or terminal before pre-report cleanup/,
-          'late authenticated readiness must suppress rollback cleanup',
+        cleanupDetachedPreReportSessionForTest(
+          authority,
+          () => {},
+          false,
+          () => {
+            // Completion has already read false. A valid ready report lands
+            // after that read but before the destructive sink is queued.
+            assert.equal(lateReadyReport, undefined);
+            return false;
+          },
+          () => {
+            lateReadyReport = {
+              version: 1,
+              kind: 'ready',
+              nonce: expected.nonce,
+              sessionId: expected.sessionId,
+              sessionName: expected.sessionName,
+              paneId: authority.paneId,
+              leaderPid: authority.panePid,
+            };
+          },
         );
+        assert.equal(isDetachedReadyReportAuthorized(lateReadyReport, expected), true, 'the late report must be authenticated');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'ready session must survive');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive');
       });

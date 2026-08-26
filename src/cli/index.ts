@@ -2603,17 +2603,24 @@ function detachedPreReportSessionCleanupCondition(
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
 
-function detachedPreReportLeaderPaneAbsent(authority: DetachedLeaderAuthority): "absent" | "present" | "unknown" {
-  // Enumerate every pane id of the exact named session; the leader pane must
-  // be absent for the session-scoped fence to apply. Enumeration failures
-  // (notably the exact session no longer exists) are fail-closed: unknown
-  // topology preserves without mutation and is surfaced as a topology change.
+function detachedPreReportLeaderPaneState(authority: DetachedLeaderAuthority): "absent" | "dead" | "live" | "unknown" {
+  // Enumerate the exact named session and classify the captured pane before any
+  // destructive command. A live captured leader is always preserved: a report
+  // can arrive after the final file read and before a separate tmux command,
+  // so timeout-based cleanup must never kill a pane that is still running.
+  // Enumeration failures (notably the exact session no longer exists) are
+  // fail-closed: unknown topology preserves without mutation.
   try {
     const sessionTarget = authority.sessionName;
-    const output = execTmuxFileSync(["list-panes", "-s", "-t", sessionTarget, "-F", "#{pane_id}"], {
+    const output = execTmuxFileSync(["list-panes", "-s", "-t", sessionTarget, "-F", "#{pane_id}\t#{pane_dead}"], {
       encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     });
-    return !output.split("\n").map((line) => line.trim()).filter(Boolean).includes(authority.paneId) ? "absent" : "present";
+    const row = output.split("\n").map((line) => line.trim()).filter(Boolean).find((line) => line.split("\t")[0] === authority.paneId);
+    if (!row) return "absent";
+    const paneDead = row.split("\t")[1];
+    if (paneDead === "1") return "dead";
+    if (paneDead === "0") return "live";
+    return "unknown";
   } catch {
     return "unknown";
   }
@@ -2624,6 +2631,7 @@ function cleanupDetachedPreReportSessionInternal(
   afterTopologyProbe?: () => void,
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
+  afterAuthenticatedReadyOrTerminalProbe?: () => void,
 ): void {
   const receipt = detachedAuthorityReceipt();
   const sessionTarget = authority.sessionName;
@@ -2634,12 +2642,15 @@ function cleanupDetachedPreReportSessionInternal(
   // The sink therefore targets only the session name and rechecks the complete
   // session identity plus the authenticated owner/pre-tag fence in the same
   // tmux command queue.
-  const absence = detachedPreReportLeaderPaneAbsent(authority);
-  if (absence === "unknown") throw new Error("detached pre-report topology changed before cleanup");
+  const paneState = detachedPreReportLeaderPaneState(authority);
+  if (paneState === "unknown") throw new Error("detached pre-report topology changed before cleanup");
   afterTopologyProbe?.();
-  if (authenticatedReadyOrTerminalProbe?.()) {
+  const authenticatedReady = authenticatedReadyOrTerminalProbe?.() === true;
+  afterAuthenticatedReadyOrTerminalProbe?.();
+  if (authenticatedReady) {
     throw new Error("detached leader became ready or terminal before pre-report cleanup");
   }
+  if (paneState === "live") return;
   const sessionScoped = execTmuxFileSync([
     "if-shell", "-F", "-t", sessionTarget, detachedPreReportSessionCleanupCondition(authority, allowUnownedPreTag),
     success, "display-message -p ''",
@@ -2651,8 +2662,9 @@ export function cleanupDetachedPreReportSession(
   authority: DetachedLeaderAuthority,
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
+  afterAuthenticatedReadyOrTerminalProbe?: () => void,
 ): void {
-  cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, afterAuthenticatedReadyOrTerminalProbe);
 }
 
 /** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
@@ -2661,8 +2673,9 @@ export function cleanupDetachedPreReportSessionForTest(
   afterTopologyProbe: () => void,
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
+  afterAuthenticatedReadyOrTerminalProbe?: () => void,
 ): void {
-  cleanupDetachedPreReportSessionInternal(authority, afterTopologyProbe, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  cleanupDetachedPreReportSessionInternal(authority, afterTopologyProbe, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, afterAuthenticatedReadyOrTerminalProbe);
 }
 
 function runDetachedHudMutation(
