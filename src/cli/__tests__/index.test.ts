@@ -3259,6 +3259,30 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("anchors cleanup locking in a writable resolved history target", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-writable-anchor-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const resolvedSessions = join(projectCodexHome, "sessions-target");
+      const runtimeCodexHome = join(wd, "runtime-codex-home");
+      await mkdir(resolvedSessions, { recursive: true });
+      await mkdir(join(runtimeCodexHome, "sessions"), { recursive: true });
+      await writeFile(join(runtimeCodexHome, "sessions", "rollout.jsonl"), "read-only-root-safe\n");
+      await symlink(resolvedSessions, join(projectCodexHome, "sessions"), "dir");
+      chmodSync(projectCodexHome, 0o555);
+
+      await cleanupRuntimeCodexHome(runtimeCodexHome, projectCodexHome);
+
+      assert.equal(
+        await readFile(join(resolvedSessions, "rollout.jsonl"), "utf-8"),
+        "read-only-root-safe\n",
+      );
+    } finally {
+      if (existsSync(join(wd, ".codex"))) chmodSync(join(wd, ".codex"), 0o700);
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("skips an extra history home that disappears during preparation", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-disappearing-extra-"));
     try {

@@ -6,7 +6,7 @@
 import { execFileSync, spawn } from "child_process";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
 import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, symlink, utimes, writeFile } from "fs/promises";
+import { access, chmod, copyFile, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
 import { createHash, randomUUID } from "crypto";
 import {
@@ -1353,11 +1353,13 @@ export async function acquireHistoryPersistenceLock(
       const lockIdentity = { dev: lockStat.dev, ino: lockStat.ino };
       const token = randomUUID();
       const startIdentity = await historyProcessStartIdentity(process.pid);
+      const initialOwnerPath = `${ownerPath}.${randomUUID()}.tmp`;
       await writeFile(
-        ownerPath,
+        initialOwnerPath,
         JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
         { flag: "wx" },
       );
+      await rename(initialOwnerPath, ownerPath);
       const heartbeat = setInterval(async () => {
         let temporaryOwnerPath: string | undefined;
         try {
@@ -1519,6 +1521,24 @@ async function persistProjectLaunchRuntimeJsonlArtifact(
   throw new HistoryEntryChangedError(`history destination changed during JSONL persistence: ${destination}`);
 }
 
+async function resolveHistoryPersistenceLockRoot(
+  projectCodexHome: string,
+  destinationRoot: string,
+): Promise<string> {
+  const candidates: string[] = [];
+  for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    const destination = join(projectCodexHome, entryName);
+    const inspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
+    const target = inspection?.targetRealpath;
+    if (!target) continue;
+    const anchor = inspection.targetStat?.isDirectory() ? target : dirname(target);
+    const canonicalAnchor = await realpath(anchor).catch(() => undefined);
+    if (!canonicalAnchor) continue;
+    if (await access(canonicalAnchor, fsConstants.W_OK).then(() => true, () => false)) candidates.push(canonicalAnchor);
+  }
+  return candidates.sort()[0] ?? destinationRoot;
+}
+
 async function persistProjectLaunchRuntimeHistoryArtifacts(
   runtimeCodexHome: string | undefined,
   projectCodexHome: string | undefined,
@@ -1527,8 +1547,9 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
   if (!existsSync(runtimeCodexHome)) return true;
   await mkdir(projectCodexHome, { recursive: true });
   const destinationRoot = await realpath(projectCodexHome);
+  const lockRoot = await resolveHistoryPersistenceLockRoot(projectCodexHome, destinationRoot);
 
-  return withHistoryPersistenceLock(destinationRoot, async () => {
+  return withHistoryPersistenceLock(lockRoot, async () => {
     let complete = true;
     for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const source = join(runtimeCodexHome, entryName);

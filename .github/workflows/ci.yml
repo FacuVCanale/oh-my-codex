@@ -556,7 +556,7 @@ jobs:
       - name: Run Windows history materialization regressions
         run: >-
           node --test
-          --test-name-pattern="materializes resolved history links|skips same-inode history content mutations|merges a symlinked primary history tree|populates read-only history directories|skips an extra history home|keeps group-only history|skips cyclic durable history links|rejects source swaps|persists materialized sessions|does not rewrite canonical history|serializes concurrent JSONL cleanup appends|live history lock|old lock owner|heartbeat owner|stale lock"
+          --test-name-pattern="materializes resolved history links|skips same-inode history content mutations|merges a symlinked primary history tree|populates read-only history directories|writable resolved history target|skips an extra history home|keeps group-only history|skips cyclic durable history links|rejects source swaps|persists materialized sessions|does not rewrite canonical history|serializes concurrent JSONL cleanup appends|live history lock|old lock owner|heartbeat owner|stale lock"
           dist/cli/__tests__/index.test.js
       - name: Run Windows resume integration regression
         run: >-

@@ -51,6 +51,7 @@ describe('omx resume', () => {
       const result = runOmx(wd, ['resume', '--project'], {
         HOME: home,
         PATH: `${fakeBin};${process.env.PATH ?? ''}`,
+        Path: `${fakeBin};${process.env.Path ?? process.env.PATH ?? ''}`,
         PATHEXT: '.COM;.EXE;.BAT;.CMD',
         OMX_AUTO_UPDATE: '0',
         OMX_NOTIFY_FALLBACK: '0',
