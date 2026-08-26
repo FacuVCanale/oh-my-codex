@@ -2497,6 +2497,53 @@ export function parseDetachedLeaderPaneIdByPid(snapshot: string, leaderPid: numb
   return matches[0]!;
 }
 
+function resolveDetachedLeaderPaneIdentity(
+  sessionName: string,
+  sessionId: string,
+  inheritedPane: string | undefined,
+  platform: NodeJS.Platform,
+  leaderPid: number,
+  requireInheritedPane: boolean,
+  probeInheritedPane: (paneId: string) => string,
+  listPanes: () => string,
+): string {
+  if (inheritedPane && /^%[0-9]+$/.test(inheritedPane)) {
+    try {
+      const [observedSessionName, observedSessionId, observedPaneId] = probeInheritedPane(inheritedPane).split("\t");
+      if (observedSessionName === sessionName && observedSessionId === sessionId && observedPaneId === inheritedPane) return inheritedPane;
+    } catch {
+      // Fall through to the platform-specific resolution policy below.
+    }
+  }
+  if (requireInheritedPane || platform === "win32") {
+    throw new Error("detached leader inherited pane identity is unavailable");
+  }
+  return parseDetachedLeaderPaneIdByPid(listPanes(), leaderPid);
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function resolveDetachedLeaderPaneForTest(options: {
+  sessionName: string;
+  sessionId: string;
+  inheritedPane?: string;
+  platform: NodeJS.Platform;
+  leaderPid: number;
+  requireInheritedPane: boolean;
+  identityOutput: string;
+  paneSnapshot: string;
+}): string {
+  return resolveDetachedLeaderPaneIdentity(
+    options.sessionName,
+    options.sessionId,
+    options.inheritedPane,
+    options.platform,
+    options.leaderPid,
+    options.requireInheritedPane,
+    () => options.identityOutput,
+    () => options.paneSnapshot,
+  );
+}
+
 function detachedLeaderAuthorityCondition(authority: DetachedLeaderAuthority, requireOwner = true): string {
   const conditions = [
     "#{==:#{pane_dead},0}",
@@ -8493,18 +8540,22 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
   const nonce = payload.readyPath?.split(".").at(-2) || payload.sessionId;
   let pane: string;
   const inheritedPane = process.env.TMUX_PANE?.trim();
-  if (payload.preLaunchOptions.shouldAttach === false) {
-    if (!inheritedPane || !/^%[0-9]+$/.test(inheritedPane)) {
-      throw new Error("detached Hermes leader has no tmux pane identity");
-    }
-    pane = inheritedPane;
-  } else {
-    const paneSnapshot = execTmuxFileSync(
+  pane = resolveDetachedLeaderPaneIdentity(
+    payload.sessionName,
+    payload.sessionId,
+    inheritedPane,
+    process.platform,
+    process.pid,
+    payload.preLaunchOptions.shouldAttach === false,
+    (paneId) => execTmuxFileSync(
+      ["display-message", "-p", "-t", paneId, "#{session_name}\t#{session_id}\t#{pane_id}"],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim(),
+    () => execTmuxFileSync(
       ["list-panes", "-t", payload.sessionName, "-F", "#{pane_id}\t#{pane_dead}\t#{pane_pid}"],
       { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-    );
-    pane = parseDetachedLeaderPaneIdByPid(paneSnapshot, process.pid);
-  }
+    ),
+  );
   process.env.TMUX_PANE = pane;
   // #3578: a pre-binding failure (notably session_pointer_owner_conflict) used to
   // die with the pane — remain-on-exit is off, so this leader's stderr vanished and
