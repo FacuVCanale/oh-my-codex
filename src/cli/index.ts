@@ -6335,13 +6335,31 @@ function isDetachedFailedReportAuthorized(
     nonce: string;
     sessionId: string;
     sessionName: string;
+    leaderPaneId: string | null;
     leaderPanePid: number | null;
   },
+  platform: NodeJS.Platform = process.platform,
 ): boolean {
   return report?.kind === "failed" && report.nonce === expected.nonce
     && report.sessionId === expected.sessionId && report.sessionName === expected.sessionName
+    && report.paneId === expected.leaderPaneId
     && typeof report.leaderPid === "number" && report.leaderPid > 0
-    && (expected.leaderPanePid === null || report.leaderPid === expected.leaderPanePid);
+    && (platform === "win32" || expected.leaderPanePid === null || report.leaderPid === expected.leaderPanePid);
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function isDetachedFailedReportAuthorizedForTest(
+  report: DetachedLeaderReport | null | undefined,
+  expected: {
+    nonce: string;
+    sessionId: string;
+    sessionName: string;
+    leaderPaneId: string | null;
+    leaderPanePid: number | null;
+  },
+  platform: NodeJS.Platform,
+): boolean {
+  return isDetachedFailedReportAuthorized(report, expected, platform);
 }
 
 function writeDetachedLeaderReport(path: string, report: DetachedLeaderReport): void {
@@ -8194,6 +8212,7 @@ async function runCodex(
                         nonce: detachedLaunchNonce,
                         sessionId,
                         sessionName,
+                        leaderPaneId: detachedLeaderPaneId,
                         leaderPanePid: leaderAuthority.panePid,
                       }),
                     );
@@ -8503,6 +8522,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     if (payload.readyPath) {
       writeDetachedLeaderReport(payload.readyPath, {
         version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
+        paneId: pane,
         leaderPid: process.pid, error: describeDetachedLeaderFailure(error),
         ...detachedSessionPointerAbortCode(error),
       });
@@ -8679,6 +8699,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     }
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
+      paneId: pane,
       leaderPid: process.pid, finalized, error: failure instanceof Error ? failure.message : String(failure),
       ...detachedSessionPointerAbortCode(failure),
     });

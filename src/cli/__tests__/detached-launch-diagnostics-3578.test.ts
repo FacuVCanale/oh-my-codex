@@ -9,6 +9,7 @@ import {
   cleanupDetachedPreReportSessionForTest,
   detachedLeaderFailureErrorForTest,
   DetachedLaunchSafetyError,
+  isDetachedFailedReportAuthorizedForTest,
   isDetachedReadyReportAuthorized,
   isDetachedSessionPointerAbortCarried,
   reportDetachedSessionPointerGuidance,
@@ -434,22 +435,48 @@ describe('#3578 detached launch diagnostics', () => {
         assert.equal(fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']), '0');
         const foreignSessionName = `${sessionName}-foreign`;
         fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
-        let failedReport: { kind: 'failed'; sessionId: string; sessionName: string } | undefined;
+        let failedReport: {
+          version: 1;
+          kind: 'failed';
+          nonce: string;
+          sessionId: string;
+          sessionName: string;
+          paneId: string;
+          leaderPid: number;
+        } | undefined;
+        const failedExpected = {
+          nonce: 'failed-live-nonce',
+          sessionId: authority.sessionId,
+          sessionName,
+          leaderPaneId: authority.paneId,
+          leaderPanePid: authority.panePid,
+        };
         cleanupDetachedPreReportSessionForTest(
           authority,
           () => {
             // The authenticated failed report is observable before the leader
             // exits. Cleanup must retain responsibility instead of returning
             // success and deleting the marker.
-            failedReport = { kind: 'failed', sessionId: authority.sessionId, sessionName };
+            failedReport = {
+              version: 1,
+              kind: 'failed',
+              nonce: failedExpected.nonce,
+              sessionId: failedExpected.sessionId,
+              sessionName: failedExpected.sessionName,
+              paneId: authority.paneId,
+              // Native Windows reports the spawned Node PID, not the
+              // PowerShell-owned tmux pane PID.
+              leaderPid: authority.panePid + 1,
+            };
           },
           false,
           () => false,
           undefined,
           true,
-          () => failedReport !== undefined,
+          () => isDetachedFailedReportAuthorizedForTest(failedReport, failedExpected, 'win32'),
         );
-        assert.deepEqual(failedReport, { kind: 'failed', sessionId: authority.sessionId, sessionName });
+        assert.equal(isDetachedFailedReportAuthorizedForTest(failedReport, failedExpected, 'win32'), true);
+        assert.equal(isDetachedFailedReportAuthorizedForTest(failedReport, failedExpected, 'linux'), false);
         const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
         assert.equal(sessions.includes(sessionName), false, 'the exact failed session must be cleaned after leader exit');
         assert.equal(sessions.includes(foreignSessionName), true, 'the unrelated session must survive retry');
