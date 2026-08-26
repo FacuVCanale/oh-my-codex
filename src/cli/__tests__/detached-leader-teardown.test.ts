@@ -294,7 +294,7 @@ describe('detached leader HUD teardown', () => {
     );
   });
 
-  it('cleans an exact retained dead pane without an owner tag and rejects changed topology', async (t) => {
+  it('cleans an exact retained dead pane with its owner tag and rejects changed identity', async (t) => {
     if (!skipUnlessTmux(t)) return;
     await withTempTmuxSession(async (fixture) => {
       fixture.run(['set-option', '-g', 'remain-on-exit', 'on']);
@@ -307,18 +307,20 @@ describe('detached leader HUD teardown', () => {
       if (!sessionName || !sessionId || !sessionCreated || !windowId || !paneId || !Number.isSafeInteger(panePid)) {
         throw new Error('invalid retained-pane topology fixture');
       }
-      fixture.runResult(['unset-option', '-t', fixture.sessionName, '@omx_instance_id']);
+      fixture.run(['set-option', '-t', fixture.sessionName, '@omx_instance_id', 'missing-owner-tag']);
       process.kill(panePid, 'SIGTERM');
       await poll('retained dead pane', () => fixture.run(['display-message', '-p', '-t', paneId, '#{pane_dead}']) === '1' ? true : undefined);
       const authority = {
         paneId, panePid, sessionName, sessionId, sessionCreated, windowId,
         windowIndex: '0', ownerId: 'missing-owner-tag',
       };
+      fixture.run(['set-option', '-t', fixture.sessionName, '@omx_instance_id', 'foreign-owner']);
       assert.throws(
-        () => cleanupDetachedPreReportSession({ ...authority, windowId: '@999999' }),
+        () => cleanupDetachedPreReportSession(authority),
         /topology changed before cleanup/,
       );
       assert.equal(fixture.sessionExists(sessionName), true);
+      fixture.run(['set-option', '-t', fixture.sessionName, '@omx_instance_id', authority.ownerId]);
       cleanupDetachedPreReportSession(authority);
       await poll('pre-report session destruction', () => !fixture.sessionExists(sessionName) ? true : undefined);
     });
