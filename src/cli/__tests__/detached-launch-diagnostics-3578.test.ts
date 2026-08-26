@@ -6,6 +6,7 @@ import { describe, it, type TestContext } from 'node:test';
 import {
   buildDetachedSessionRollbackSteps,
   cleanupDetachedPreReportSession,
+  cleanupDetachedPreReportSessionForTest,
   detachedLeaderFailureErrorForTest,
   DetachedLaunchSafetyError,
   isDetachedSessionPointerAbortCarried,
@@ -276,25 +277,73 @@ describe('#3578 detached launch diagnostics', () => {
       });
     });
 
-    it('preserves without mutation when owner drifts after probe but before pane-targeted sink (race)', async (t) => {
+    it('preserves the exact session when ownership drifts after the topology probe and before cleanup (race)', async (t) => {
       if (!skipUnlessTmux(t)) return;
       await withTempTmuxSession(async (fixture) => {
         const sessionName = 'omx-3578-probe-sink-race';
-        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
         const hudPaneId = fixture.run([
           'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300',
         ]);
         const authority = captureSession(fixture, sessionName, 'owner-race');
         fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
-        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'foreign-race-owner']);
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        await new Promise((resolve) => setTimeout(resolve, 5_500));
+        assert.equal(
+          fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']),
+          '1',
+          'the captured leader pane must be retained dead so the old pane sink would be eligible',
+        );
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
         assert.throws(
-          () => cleanupDetachedPreReportSession(authority),
+          () => cleanupDetachedPreReportSessionForTest(authority, () => {
+            // This callback is the deterministic interposition point between
+            // detachedPreReportLeaderPaneAbsent and the destructive sink.
+            fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'foreign-race-owner']);
+          }),
           /topology changed before cleanup/,
-          'probe present but sink owner drift must fail closed without pane-targeted mutation',
+          'ownership drift in the exact probe-to-sink interval must fail closed',
         );
         assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(hudPaneId), true, 'HUD pane must survive race');
         assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(authority.paneId), true, 'leader pane must survive race');
         assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'HUD session must survive race');
+        assert.equal(fixture.runResult(['has-session', '-t', foreignSessionName]).status, 0, 'unrelated session must survive race');
+      });
+    });
+
+    it('preserves a replacement session when the captured leader disappears and its name is reused after the probe', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-disappear-reuse-race';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'owner-disappear-reuse');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        await new Promise((resolve) => setTimeout(resolve, 5_500));
+        assert.equal(
+          fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']),
+          '1',
+          'the captured leader pane must be dead before the interposed reuse',
+        );
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+
+        assert.throws(
+          () => cleanupDetachedPreReportSessionForTest(authority, () => {
+            // The exact leader pane/session disappears only after the
+            // non-atomic topology probe has completed. The name is immediately
+            // reused by a different session, which must not receive cleanup.
+            fixture.run(['kill-session', '-t', sessionName]);
+            fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+            fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'replacement-owner']);
+          }),
+          /topology changed before cleanup/,
+          'a vanished and name-reused leader must fail closed',
+        );
+        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'replacement session must survive race');
+        assert.equal(fixture.runResult(['has-session', '-t', foreignSessionName]).status, 0, 'unrelated session must survive race');
       });
     });
   });

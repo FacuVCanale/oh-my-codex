@@ -2567,18 +2567,6 @@ function runDetachedLeaderMutation(
   throw new Error(`detached leader authority blocked tmux mutation ${mutation}: ${describeDetachedLeaderAuthorityMismatch(authority)}`);
 }
 
-function detachedPreReportCleanupCondition(authority: DetachedLeaderAuthority): string {
-  const conditions = [
-    "#{==:#{pane_dead},1}",
-    `#{==:#{pane_id},${authority.paneId}}`,
-    `#{==:#{session_name},${authority.sessionName}}`,
-    `#{==:#{session_id},${authority.sessionId}}`,
-    `#{==:#{session_created},${authority.sessionCreated}}`,
-    `#{==:#{window_id},${authority.windowId}}`,
-  ];
-  return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
-}
-
 /**
  * #3578: session-scoped fence for pre-report cleanup when the leader pane no
  * longer exists at all. A normal leader exit with `remain-on-exit off` (set by
@@ -2617,35 +2605,37 @@ function detachedPreReportLeaderPaneAbsent(authority: DetachedLeaderAuthority): 
   }
 }
 
-export function cleanupDetachedPreReportSession(authority: DetachedLeaderAuthority): void {
+function cleanupDetachedPreReportSessionInternal(
+  authority: DetachedLeaderAuthority,
+  afterTopologyProbe?: () => void,
+): void {
   const receipt = detachedAuthorityReceipt();
   const success = `kill-session -t ${quoteShellArg(authority.sessionName)} ; display-message -p ${quoteShellArg(receipt)}`;
-  // #3562/#3578: never evaluate a pane-targeted format against a pane that may
-  // no longer exist — a missing -t target can terminate the server. Probe pane
-  // membership of the exact named session first; only a pane that still exists
-  // may take the original retained-dead-pane fence.
+  // #3562/#3578: probe the exact session topology for diagnostics, but never
+  // feed the captured pane id into the destructive sink. The probe is
+  // non-atomic; a leader pane can disappear or be reused before the sink runs.
+  // The sink therefore targets only the session name and rechecks the complete
+  // session identity plus owner tag in the same tmux command queue.
   const absence = detachedPreReportLeaderPaneAbsent(authority);
   if (absence === "unknown") throw new Error("detached pre-report topology changed before cleanup");
-  if (absence === "absent") {
-    // #3578: the leader pane was removed entirely (normal exit with
-    // remain-on-exit off). Clean up through the session-scoped fence instead.
-    const sessionScoped = execTmuxFileSync([
-      "if-shell", "-F", "-t", authority.sessionName, detachedPreReportSessionCleanupCondition(authority),
-      success, "display-message -p ''",
-    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-    if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");
-    return;
-  }
-  let output: string;
-  try {
-    output = execTmuxFileSync([
-      "if-shell", "-F", "-t", authority.paneId, detachedPreReportCleanupCondition(authority),
-      success, "display-message -p ''",
-    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-  } catch {
-    throw new Error("detached pre-report topology changed before cleanup");
-  }
-  if (output !== receipt) throw new Error("detached pre-report topology changed before cleanup");
+  afterTopologyProbe?.();
+  const sessionScoped = execTmuxFileSync([
+    "if-shell", "-F", "-t", authority.sessionName, detachedPreReportSessionCleanupCondition(authority),
+    success, "display-message -p ''",
+  ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");
+}
+
+export function cleanupDetachedPreReportSession(authority: DetachedLeaderAuthority): void {
+  cleanupDetachedPreReportSessionInternal(authority);
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function cleanupDetachedPreReportSessionForTest(
+  authority: DetachedLeaderAuthority,
+  afterTopologyProbe: () => void,
+): void {
+  cleanupDetachedPreReportSessionInternal(authority, afterTopologyProbe);
 }
 
 function runDetachedHudMutation(
