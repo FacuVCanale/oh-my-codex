@@ -3611,6 +3611,39 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("fails closed when a heartbeat owner record is interposed", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-lock-heartbeat-"));
+    try {
+      const first = await acquireHistoryPersistenceLock(wd, { staleMs: 30, heartbeatMs: 5 });
+      const ownerPath = join(first.lockPath, "owner.json");
+      await writeFile(ownerPath, "{\"token\":");
+      utimesSync(ownerPath, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
+      await assert.rejects(
+        () => acquireHistoryPersistenceLock(wd, { timeoutMs: 100, staleMs: 30, heartbeatMs: 5 }),
+        /timed out waiting for history persistence lock/,
+      );
+      await releaseHistoryPersistenceLock(first);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("reaps a stale lock only when process-start identity proves PID reuse", async () => {
+    if (process.platform === "win32") return;
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-lock-pid-"));
+    try {
+      const lockPath = join(wd, ".omx-history.lock");
+      const ownerPath = join(lockPath, "owner.json");
+      await mkdir(lockPath);
+      await writeFile(ownerPath, JSON.stringify({ token: "old", pid: process.pid, startIdentity: "reused" }));
+      utimesSync(ownerPath, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
+      const lease = await acquireHistoryPersistenceLock(wd, { staleMs: 30 });
+      await releaseHistoryPersistenceLock(lease);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("uses a session-scoped CODEX_HOME mirror for project launch config writes", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-launch-runtime-codex-home-"));
     try {
