@@ -8649,22 +8649,35 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
   const nonce = payload.readyPath?.split(".").at(-2) || payload.sessionId;
   let pane: string;
   const inheritedPane = process.env.TMUX_PANE?.trim();
-  pane = resolveDetachedLeaderPaneIdentity(
-    payload.sessionName,
-    undefined,
-    inheritedPane,
-    process.platform,
-    process.pid,
-    payload.preLaunchOptions.shouldAttach === false,
-    (paneId) => execTmuxFileSync(
-      ["display-message", "-p", "-t", paneId, "#{session_name}\t#{session_id}\t#{pane_id}"],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trim(),
-    () => execTmuxFileSync(
-      ["list-panes", "-t", payload.sessionName, "-F", "#{pane_id}\t#{pane_dead}\t#{pane_pid}"],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-    ),
-  );
+  if (process.platform !== "win32") {
+    if (payload.preLaunchOptions.shouldAttach === false) {
+      if (!inheritedPane || !/^%[0-9]+$/.test(inheritedPane)) throw new Error("detached Hermes leader has no tmux pane identity");
+      pane = inheritedPane;
+    } else {
+      const paneSnapshot = execTmuxFileSync(
+        ["list-panes", "-t", payload.sessionName, "-F", "#{pane_id}\t#{pane_dead}\t#{pane_pid}"],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      );
+      pane = parseDetachedLeaderPaneIdByPid(paneSnapshot, process.pid);
+    }
+  } else {
+    pane = resolveDetachedLeaderPaneIdentity(
+      payload.sessionName,
+      undefined,
+      inheritedPane,
+      process.platform,
+      process.pid,
+      payload.preLaunchOptions.shouldAttach === false,
+      (paneId) => execTmuxFileSync(
+        ["display-message", "-p", "-t", paneId, "#{session_name}\t#{session_id}\t#{pane_id}"],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trim(),
+      () => execTmuxFileSync(
+        ["list-panes", "-t", payload.sessionName, "-F", "#{pane_id}\t#{pane_dead}\t#{pane_pid}"],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+      ),
+    );
+  }
   process.env.TMUX_PANE = pane;
   // #3578: a pre-binding failure (notably session_pointer_owner_conflict) used to
   // die with the pane — remain-on-exit is off, so this leader's stderr vanished and
