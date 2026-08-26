@@ -1257,7 +1257,8 @@ async function readHistoryPersistenceLockOwner(
 ): Promise<HistoryPersistenceLockOwner | null | undefined> {
   try {
     const raw = await readFile(join(lockPath, "owner.json"), "utf-8");
-    const completeLines = raw.endsWith("\n") ? raw.split("\n").filter(Boolean) : raw.split("\n").slice(0, -1).filter(Boolean);
+    const parts = raw.split("\n");
+    const completeLines = raw.endsWith("\n") || parts.length === 1 ? parts.filter(Boolean) : parts.slice(0, -1).filter(Boolean);
     const owner = JSON.parse(completeLines.at(-1) ?? "") as {
       token?: unknown;
       pid?: unknown;

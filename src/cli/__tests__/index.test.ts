@@ -3686,7 +3686,7 @@ describe("project launch scope helpers", () => {
     try {
       const lockPath = join(wd, ".omx-history.lock");
       const ownerPath = join(lockPath, "owner.json");
-      await mkdir(lockPath);
+      await mkdir(lockPath, { mode: 0o700 });
       await writeFile(ownerPath, JSON.stringify({ token: "old", pid: process.pid, startIdentity: "reused" }));
       utimesSync(ownerPath, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
       const lease = await acquireHistoryPersistenceLock(wd, { staleMs: 30 });
