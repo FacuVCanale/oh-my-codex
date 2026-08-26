@@ -62,6 +62,17 @@ describe('detached tmux authority contract', () => {
     assert.doesNotMatch(cliIndex, /execTmuxFileSync\(finalizeStep\.args, \{ stdio: "ignore" \}\)/);
   });
 
+  it('keeps the detached report visible until the session cleanup decision is complete', () => {
+    const rollback = cliIndex.slice(cliIndex.indexOf('rollback: async (_ownedRecord'));
+    const cleanupDecision = rollback.indexOf('cleanupDetachedPreReportSession(');
+    const markerRemoval = rollback.lastIndexOf('await attempt("rollback", removeReleaseMarkers)');
+    assert.ok(cleanupDecision >= 0, 'rollback must perform the authenticated pre-report cleanup decision');
+    assert.ok(markerRemoval > cleanupDecision, 'release marker removal must follow the cleanup decision');
+    assert.match(rollback, /readDetachedLeaderReport\(releaseMarkerPath\)/);
+    assert.match(rollback, /isDetachedReadyReportAuthorized\(report, expected\)/);
+    assert.match(rollback, /isDetachedTerminalReportAuthorized\(report, expected\)/);
+  });
+
   it('executes a created-HUD recycling denial fixture rather than only declaring one', () => {
     const recyclingTest = launchFallbackSource.match(
       /it\('denies detached HUD finalization when the receipted pane id is recycled'[\s\S]*?\n  \}\);/,

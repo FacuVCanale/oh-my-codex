@@ -8077,7 +8077,11 @@ async function runCodex(
             };
             await attempt("parent-env", async () => { if (detachedParentEnvFilePath) await rm(detachedParentEnvFilePath, { force: true }); });
             await attempt("runtime-codex-home", () => cleanupRuntimeCodexHome(runtimeCodexHomeForCleanup, projectLocalCodexHomeForCleanup));
-            await attempt("rollback", () => { rmSync(releaseMarkerPath, { force: true }); rmSync(`${releaseMarkerPath}.release`, { force: true }); rmSync(`${releaseMarkerPath}.abort`, { force: true }); });
+            const removeReleaseMarkers = (): void => {
+              rmSync(releaseMarkerPath, { force: true });
+              rmSync(`${releaseMarkerPath}.release`, { force: true });
+              rmSync(`${releaseMarkerPath}.abort`, { force: true });
+            };
             if (createdSession) {
               if (isExactDetachedFinalization(finalization, {
                 nonce: detachedLaunchNonce,
@@ -8092,6 +8096,7 @@ async function runCodex(
                     }
                   });
                 }
+                await attempt("rollback", removeReleaseMarkers);
                 return;
               }
               for (const step of buildDetachedSessionRollbackSteps(sessionName, null, null, null)) {
@@ -8122,6 +8127,7 @@ async function runCodex(
                 });
               }
             }
+            await attempt("rollback", removeReleaseMarkers);
           },
         },
       );
