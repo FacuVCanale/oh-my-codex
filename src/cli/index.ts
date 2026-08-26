@@ -1231,6 +1231,8 @@ function isDiscardableHistoryCopyError(error: unknown): boolean {
 const HISTORY_PERSISTENCE_LOCK_TIMEOUT_MS = 5_000;
 const HISTORY_PERSISTENCE_LOCK_STALE_MS = 30_000;
 const HISTORY_PERSISTENCE_LOCK_HEARTBEAT_MS = 5_000;
+const HISTORY_PERSISTENCE_LOCK_RENAME_RETRIES = 20;
+const HISTORY_PERSISTENCE_LOCK_RENAME_RETRY_DELAY_MS = 10;
 
 interface HistoryPersistenceLockOptions {
   timeoutMs?: number;
@@ -1320,11 +1322,19 @@ async function retireHistoryLock(
     if (owner?.token !== expectedToken) return;
   }
   const retiredPath = `${lockPath}.retired-${randomUUID()}`;
-  try {
-    await rename(lockPath, retiredPath);
-  } catch {
-    return;
+  let retired = false;
+  for (let attempt = 0; attempt < HISTORY_PERSISTENCE_LOCK_RENAME_RETRIES; attempt += 1) {
+    try {
+      await rename(lockPath, retiredPath);
+      retired = true;
+      break;
+    } catch {
+      if (attempt + 1 < HISTORY_PERSISTENCE_LOCK_RENAME_RETRIES) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, HISTORY_PERSISTENCE_LOCK_RENAME_RETRY_DELAY_MS));
+      }
+    }
   }
+  if (!retired) return;
   await assertHistoryPathWithin(retiredPath, root);
   await rm(retiredPath, { recursive: true, force: true }).catch(() => undefined);
 }
