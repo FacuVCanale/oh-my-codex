@@ -2573,19 +2573,26 @@ function runDetachedLeaderMutation(
  * the tag-session step) removes the pane, so the pane-dead predicate above can
  * never match and rollback leaked a HUD-only session. The replacement fence is
  * evaluated against the SESSION (a server-scoped stable identity), not a pane:
- * exact session_name + session_id + session_created, the session's own
- * @omx_instance_id owner tag, and a POSITIVE assertion that the captured
- * leader pane is absent from every window of the session. The owner tag is
- * session-scoped and set only by this launch's tag-session step, so a foreign
- * or replacement session — including one that merely reuses the name — has a
- * different session_id/session_created/owner triple and fails the fence.
+ * exact session_name + session_id + session_created, plus either this launch's
+ * @omx_instance_id owner tag or the empty owner state that exists before the
+ * tag-session step succeeds. A foreign tag is never accepted. The leader-pane
+ * probe is retained as a fail-closed existence check, but is not reused as a
+ * pane-targeted destructive sink; a replacement session has a different
+ * session_id/session_created and fails the session fence.
  */
 function detachedPreReportSessionCleanupCondition(authority: DetachedLeaderAuthority): string {
+  // The tag-session step is the first mutation after new-session. A bootstrap
+  // failure can therefore leave a retained dead leader pane in a session whose
+  // exact identity is ours but whose owner option is still unset. Accept only
+  // that empty pre-tag state or our expected tag; a foreign tag remains a hard
+  // denial. Session id + creation time prevent a name-reused session from
+  // satisfying the pre-tag branch.
+  const owner = `#{||:#{==:#{@omx_instance_id},${authority.ownerId}},#{==:#{@omx_instance_id},}}`;
   const conditions = [
     `#{==:#{session_name},${authority.sessionName}}`,
     `#{==:#{session_id},${authority.sessionId}}`,
     `#{==:#{session_created},${authority.sessionCreated}}`,
-    `#{==:#{@omx_instance_id},${authority.ownerId}}`,
+    owner,
   ];
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
@@ -2596,7 +2603,8 @@ function detachedPreReportLeaderPaneAbsent(authority: DetachedLeaderAuthority): 
   // (notably the exact session no longer exists) are fail-closed: unknown
   // topology preserves without mutation and is surfaced as a topology change.
   try {
-    const output = execTmuxFileSync(["list-panes", "-s", "-t", authority.sessionName, "-F", "#{pane_id}"], {
+    const sessionTarget = authority.sessionName;
+    const output = execTmuxFileSync(["list-panes", "-s", "-t", sessionTarget, "-F", "#{pane_id}"], {
       encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
     });
     return !output.split("\n").map((line) => line.trim()).filter(Boolean).includes(authority.paneId) ? "absent" : "present";
@@ -2610,17 +2618,19 @@ function cleanupDetachedPreReportSessionInternal(
   afterTopologyProbe?: () => void,
 ): void {
   const receipt = detachedAuthorityReceipt();
-  const success = `kill-session -t ${quoteShellArg(authority.sessionName)} ; display-message -p ${quoteShellArg(receipt)}`;
+  const sessionTarget = authority.sessionName;
+  const success = `kill-session -t ${quoteShellArg(sessionTarget)} ; display-message -p ${quoteShellArg(receipt)}`;
   // #3562/#3578: probe the exact session topology for diagnostics, but never
   // feed the captured pane id into the destructive sink. The probe is
   // non-atomic; a leader pane can disappear or be reused before the sink runs.
   // The sink therefore targets only the session name and rechecks the complete
-  // session identity plus owner tag in the same tmux command queue.
+  // session identity plus the authenticated owner/pre-tag fence in the same
+  // tmux command queue.
   const absence = detachedPreReportLeaderPaneAbsent(authority);
   if (absence === "unknown") throw new Error("detached pre-report topology changed before cleanup");
   afterTopologyProbe?.();
   const sessionScoped = execTmuxFileSync([
-    "if-shell", "-F", "-t", authority.sessionName, detachedPreReportSessionCleanupCondition(authority),
+    "if-shell", "-F", "-t", sessionTarget, detachedPreReportSessionCleanupCondition(authority),
     success, "display-message -p ''",
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");

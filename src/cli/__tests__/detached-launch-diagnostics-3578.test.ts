@@ -198,7 +198,38 @@ describe('#3578 detached launch diagnostics', () => {
         await new Promise((resolve) => setTimeout(resolve, 300));
         // has-session exits 1 once the exact owned session is destroyed: the
         // leak #3578 reported is its continued survival, so non-zero is the pass.
-        assert.notEqual(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'the exact owned HUD-only session must be destroyed');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), false, 'the exact owned HUD-only session must be destroyed');
+      });
+    });
+
+    it('cleans a retained dead leader before the session owner tag is installed', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-pre-tag-retained';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
+        const hudPaneId = fixture.run([
+          'split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300',
+        ]);
+        const authority = captureSession(fixture, sessionName, 'pre-tag-owner');
+        fixture.run(['set-option', '-t', sessionName, 'remain-on-exit', 'on']);
+        await new Promise((resolve) => setTimeout(resolve, 5_500));
+        assert.equal(
+          fixture.run(['display-message', '-p', '-t', authority.paneId, '#{pane_dead}']),
+          '1',
+          'the retained dead leader must reproduce the pre-tag rollback topology',
+        );
+        assert.equal(
+          fixture.run(['display-message', '-p', '-t', sessionName, '#{@omx_instance_id}']).trim(),
+          '',
+          'the pre-tag fixture must not install an owner tag',
+        );
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+        cleanupDetachedPreReportSession(authority);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), false, 'the exact pre-tag session must be destroyed');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'the unrelated session must survive');
+        assert.equal(fixture.run(['list-panes', '-s', '-t', foreignSessionName, '-F', '#{pane_id}']).includes(hudPaneId), false);
       });
     });
 
@@ -208,18 +239,17 @@ describe('#3578 detached launch diagnostics', () => {
         const sessionName = 'omx-3578-reuse-race';
         fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 5']);
         const authority = captureSession(fixture, sessionName, 'owner-3578-b');
-        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
         await new Promise((resolve) => setTimeout(resolve, 5_500));
         // Race: a replacement session takes the same name with different
-        // session_id/session_created and its own owner tag before cleanup runs.
+        // session_id/session_created before cleanup runs, while the original
+        // session is still in the pre-tag owner-unset state.
         fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
-        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', 'replacement-owner']);
         assert.throws(
           () => cleanupDetachedPreReportSession(authority),
           /topology changed before cleanup/,
           'a name-reusing replacement session must never be killed',
         );
-        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'the replacement session must survive');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'the replacement session must survive');
       });
     });
 
@@ -273,7 +303,7 @@ describe('#3578 detached launch diagnostics', () => {
           /topology changed before cleanup/,
           'replacement after destroyed session must never be killed',
         );
-        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'replacement session must survive');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'replacement session must survive');
       });
     });
 
@@ -307,8 +337,8 @@ describe('#3578 detached launch diagnostics', () => {
         );
         assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(hudPaneId), true, 'HUD pane must survive race');
         assert.equal(fixture.run(['list-panes', '-s', '-t', sessionName, '-F', '#{pane_id}']).split('\n').includes(authority.paneId), true, 'leader pane must survive race');
-        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'HUD session must survive race');
-        assert.equal(fixture.runResult(['has-session', '-t', foreignSessionName]).status, 0, 'unrelated session must survive race');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'HUD session must survive race');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive race');
       });
     });
 
@@ -342,8 +372,8 @@ describe('#3578 detached launch diagnostics', () => {
           /topology changed before cleanup/,
           'a vanished and name-reused leader must fail closed',
         );
-        assert.equal(fixture.runResult(['has-session', '-t', sessionName]).status, 0, 'replacement session must survive race');
-        assert.equal(fixture.runResult(['has-session', '-t', foreignSessionName]).status, 0, 'unrelated session must survive race');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'replacement session must survive race');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive race');
       });
     });
   });
