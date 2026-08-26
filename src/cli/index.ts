@@ -969,8 +969,10 @@ async function copyFilePreservingTimestamps(
   } = {},
 ): Promise<void> {
   const sourcePath = options.allowTopLevelSymlink === true ? await realpath(source) : source;
-  if (options.sourceRoot) await assertHistoryPathWithin(sourcePath, options.sourceRoot);
-  if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
+  const sourceRoot = options.sourceRoot ? await realpath(options.sourceRoot) : undefined;
+  const destinationRoot = options.destinationRoot ? await realpath(options.destinationRoot) : undefined;
+  if (sourceRoot) await assertHistoryPathWithin(sourcePath, sourceRoot);
+  if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
   const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | historyNoFollowFlag());
   let destinationHandle;
   const temporary = `${destination}.omx-history-${randomUUID()}`;
@@ -980,7 +982,7 @@ async function copyFilePreservingTimestamps(
     if (options.expectedSourceStat && !hasSameHistoryIdentity(sourceStat, options.expectedSourceStat)) {
       throw new HistoryEntryChangedError(`history source changed during copy: ${source}`);
     }
-    if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
+    if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
     await mkdir(dirname(destination), { recursive: true });
     destinationHandle = await open(
       temporary,
@@ -1008,7 +1010,7 @@ async function copyFilePreservingTimestamps(
     if (!stagedStat.isFile() || stagedStat.isSymbolicLink() || stagedStat.nlink !== 1) {
       throw new Error(`history staging path is not a regular file: ${temporary}`);
     }
-    if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
+    if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
     await rm(destination, { recursive: true, force: true });
     await rename(temporary, destination);
   } finally {
@@ -1024,7 +1026,8 @@ async function readHistoryFileWithoutSymlink(
   sourceRoot?: string,
 ): Promise<string> {
   const sourcePath = allowTopLevelSymlink === true ? await realpath(source) : source;
-  if (sourceRoot) await assertHistoryPathWithin(sourcePath, sourceRoot);
+  const canonicalSourceRoot = sourceRoot ? await realpath(sourceRoot) : undefined;
+  if (canonicalSourceRoot) await assertHistoryPathWithin(sourcePath, canonicalSourceRoot);
   const sourceHandle = await open(sourcePath, fsConstants.O_RDONLY | historyNoFollowFlag());
   try {
     const sourceStat = await sourceHandle.stat();
@@ -1041,7 +1044,8 @@ async function writeHistoryFileAtomically(
   mode: number,
   destinationRoot?: string,
 ): Promise<void> {
-  if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
+  const canonicalDestinationRoot = destinationRoot ? await realpath(destinationRoot) : undefined;
+  if (canonicalDestinationRoot) await assertHistoryDestinationParentWithin(destination, canonicalDestinationRoot);
   const temporary = `${destination}.omx-history-${randomUUID()}`;
   let destinationHandle;
   try {
@@ -1055,7 +1059,7 @@ async function writeHistoryFileAtomically(
     await destinationHandle.close();
     destinationHandle = undefined;
     await rm(destination, { recursive: true, force: true });
-    if (destinationRoot) await assertHistoryDestinationParentWithin(destination, destinationRoot);
+    if (canonicalDestinationRoot) await assertHistoryDestinationParentWithin(destination, canonicalDestinationRoot);
     await rename(temporary, destination);
   } finally {
     await destinationHandle?.close().catch(() => undefined);
@@ -1398,6 +1402,8 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
   destinationRoot = destination,
   expectedSourceStat?: { dev: number; ino: number },
 ): Promise<void> {
+  sourceRoot = await realpath(sourceRoot);
+  destinationRoot = await realpath(destinationRoot);
   const sourceStat = allowTopLevelSymlink ? await stat(source) : await lstat(source);
   if (!sourceStat.isDirectory() || (!allowTopLevelSymlink && sourceStat.isSymbolicLink())) return;
   if (expectedSourceStat && !hasSameHistoryIdentity(sourceStat, expectedSourceStat)) {
