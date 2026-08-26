@@ -2677,9 +2677,10 @@ function cleanupDetachedPreReportSessionWithRetry(
   authority: DetachedLeaderAuthority,
   allowUnownedPreTag: boolean,
   authenticatedReadyOrTerminalProbe?: () => boolean,
-): void {
+  authenticatedFailedReportProbe?: () => boolean,
+): DetachedPreReportCleanupResult {
   let result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
-  if (result === "cleaned") return;
+  if (result === "cleaned" || !authenticatedFailedReportProbe?.()) return result;
   // A failed report may be published while the leader pane is still live. Do
   // not treat that observation as successful cleanup: retain the marker and
   // retry the identity-fenced decision after the leader exits. A later ready,
@@ -2688,7 +2689,7 @@ function cleanupDetachedPreReportSessionWithRetry(
   while (Date.now() < deadline) {
     blockMs(20);
     result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
-    if (result === "cleaned") return;
+    if (result === "cleaned") return result;
   }
   throw new Error("detached leader remained live before pre-report cleanup retry");
 }
@@ -2697,8 +2698,9 @@ export function cleanupDetachedPreReportSession(
   authority: DetachedLeaderAuthority,
   allowUnownedPreTag = false,
   authenticatedReadyOrTerminalProbe?: () => boolean,
-): void {
-  cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  authenticatedFailedReportProbe?: () => boolean,
+): DetachedPreReportCleanupResult {
+  return cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, authenticatedFailedReportProbe);
 }
 
 /** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
@@ -2709,10 +2711,11 @@ export function cleanupDetachedPreReportSessionForTest(
   authenticatedReadyOrTerminalProbe?: () => boolean,
   afterAuthenticatedReadyOrTerminalProbe?: () => void,
   retryAfterLive = false,
+  authenticatedFailedReportProbe?: () => boolean,
 ): void {
   const result = cleanupDetachedPreReportSessionInternal(authority, afterTopologyProbe, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, afterAuthenticatedReadyOrTerminalProbe);
   if (retryAfterLive && result === "preserved-live") {
-    cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+    cleanupDetachedPreReportSessionWithRetry(authority, allowUnownedPreTag, authenticatedReadyOrTerminalProbe, authenticatedFailedReportProbe);
   }
 }
 
@@ -6326,6 +6329,21 @@ function isDetachedTerminalReportAuthorized(
   return isDetachedReadyReportAuthorized({ ...report, kind: "ready" }, expected);
 }
 
+function isDetachedFailedReportAuthorized(
+  report: DetachedLeaderReport | null | undefined,
+  expected: {
+    nonce: string;
+    sessionId: string;
+    sessionName: string;
+    leaderPanePid: number | null;
+  },
+): boolean {
+  return report?.kind === "failed" && report.nonce === expected.nonce
+    && report.sessionId === expected.sessionId && report.sessionName === expected.sessionName
+    && typeof report.leaderPid === "number" && report.leaderPid > 0
+    && (expected.leaderPanePid === null || report.leaderPid === expected.leaderPanePid);
+}
+
 function writeDetachedLeaderReport(path: string, report: DetachedLeaderReport): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -8156,7 +8174,7 @@ async function runCodex(
                   const leaderAuthority = detachedLeaderAuthority;
                   if (!leaderAuthority) throw new Error("detached leader authority missing before rollback");
                   if (rollbackFromPreReportAuthority && step.name === "kill-session") {
-                    cleanupDetachedPreReportSession(
+                    const cleanupResult = cleanupDetachedPreReportSession(
                       leaderAuthority,
                       !detachedLeaderOwnerTagInstalled,
                       () => {
@@ -8172,8 +8190,14 @@ async function runCodex(
                         return isDetachedReadyReportAuthorized(report, expected) ||
                           isDetachedTerminalReportAuthorized(report, expected);
                       },
+                      () => isDetachedFailedReportAuthorized(readDetachedLeaderReport(releaseMarkerPath), {
+                        nonce: detachedLaunchNonce,
+                        sessionId,
+                        sessionName,
+                        leaderPanePid: leaderAuthority.panePid,
+                      }),
                     );
-                    sessionCleanupCompleted = true;
+                    sessionCleanupCompleted = cleanupResult === "cleaned";
                     return;
                   }
                   runDetachedLeaderMutation(leaderAuthority, step.args);

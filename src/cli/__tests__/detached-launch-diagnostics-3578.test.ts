@@ -395,33 +395,28 @@ describe('#3578 detached launch diagnostics', () => {
           leaderPaneId: authority.paneId,
           leaderPanePid: authority.panePid,
         };
-        assert.throws(
-          () => cleanupDetachedPreReportSessionForTest(
-            authority,
-            () => {},
-            false,
-            () => {
-              // Completion has already read false. A valid ready report lands
-              // after that read but before the destructive session retry.
-              if (lateReadyReport) return isDetachedReadyReportAuthorized(lateReadyReport, expected);
-              return false;
-            },
-            () => {
-              lateReadyReport = {
-                version: 1,
-                kind: 'ready',
-                nonce: expected.nonce,
-                sessionId: expected.sessionId,
-                sessionName: expected.sessionName,
-                paneId: authority.paneId,
-                leaderPid: authority.panePid,
-              };
-            },
-            true,
-          ),
-          /became ready or terminal before pre-report cleanup/,
-          'late authenticated readiness must suppress cleanup retry',
+        const cleanupStartedAt = Date.now();
+        cleanupDetachedPreReportSessionForTest(
+          authority,
+          () => {},
+          false,
+          () => false,
+          () => {
+            // Completion has already read false. A valid ready report lands
+            // after that read; the live-pane branch must preserve immediately
+            // without entering the failed-report retry wait.
+            lateReadyReport = {
+              version: 1,
+              kind: 'ready',
+              nonce: expected.nonce,
+              sessionId: expected.sessionId,
+              sessionName: expected.sessionName,
+              paneId: authority.paneId,
+              leaderPid: authority.panePid,
+            };
+          },
         );
+        assert.ok(Date.now() - cleanupStartedAt < 1_000, 'ordinary timeout must not wait for failed-report retry');
         assert.equal(isDetachedReadyReportAuthorized(lateReadyReport, expected), true, 'the late report must be authenticated');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'ready session must survive');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive');
@@ -452,6 +447,7 @@ describe('#3578 detached launch diagnostics', () => {
           () => false,
           undefined,
           true,
+          () => failedReport !== undefined,
         );
         assert.deepEqual(failedReport, { kind: 'failed', sessionId: authority.sessionId, sessionName });
         const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
