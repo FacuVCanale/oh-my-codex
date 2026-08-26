@@ -980,6 +980,7 @@ async function copyFilePreservingTimestamps(
     if (options.expectedSourceStat && !hasSameHistoryIdentity(sourceStat, options.expectedSourceStat)) {
       throw new HistoryEntryChangedError(`history source changed during copy: ${source}`);
     }
+    if (options.destinationRoot) await assertHistoryDestinationParentWithin(destination, options.destinationRoot);
     await mkdir(dirname(destination), { recursive: true });
     destinationHandle = await open(
       temporary,
@@ -1238,19 +1239,34 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
     const destinationPath = destinationInspection?.targetRealpath ?? destination;
     await assertHistoryPathWithin(destinationPath, destinationRoot, true);
     if (sourceInspection.targetStat.isDirectory()) {
-      await copyProjectLaunchRuntimeHistoryDirectory(sourcePath, destinationPath, false, sourceRoot, destinationRoot, sourceInspection.targetStat);
+      try {
+        await copyProjectLaunchRuntimeHistoryDirectory(sourcePath, destinationPath, false, sourceRoot, destinationRoot, sourceInspection.targetStat);
+      } catch (error) {
+        if (isDiscardableHistoryCopyError(error)) continue;
+        throw error;
+      }
       continue;
     }
     if (entryName === "history.jsonl" || entryName === "session_index.jsonl") {
-      await persistProjectLaunchRuntimeJsonlArtifact(sourcePath, destinationPath, sourceRoot, destinationRoot);
+      try {
+        await persistProjectLaunchRuntimeJsonlArtifact(sourcePath, destinationPath, sourceRoot, destinationRoot);
+      } catch (error) {
+        if (isDiscardableHistoryCopyError(error)) continue;
+        throw error;
+      }
       continue;
     }
     if (sourceInspection.targetStat.isFile()) {
-      await copyFilePreservingTimestamps(sourcePath, destinationPath, {
-        sourceRoot,
-        destinationRoot,
-        expectedSourceStat: sourceInspection.targetStat,
-      });
+      try {
+        await copyFilePreservingTimestamps(sourcePath, destinationPath, {
+          sourceRoot,
+          destinationRoot,
+          expectedSourceStat: sourceInspection.targetStat,
+        });
+      } catch (error) {
+        if (isDiscardableHistoryCopyError(error)) continue;
+        throw error;
+      }
     }
   }
 }
@@ -1480,13 +1496,19 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
         await rm(destination, { recursive: true, force: true });
       }
       await mkdir(destination, { recursive: true });
-      await copyProjectLaunchRuntimeHistoryDirectory(
-        sourceInspection.targetRealpath ?? source,
-        destination,
-        false,
-        sourceInspection.targetRealpath ?? source,
-        destinationRoot,
-      );
+      try {
+        await copyProjectLaunchRuntimeHistoryDirectory(
+          sourceInspection.targetRealpath ?? source,
+          destination,
+          false,
+          sourceInspection.targetRealpath ?? source,
+          destinationRoot,
+          sourceStat,
+        );
+      } catch (error) {
+        if (isDiscardableHistoryCopyError(error)) continue;
+        throw error;
+      }
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
@@ -1503,39 +1525,67 @@ async function mergeProjectLaunchRuntimeHistoryEntries(
       const destinationStat = destinationLinkStat;
       if (!destinationStat.isFile()) {
         await rm(destination, { recursive: true, force: true });
-        await copyFilePreservingTimestamps(
-          sourceInspection.targetRealpath ?? source,
-          destination,
-          { allowTopLevelSymlink: false, sourceRoot: sourceInspection.targetRealpath ?? source, destinationRoot },
-        );
+        try {
+          await copyFilePreservingTimestamps(
+            sourceInspection.targetRealpath ?? source,
+            destination,
+            {
+              allowTopLevelSymlink: false,
+              sourceRoot: sourceInspection.targetRealpath ?? source,
+              destinationRoot,
+              expectedSourceStat: sourceStat,
+            },
+          );
+        } catch (error) {
+          if (isDiscardableHistoryCopyError(error)) continue;
+          throw error;
+        }
         mergedHistorySourceRealpaths.add(sourceRealpath);
         continue;
       }
-      const existing = await readHistoryFileWithoutSymlink(destination, false, destinationRoot);
-      const addition = await readHistoryFileWithoutSymlink(
-        sourceInspection.targetRealpath ?? source,
-        false,
-        sourceInspection.targetRealpath ?? source,
-      );
+      let existing: string;
+      let addition: string;
+      try {
+        existing = await readHistoryFileWithoutSymlink(destination, false, destinationRoot);
+        addition = await readHistoryFileWithoutSymlink(
+          sourceInspection.targetRealpath ?? source,
+          false,
+          sourceInspection.targetRealpath ?? source,
+        );
+      } catch (error) {
+        if (isDiscardableHistoryCopyError(error)) continue;
+        throw error;
+      }
       const separator = existing === "" || existing.endsWith("\n") || addition === "" ? "" : "\n";
-      await writeHistoryFileAtomically(
-        destination,
-        `${existing}${separator}${addition}`,
-        destinationStat.mode & 0o7777,
-        destinationRoot,
-      );
+      try {
+        await writeHistoryFileAtomically(
+          destination,
+          `${existing}${separator}${addition}`,
+          destinationStat.mode & 0o7777,
+          destinationRoot,
+        );
+      } catch (error) {
+        if (isDiscardableHistoryCopyError(error)) continue;
+        throw error;
+      }
       mergedHistorySourceRealpaths.add(sourceRealpath);
       continue;
     }
-    await copyFilePreservingTimestamps(
-      sourceInspection.targetRealpath ?? source,
-      destination,
-      {
-        allowTopLevelSymlink: false,
-        sourceRoot: sourceInspection.targetRealpath ?? source,
-        destinationRoot,
-      },
-    );
+    try {
+      await copyFilePreservingTimestamps(
+        sourceInspection.targetRealpath ?? source,
+        destination,
+        {
+          allowTopLevelSymlink: false,
+          sourceRoot: sourceInspection.targetRealpath ?? source,
+          destinationRoot,
+          expectedSourceStat: sourceStat,
+        },
+      );
+    } catch (error) {
+      if (isDiscardableHistoryCopyError(error)) continue;
+      throw error;
+    }
     mergedHistorySourceRealpaths.add(sourceRealpath);
   }
 }
