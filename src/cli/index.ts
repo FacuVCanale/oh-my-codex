@@ -1124,7 +1124,7 @@ function isRegularHistoryTarget(sourceStat: { isDirectory(): boolean; isFile(): 
 
 export function historyDestinationMode(sourceMode: number): number {
   const permissions = sourceMode & 0o777;
-  return (sourceMode & 0o7000) | permissions | ((permissions & 0o070) << 3) | ((permissions & 0o007) << 6);
+  return permissions | ((permissions & 0o070) << 3) | ((permissions & 0o007) << 6);
 }
 
 function historyNoFollowFlag(): number {
@@ -1344,20 +1344,23 @@ export async function acquireHistoryPersistenceLock(
   const deadline = Date.now() + timeoutMs;
   while (true) {
     try {
-      await mkdir(lockPath);
+      await mkdir(lockPath, { mode: 0o700 });
       const lockStat = await lstat(lockPath);
       if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) {
         throw new Error(`history persistence lock is not a private directory: ${lockPath}`);
       }
       await assertHistoryPathWithin(lockPath, root);
       const lockIdentity = { dev: lockStat.dev, ino: lockStat.ino };
+      if ((lockStat.mode & 0o077) !== 0) {
+        throw new Error(`history persistence lock is not private: ${lockPath}`);
+      }
       const token = randomUUID();
       const startIdentity = await historyProcessStartIdentity(process.pid);
       const initialOwnerPath = `${ownerPath}.${randomUUID()}.tmp`;
       await writeFile(
         initialOwnerPath,
         JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
-        { flag: "wx" },
+        { flag: "wx", mode: 0o600 },
       );
       await rename(initialOwnerPath, ownerPath);
       const heartbeat = setInterval(async () => {
@@ -1369,7 +1372,7 @@ export async function acquireHistoryPersistenceLock(
           await writeFile(
             temporaryOwnerPath,
             JSON.stringify({ token, pid: process.pid, startIdentity, heartbeatAt: Date.now() }),
-            { flag: "wx" },
+            { flag: "wx", mode: 0o600 },
           );
           const currentLockStat = await lstat(lockPath);
           const currentOwner = await readHistoryPersistenceLockOwner(lockPath);
@@ -1402,6 +1405,7 @@ export async function acquireHistoryPersistenceLock(
         await retireHistoryLock(lockPath, root, lockStat ? { dev: lockStat.dev, ino: lockStat.ino } : { dev: -1, ino: -1 });
         continue;
       }
+      if ((lockStat.mode & 0o077) !== 0) throw new Error(`history persistence lock is not private: ${lockPath}`);
       if (Date.now() >= deadline) throw new Error(`timed out waiting for history persistence lock: ${lockPath}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
@@ -1521,9 +1525,10 @@ async function resolveHistoryPersistenceLockRoot(
   for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
     const destination = join(projectCodexHome, entryName);
     const inspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
-    const target = inspection?.targetRealpath;
+    const targetStat = inspection?.targetStat;
+    const target = inspection?.targetRealpath ?? (targetStat ? await realpath(destination).catch(() => undefined) : undefined);
     if (!target) continue;
-    const anchors = [dirname(target), ...(inspection.targetStat?.isDirectory() ? [target] : [])];
+    const anchors = [dirname(target), ...(targetStat?.isDirectory() ? [target] : [])];
     for (const anchor of anchors) {
       const canonicalAnchor = await realpath(anchor).catch(() => undefined);
       if (!canonicalAnchor) continue;
@@ -1549,6 +1554,7 @@ async function withHistoryPersistenceLocks<T>(roots: string[], action: () => Pro
 async function persistProjectLaunchRuntimeHistoryArtifacts(
   runtimeCodexHome: string | undefined,
   projectCodexHome: string | undefined,
+  expectedRuntimeStat?: { dev: number; ino: number },
 ): Promise<boolean> {
   if (!runtimeCodexHome || !projectCodexHome) return true;
   if (!existsSync(runtimeCodexHome)) return true;
@@ -1559,6 +1565,13 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
   return withHistoryPersistenceLocks(lockRoots, async () => {
     let complete = true;
     for (const entryName of PROJECT_LAUNCH_DURABLE_HISTORY_ENTRY_NAMES) {
+    if (expectedRuntimeStat) {
+      const runtimeStat = await lstat(runtimeCodexHome).catch(() => undefined);
+      if (!runtimeStat || !hasSameHistoryIdentity(runtimeStat, expectedRuntimeStat)) {
+        complete = false;
+        break;
+      }
+    }
     const source = join(runtimeCodexHome, entryName);
     const sourceInspection = await inspectProjectLaunchRuntimeHistoryEntry(source);
     if (!sourceInspection?.targetStat || !isRegularHistoryTarget(sourceInspection.targetStat)) continue;
@@ -1570,7 +1583,14 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
     }
     const destination = join(projectCodexHome, entryName);
     const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
-    if (destinationInspection && !destinationInspection.targetStat) continue;
+    if (destinationInspection && !destinationInspection.targetStat) {
+      complete = false;
+      continue;
+    }
+    if (destinationInspection && !isRegularHistoryTarget(destinationInspection.targetStat)) {
+      complete = false;
+      continue;
+    }
     const destinationPath = destinationInspection?.targetRealpath ?? destination;
     const sourceCanonical = await realpath(sourcePath).catch((error) => {
       if (isDiscardableHistoryCopyError(error)) return undefined;
@@ -2373,6 +2393,7 @@ export async function cleanupRuntimeCodexHome(
   const historyPersisted = await persistProjectLaunchRuntimeHistoryArtifacts(
     runtimeCodexHomeForCleanup,
     projectCodexHomeForPersistence,
+    { dev: initialRuntimeStat.dev, ino: initialRuntimeStat.ino },
   );
   if (!historyPersisted) return;
   await persistProjectLaunchRuntimeProjectTrustState(
