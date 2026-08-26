@@ -1132,7 +1132,11 @@ function historyNoFollowFlag(): number {
 }
 
 function isHistoryPathWithin(candidate: string, root: string): boolean {
-  const path = relative(root, candidate);
+  const normalizedRoot = process.platform === "win32" ? win32.normalize(root).toLowerCase() : root;
+  const normalizedCandidate = process.platform === "win32" ? win32.normalize(candidate).toLowerCase() : candidate;
+  const path = process.platform === "win32"
+    ? win32.relative(normalizedRoot, normalizedCandidate)
+    : relative(normalizedRoot, normalizedCandidate);
   const escapes = path === ".." || path.startsWith(`..${sep}`);
   return path === "" || (!escapes && !isAbsolute(path));
 }
@@ -1167,6 +1171,20 @@ async function chmodHistoryDestination(
 ): Promise<void> {
   try {
     await chmod(destination, mode);
+  } catch (error) {
+    if (tolerateForeignOwner && (error as NodeJS.ErrnoException).code === "EPERM") return;
+    throw error;
+  }
+}
+
+async function utimesHistoryDestination(
+  destination: string,
+  atime: Date,
+  mtime: Date,
+  tolerateForeignOwner: boolean,
+): Promise<void> {
+  try {
+    await utimes(destination, atime, mtime);
   } catch (error) {
     if (tolerateForeignOwner && (error as NodeJS.ErrnoException).code === "EPERM") return;
     throw error;
@@ -1755,7 +1773,12 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
   await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
   await chmodHistoryDestination(destination, destinationMode ?? sourceDestinationMode, destinationWasExistingDirectory);
   await assertHistoryDestinationDirectorySafe(destination, destinationRoot);
-  await utimes(destination, sourceStat.atime, sourceStat.mtime);
+  await utimesHistoryDestination(
+    destination,
+    sourceStat.atime,
+    sourceStat.mtime,
+    destinationWasExistingDirectory,
+  );
 }
 
 async function replaceProjectLaunchRuntimeHistoryDirectory(
