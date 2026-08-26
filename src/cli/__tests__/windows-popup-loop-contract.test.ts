@@ -83,6 +83,7 @@ describe('detached tmux authority contract', () => {
     assert.match(complete, /if \(!isDetachedFailedReportAuthorized\(report,/);
     assert.match(complete, /rollbackFromPreReportAuthority = detachedLeaderAuthority !== null/);
     assert.match(cliIndex, /scheduleDetachedPreReportCleanupRetry\(/);
+    assert.match(cliIndex, /cleanupDetachedLeaderSessionAfterFailure\(pane, payload\)/);
   });
 
   it('executes a created-HUD recycling denial fixture rather than only declaring one', () => {

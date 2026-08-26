@@ -7,6 +7,7 @@ import {
   buildDetachedSessionRollbackSteps,
   cleanupDetachedPreReportSession,
   cleanupDetachedPreReportSessionForTest,
+  cleanupDetachedLeaderSessionAfterFailureForTest,
   detachedLeaderFailureErrorForTest,
   DetachedLaunchSafetyError,
   isDetachedFailedReportAuthorizedForTest,
@@ -192,6 +193,23 @@ describe('#3578 detached launch diagnostics', () => {
   });
 
   describe('identity-fenced cleanup when the leader pane is absent', () => {
+    it('lets a failed leader clean its exact owned session after the parent exits', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-leader-owned-failure-cleanup';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 300']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'leader-failure-owner');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+        cleanupDetachedLeaderSessionAfterFailureForTest(authority, authority.ownerId);
+        const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
+        assert.equal(sessions.includes(sessionName), false, 'failed leader must clean its exact owned session');
+        assert.equal(sessions.includes(foreignSessionName), true, 'failed leader cleanup must not touch unrelated sessions');
+      });
+    });
+
     interface SessionAuthority {
       paneId: string;
       panePid: number;

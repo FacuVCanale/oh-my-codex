@@ -2686,6 +2686,17 @@ function detachedPreReportLeaderPaneState(authority: DetachedLeaderAuthority): "
   }
 }
 
+function detachedSessionExists(sessionName: string): boolean {
+  try {
+    execTmuxFileSync(["has-session", "-t", sessionName], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function cleanupDetachedPreReportSessionInternal(
   authority: DetachedLeaderAuthority,
   afterTopologyProbe?: () => void,
@@ -2727,7 +2738,16 @@ function cleanupDetachedPreReportSessionWithRetry(
   authenticatedReadyOrTerminalProbe?: () => boolean,
   authenticatedFailedReportProbe?: () => boolean,
 ): DetachedPreReportCleanupResult {
-  let result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  let result: DetachedPreReportCleanupResult;
+  try {
+    result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+  } catch (error) {
+    // A failed leader may have already removed its own exact session before
+    // the parent reaches rollback. Only an authenticated failed report permits
+    // acknowledging that disappearance as completed cleanup.
+    if (authenticatedFailedReportProbe?.() && !detachedSessionExists(authority.sessionName)) return "cleaned";
+    throw error;
+  }
   if (result === "cleaned" || !authenticatedFailedReportProbe?.()) return result;
   // A failed report may be published while the leader pane is still live. Do
   // not treat that observation as successful cleanup: retain the marker and
@@ -2736,7 +2756,12 @@ function cleanupDetachedPreReportSessionWithRetry(
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     blockMs(20);
-    result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+    try {
+      result = cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe);
+    } catch (error) {
+      if (authenticatedFailedReportProbe() && !detachedSessionExists(authority.sessionName)) return "cleaned";
+      throw error;
+    }
     if (result === "cleaned") return result;
   }
   throw new Error("detached leader remained live before pre-report cleanup retry");
@@ -8621,6 +8646,45 @@ function teardownDetachedOwnedHudPane(leaderPaneId: string, payload: DetachedLea
   }
 }
 
+function cleanupDetachedLeaderSessionWithAuthority(authority: DetachedLeaderAuthority, ownerId: string): void {
+  try {
+    const owner = `#{||:#{==:#{@omx_instance_id},${ownerId}},#{==:#{@omx_instance_id},}}`;
+    const condition = [
+      `#{==:#{session_name},${authority.sessionName}}`,
+      `#{==:#{session_id},${authority.sessionId}}`,
+      `#{==:#{session_created},${authority.sessionCreated}}`,
+      owner,
+    ].reduce((combined, item) => `#{&&:${combined},${item}}`);
+    const receipt = detachedAuthorityReceipt();
+    const success = `kill-session -t ${quoteShellArg(authority.sessionName)} ; display-message -p ${quoteShellArg(receipt)}`;
+    const result = execTmuxFileSync([
+      "if-shell", "-F", "-t", authority.sessionName, condition, success, "display-message -p ''",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (result !== receipt) throw new Error("detached failed leader session authority changed before cleanup");
+  } catch {
+    // The parent retains the report and its own identity-fenced cleanup marker.
+    // A failed leader must never turn an uncertain session lookup into a kill.
+  }
+}
+
+function cleanupDetachedLeaderSessionAfterFailure(paneId: string, payload: DetachedLeaderPayload): void {
+  try {
+    const authority = captureDetachedLeaderAuthority(paneId, payload.sessionName, payload.sessionId);
+    cleanupDetachedLeaderSessionWithAuthority(authority, payload.sessionId);
+  } catch {
+    // The parent retains the report and its own identity-fenced cleanup marker.
+    // A failed leader must never turn an uncertain session lookup into a kill.
+  }
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function cleanupDetachedLeaderSessionAfterFailureForTest(
+  authority: DetachedLeaderAuthority,
+  ownerId: string,
+): void {
+  cleanupDetachedLeaderSessionWithAuthority(authority, ownerId);
+}
+
 function traceDetachedLeaderPhase(phase: string): void {
   if (process.env.OMX_TEST_DETACHED_TRACE !== "1") return;
   const line = `[omx-test-detached] ${phase}\n`;
@@ -8675,6 +8739,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
         ...detachedSessionPointerAbortCode(error),
       });
     }
+    cleanupDetachedLeaderSessionAfterFailure(pane, payload);
     throw error;
   }
   const binding = established.binding;
@@ -8685,6 +8750,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
   const activeRecordPath = contextKey
     ? madmaxDetachedActiveRecordPath(resolveMadmaxRunsRoot(process.env), contextKey)
     : join(omxRoot(payload.cwd), "state", "detached-active-record.json");
+  let readyReportWritten = false;
 
   try {
     const completion = await completePreLaunchSetup(
@@ -8718,6 +8784,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     });
     if (payload.readyPath) {
       writeDetachedLeaderReport(payload.readyPath, { version: 1, kind: "ready", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName, paneId: pane, leaderPid: process.pid });
+      readyReportWritten = true;
       const releasePath = `${payload.readyPath}.release`;
       const abortPath = `${payload.readyPath}.abort`;
       const releaseDeadline = Date.now() + 30_000;
@@ -8851,6 +8918,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
       leaderPid: process.pid, finalized, error: failure instanceof Error ? failure.message : String(failure),
       ...detachedSessionPointerAbortCode(failure),
     });
+    if (!readyReportWritten) cleanupDetachedLeaderSessionAfterFailure(pane, payload);
     throw failure;
   } finally {
     await closeLaunchSessionBindingOnce(binding);
