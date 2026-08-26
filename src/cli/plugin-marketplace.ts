@@ -881,9 +881,19 @@ function isPublicationLockStale(record: PublicationLockRecord, now = Date.now())
 }
 
 async function refreshPublicationLockRecord(
+	lockPath: string,
 	lockHandle: FileHandle,
+	lockIdentity: Stats,
 	tracker?: RegularFileDurabilityTracker,
-): Promise<void> {
+	): Promise<boolean> {
+	let before: Stats;
+	try {
+		before = await lstat(lockPath);
+		const descriptorStats = await lockHandle.stat();
+		if (!sameFileIdentity(before, lockIdentity) || !sameFileIdentity(descriptorStats, lockIdentity)) return false;
+	} catch {
+		return false;
+	}
 	try {
 		const record = buildPublicationLockRecord();
 		const buf = Buffer.from(record, "utf-8");
@@ -897,15 +907,47 @@ async function refreshPublicationLockRecord(
 		// Heartbeat is best-effort; a slow filesystem or closed handle must not fail the
 		// already-claimed publication. The next interval will retry if the handle is still open.
 	}
+	try {
+		const after = await lstat(lockPath);
+		const descriptorStats = await lockHandle.stat();
+		return sameFileIdentity(after, lockIdentity) && sameFileIdentity(descriptorStats, lockIdentity);
+	} catch {
+		return false;
+	}
+}
+
+interface PublicationLockGuard {
+	timer: NodeJS.Timeout;
+	assertOwned: () => Promise<void>;
 }
 
 function startPublicationLockHeartbeat(
+	lockPath: string,
 	lockHandle: FileHandle,
+	lockIdentity: Stats,
 	tracker?: RegularFileDurabilityTracker,
-): NodeJS.Timeout {
-	return setInterval(() => {
-		void refreshPublicationLockRecord(lockHandle, tracker);
+	): PublicationLockGuard {
+	let lost = false;
+	const assertOwned = async (): Promise<void> => {
+		if (lost) throw new Error(`publication lock ownership lost at ${lockPath}`);
+		try {
+			const pathStats = await lstat(lockPath);
+			const descriptorStats = await lockHandle.stat();
+			if (!sameFileIdentity(pathStats, lockIdentity) || !sameFileIdentity(descriptorStats, lockIdentity)) {
+				lost = true;
+				throw new Error(`publication lock ownership lost at ${lockPath}`);
+			}
+		} catch (error) {
+			lost = true;
+			throw error;
+		}
+	};
+	const timer = setInterval(() => {
+		void refreshPublicationLockRecord(lockPath, lockHandle, lockIdentity, tracker).then((owned) => {
+			if (!owned) lost = true;
+		});
 	}, PUBLICATION_LOCK_HEARTBEAT_INTERVAL_MS);
+	return { timer, assertOwned };
 }
 
 export async function removeChildIfIdentity(
@@ -1859,7 +1901,7 @@ export async function retireUnpinnedManagedSnapshots(
 	let publicationLock: FileHandle | undefined;
 	let publicationLockIdentity: Stats | undefined;
 	const durability: RegularFileDurabilityTracker = { degraded: false };
-	let publicationLockHeartbeat: NodeJS.Timeout | undefined;
+	let publicationLockGuard: PublicationLockGuard | undefined;
 	const candidateRefs: DirectoryRef[] = [];
 	let cleanupError: unknown = null;
 	try {
@@ -1870,9 +1912,10 @@ export async function retireUnpinnedManagedSnapshots(
 		if (!publicationLockHeld) {
 			publicationLock = await claimPublicationLock(baseRef, cacheBase, noFollowFlags, durability);
 			publicationLockIdentity = await publicationLock.stat();
-			await refreshPublicationLockRecord(publicationLock, durability);
-			publicationLockHeartbeat = startPublicationLockHeartbeat(publicationLock, durability);
+			await refreshPublicationLockRecord(join(cacheBase, ".omx-publish.lock"), publicationLock, publicationLockIdentity!, durability);
+			publicationLockGuard = startPublicationLockHeartbeat(join(cacheBase, ".omx-publish.lock"), publicationLock, publicationLockIdentity!, durability);
 		}
+		await publicationLockGuard?.assertOwned();
 		const entries = await readdir(baseRef.operationPath, { withFileTypes: true });
 		const managed: Array<{ path: string; version: string; mtimeMs: number; ref: DirectoryRef; stats: Stats }> = [];
 		for (const entry of entries) {
@@ -1902,6 +1945,7 @@ export async function retireUnpinnedManagedSnapshots(
 		);
 		const retired: string[] = [];
 		for (const candidate of managed.slice(1)) {
+			await publicationLockGuard?.assertOwned();
 			await assertDirectoryRef(baseRef, "retirement");
 			const currentStats = await candidate.ref.handle.stat();
 			if (!currentStats.isDirectory() || currentStats.isSymbolicLink() || currentStats.dev !== candidate.stats.dev || currentStats.ino !== candidate.stats.ino) {
@@ -1918,7 +1962,7 @@ export async function retireUnpinnedManagedSnapshots(
 		}
 		return retired;
 	} finally {
-		if (publicationLockHeartbeat) clearInterval(publicationLockHeartbeat);
+		if (publicationLockGuard) clearInterval(publicationLockGuard.timer);
 		for (const candidateRef of candidateRefs.reverse()) {
 			try { await candidateRef.handle.close(); } catch (error) { cleanupError ??= error; }
 		}
@@ -2061,12 +2105,17 @@ async function materializePackagedOmxPluginCacheImpl(
 		}
 		const durability: RegularFileDurabilityTracker = { degraded: false };
 		let lockHandle: FileHandle;
-		let publicationLockHeartbeat: NodeJS.Timeout | undefined;
+		let lockIdentity: Stats;
+		let publicationLockGuard: PublicationLockGuard | undefined;
 		try {
 			lockHandle = await claimPublicationLock(cacheBaseRef, cacheBase, noFollowFlags, durability);
+			lockIdentity = await lockHandle.stat();
 			// Keep heartbeatAt fresh while the critical section is held so a slow live
 			// publisher is never reclaimed by a concurrent claimant after LEASE_MS.
-			publicationLockHeartbeat = startPublicationLockHeartbeat(lockHandle, durability);
+			if (!await refreshPublicationLockRecord(join(cacheBaseRef.path, ".omx-publish.lock"), lockHandle, lockIdentity, durability)) {
+				throw new Error(`publication lock ownership lost at ${join(cacheBaseRef.path, ".omx-publish.lock")}`);
+			}
+			publicationLockGuard = startPublicationLockHeartbeat(join(cacheBaseRef.path, ".omx-publish.lock"), lockHandle, lockIdentity, durability);
 		} catch (error) {
 			emitDegradedDurabilityWarning("plugin cache publication", durability);
 			if (ownsCacheBaseRef) await cacheBaseRef.handle.close();
@@ -2089,14 +2138,10 @@ async function materializePackagedOmxPluginCacheImpl(
 			retiredDirs: [],
 		};
 		let cleanupError: unknown = null;
-		let lockIdentity: Stats | undefined;
 		let finalRef: DirectoryRef | undefined;
 		let claimRef: DirectoryRef | undefined;
 		try {
-			lockIdentity = await lockHandle.stat();
-			// Refresh once under the held fd so the initial heartbeat is at most
-			// a few seconds old even on a fast publication path.
-			await refreshPublicationLockRecord(lockHandle, durability);
+			await publicationLockGuard.assertOwned();
 			const candidateTempName = `.omx-plugin-${version}-${process.pid}-${randomUUID()}`;
 			await mkdirDirectoryChildExclusive(cacheBaseRef, candidateTempName);
 			await assertDirectoryRef(cacheBaseRef, "temporary staging");
@@ -2106,6 +2151,7 @@ async function materializePackagedOmxPluginCacheImpl(
 			await syncDirectoryTree(snapshotRef, durability);
 			await options.onCacheDirPrepared?.(cacheDir);
 			try {
+				await publicationLockGuard.assertOwned();
 				// #3552 blockers 3+5 / review 3860267789: never rename onto
 				// `<version>` (rename silently replaces an empty destination and
 				// pre/post inode checks cannot make it atomic). The destination is
@@ -2151,6 +2197,7 @@ async function materializePackagedOmxPluginCacheImpl(
 					snapshotRef = undefined;
 					await createExclusiveFileChild(claimRef, OMX_PLUGIN_MANAGED_MARKER, `${process.pid}\n`, durability);
 					await pluginCacheMutationTestHooks?.beforeFinalClaimValidation?.(claimRef.path);
+					await publicationLockGuard.assertOwned();
 					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);
 					await pluginCacheMutationTestHooks?.beforeCompleteMarker?.(claimRef.path);
 					await validateStagedPluginSnapshot(claimRef, packagedMarketplace, version, options.teamMode);
@@ -2179,6 +2226,7 @@ async function materializePackagedOmxPluginCacheImpl(
 			}
 			if (outcome.status === "materialized") {
 				try {
+					await publicationLockGuard.assertOwned();
 					const preservedDirs: string[] = [];
 					outcome.retiredDirs = await retireUnpinnedManagedSnapshots(
 						codexHomeDir,
@@ -2209,7 +2257,7 @@ async function materializePackagedOmxPluginCacheImpl(
 			retiredDirs: [],
 		};
 	} finally {
-			if (publicationLockHeartbeat) clearInterval(publicationLockHeartbeat);
+			if (publicationLockGuard) clearInterval(publicationLockGuard.timer);
 			try { if (finalRef) await finalRef.handle.close(); } catch (error) { cleanupError ??= error; }
 			if (claimRef && claimRef !== finalRef) {
 				try { await claimRef.handle.close(); } catch (error) { cleanupError ??= error; }

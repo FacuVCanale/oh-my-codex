@@ -1639,4 +1639,49 @@ describe("issue 3552 P1 symlink trust bypass in unchanged fast paths", () => {
     }
   });
 
+  it("aborts a publisher when its retained lock fd loses the pathname", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-lock-path-loss-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const packaged = await resolvePackagedOmxMarketplace(packageRoot);
+        assert.ok(packaged);
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const lockPath = join(cacheBase, ".omx-publish.lock");
+        let interposed = false;
+        const result = await materializePackagedOmxPluginCache(codexHomeDir, packaged, {
+          onCacheDirPrepared: async () => {
+            if (interposed) return;
+            interposed = true;
+            await rm(lockPath, { force: true });
+            await writeFile(lockPath, `${JSON.stringify({ pid: process.pid, createdAt: Date.now(), heartbeatAt: Date.now(), processToken: "successor" })}\n`, { flag: "wx" });
+          },
+        });
+        assert.equal(result.status, "stale-launcher", JSON.stringify(result));
+        assert.match(result.reason ?? "", /publication lock ownership lost/);
+        const successor = parseLastPublicationLockRecord(await readFile(lockPath, "utf-8")) as { processToken?: string };
+        assert.equal(successor.processToken, "successor");
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not retire a same-name cache without the managed ownership marker", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-3552-foreign-managed-name-"));
+    try {
+      await withIsolatedUserHome(wd, async (codexHomeDir) => {
+        const cacheBase = omxPluginCacheBase(codexHomeDir);
+        const foreign = join(cacheBase, "0.20.0");
+        await mkdir(join(foreign, ".codex-plugin"), { recursive: true });
+        await writeFile(join(foreign, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "oh-my-codex", version: "0.20.0" }));
+        await writeFile(join(foreign, ".omx-complete"), "foreign\n");
+        const { retireUnpinnedManagedSnapshots } = await import("../plugin-marketplace.js");
+        assert.deepEqual(await retireUnpinnedManagedSnapshots(codexHomeDir, "0.21.0"), []);
+        assert.equal(existsSync(foreign), true);
+      });
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
 });
