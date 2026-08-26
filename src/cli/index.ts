@@ -985,7 +985,7 @@ async function copyFilePreservingTimestamps(
     destinationHandle = await open(
       temporary,
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | historyNoFollowFlag(),
-      sourceStat.mode & 0o7777,
+      historyDestinationMode(sourceStat.mode),
     );
     const buffer = Buffer.alloc(64 * 1024);
     let position = 0;
@@ -999,7 +999,7 @@ async function copyFilePreservingTimestamps(
       }
       position += bytesRead;
     }
-    await destinationHandle.chmod(sourceStat.mode & 0o7777);
+    await destinationHandle.chmod(historyDestinationMode(sourceStat.mode));
     await destinationHandle.utimes(sourceStat.atime, sourceStat.mtime);
     await destinationHandle.close();
     destinationHandle = undefined;
@@ -1098,6 +1098,11 @@ function shouldPersistProjectLaunchRuntimeEntry(entryName: string): boolean {
 
 function isRegularHistoryTarget(sourceStat: { isDirectory(): boolean; isFile(): boolean }): boolean {
   return sourceStat.isDirectory() || sourceStat.isFile();
+}
+
+function historyDestinationMode(sourceMode: number): number {
+  const permissions = sourceMode & 0o777;
+  return (sourceMode & 0o7000) | permissions | ((permissions & 0o070) << 3) | ((permissions & 0o007) << 6);
 }
 
 function historyNoFollowFlag(): number {
@@ -1199,6 +1204,7 @@ async function persistProjectLaunchRuntimeJsonlArtifact(
   destination: string,
   sourceRoot: string,
   destinationRoot: string,
+  sourceMode: number,
 ): Promise<void> {
   const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
   if (destinationInspection && !destinationInspection.targetStat?.isFile()) return;
@@ -1208,7 +1214,7 @@ async function persistProjectLaunchRuntimeJsonlArtifact(
   const sourceContents = await readHistoryFileWithoutSymlink(source, false, sourceRoot);
   const separator = existing === "" || existing.endsWith("\n") || sourceContents === "" ? "" : "\n";
   const lines = uniqueJsonlLines(`${existing}${separator}${sourceContents}`);
-  const mode = destinationInspection?.targetStat?.mode ?? 0o600;
+  const mode = destinationInspection?.targetStat?.mode ?? historyDestinationMode(sourceMode);
   await writeHistoryFileAtomically(
     destinationPath,
     lines.length > 0 ? `${lines.join("\n")}\n` : "",
@@ -1237,6 +1243,15 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
     const destinationInspection = await inspectProjectLaunchRuntimeHistoryEntry(destination);
     if (destinationInspection && !destinationInspection.targetStat) continue;
     const destinationPath = destinationInspection?.targetRealpath ?? destination;
+    const sourceCanonical = await realpath(sourcePath).catch((error) => {
+      if (isDiscardableHistoryCopyError(error)) return undefined;
+      throw error;
+    });
+    const destinationCanonical = await realpath(destinationPath).catch((error) => {
+      if (isDiscardableHistoryCopyError(error)) return undefined;
+      throw error;
+    });
+    if (sourceCanonical && destinationCanonical && sourceCanonical === destinationCanonical) continue;
     await assertHistoryPathWithin(destinationPath, destinationRoot, true);
     if (sourceInspection.targetStat.isDirectory()) {
       try {
@@ -1249,7 +1264,13 @@ async function persistProjectLaunchRuntimeHistoryArtifacts(
     }
     if (entryName === "history.jsonl" || entryName === "session_index.jsonl") {
       try {
-        await persistProjectLaunchRuntimeJsonlArtifact(sourcePath, destinationPath, sourceRoot, destinationRoot);
+        await persistProjectLaunchRuntimeJsonlArtifact(
+          sourcePath,
+          destinationPath,
+          sourceRoot,
+          destinationRoot,
+          sourceInspection.targetStat.mode,
+        );
       } catch (error) {
         if (isDiscardableHistoryCopyError(error)) continue;
         throw error;
@@ -1393,10 +1414,11 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
   await assertHistoryDestinationParentWithin(destination, destinationRoot);
   const destinationMode =
     destinationStat && destinationStat.isDirectory() && !destinationStat.isSymbolicLink()
-      ? destinationStat.mode & sourceStat.mode & 0o7777
+      ? destinationStat.mode & historyDestinationMode(sourceStat.mode) & 0o7777
       : undefined;
-  await mkdir(destination, { recursive: true, mode: destinationMode ?? 0o700 });
-  await chmod(destination, (destinationMode ?? 0o700) | 0o700);
+  const sourceDestinationMode = historyDestinationMode(sourceStat.mode);
+  await mkdir(destination, { recursive: true, mode: destinationMode ?? sourceDestinationMode });
+  await chmod(destination, (destinationMode ?? sourceDestinationMode) | 0o700);
   for (const entry of await readdir(source, { withFileTypes: true })) {
     const sourceEntry = join(source, entry.name);
     const destinationEntry = join(destination, entry.name);
@@ -1422,7 +1444,7 @@ async function copyProjectLaunchRuntimeHistoryDirectory(
       });
     }
   }
-  await chmod(destination, destinationMode ?? (sourceStat.mode & 0o7777));
+  await chmod(destination, destinationMode ?? sourceDestinationMode);
   await utimes(destination, sourceStat.atime, sourceStat.mtime);
 }
 

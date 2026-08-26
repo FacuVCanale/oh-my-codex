@@ -1,6 +1,6 @@
 import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, utimesSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir as fsReaddir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
@@ -3264,6 +3264,51 @@ describe("project launch scope helpers", () => {
     }
   });
 
+  it("keeps group-only history readable and traversable by the destination owner", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-group-only-"));
+    let runtimeCodexHome: string | undefined;
+    try {
+      const sourceCodexHome = join(wd, "source-codex-home");
+      const sourceSessions = join(wd, "source-sessions");
+      await mkdir(sourceSessions, { recursive: true });
+      await writeFile(join(sourceSessions, "rollout.jsonl"), "group-only-session\n");
+      if (process.platform !== "win32") {
+        chownSync(sourceSessions, process.getuid!(), process.getgid!());
+        chownSync(join(sourceSessions, "rollout.jsonl"), process.getuid!(), process.getgid!());
+      }
+      chmodSync(join(sourceSessions, "rollout.jsonl"), 0o404);
+      chmodSync(sourceSessions, 0o505);
+      await mkdir(sourceCodexHome, { recursive: true });
+      await symlink(sourceSessions, join(sourceCodexHome, "sessions"), "dir");
+
+      runtimeCodexHome = await prepareRuntimeCodexHomeForProjectLaunch(
+        wd,
+        "session-history-group-only",
+        sourceCodexHome,
+        { includeHistoryArtifacts: true },
+      );
+
+      assert.equal(
+        await readFile(join(runtimeCodexHome, "sessions", "rollout.jsonl"), "utf-8"),
+        "group-only-session\n",
+      );
+      if (process.platform !== "win32") {
+        assert.equal((await stat(join(runtimeCodexHome, "sessions"))).mode & 0o700, 0o500);
+        assert.equal((await stat(join(runtimeCodexHome, "sessions", "rollout.jsonl"))).mode & 0o700, 0o400);
+      }
+    } finally {
+      if (existsSync(join(wd, "source-sessions", "rollout.jsonl"))) chmodSync(join(wd, "source-sessions", "rollout.jsonl"), 0o600);
+      if (existsSync(join(wd, "source-sessions"))) chmodSync(join(wd, "source-sessions"), 0o700);
+      if (runtimeCodexHome && existsSync(join(runtimeCodexHome, "sessions"))) {
+        chmodSync(join(runtimeCodexHome, "sessions"), 0o700);
+        if (existsSync(join(runtimeCodexHome, "sessions", "rollout.jsonl"))) {
+          chmodSync(join(runtimeCodexHome, "sessions", "rollout.jsonl"), 0o600);
+        }
+      }
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("skips cyclic durable history links without aborting preparation", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-cyclic-link-"));
     try {
@@ -3434,6 +3479,27 @@ describe("project launch scope helpers", () => {
         await readFile(join(projectSessions, "2026", "rollout.jsonl"), "utf-8"),
         "persisted-session\n",
       );
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite canonical history when runtime and project paths alias", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-runtime-history-self-copyback-"));
+    try {
+      const projectCodexHome = join(wd, ".codex");
+      const runtimeAlias = join(wd, "runtime-alias");
+      await mkdir(projectCodexHome, { recursive: true });
+      await writeFile(join(projectCodexHome, "history.jsonl"), '{"session_id":"existing"}\n');
+      await symlink(projectCodexHome, runtimeAlias, "dir");
+
+      await cleanupRuntimeCodexHome(runtimeAlias, projectCodexHome);
+
+      assert.equal(
+        await readFile(join(projectCodexHome, "history.jsonl"), "utf-8"),
+        '{"session_id":"existing"}\n',
+      );
+      assert.equal(existsSync(runtimeAlias), false);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
