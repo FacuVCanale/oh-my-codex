@@ -1622,9 +1622,59 @@ function detachedPreReportCleanupCondition(authority: DetachedLeaderAuthority): 
   return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
 }
 
+/**
+ * #3578: session-scoped fence for pre-report cleanup when the leader pane no
+ * longer exists at all. A normal leader exit with `remain-on-exit off` (set by
+ * the tag-session step) removes the pane, so the pane-dead predicate above can
+ * never match and rollback leaked a HUD-only session. The replacement fence is
+ * evaluated against the SESSION (a server-scoped stable identity), not a pane:
+ * exact session_name + session_id + session_created, the session's own
+ * @omx_instance_id owner tag, and a POSITIVE assertion that the captured
+ * leader pane is absent from every window of the session. The owner tag is
+ * session-scoped and set only by this launch's tag-session step, so a foreign
+ * or replacement session — including one that merely reuses the name — has a
+ * different session_id/session_created/owner triple and fails the fence.
+ */
+function detachedPreReportSessionCleanupCondition(authority: DetachedLeaderAuthority): string {
+  const conditions = [
+    `#{==:#{session_name},${authority.sessionName}}`,
+    `#{==:#{session_id},${authority.sessionId}}`,
+    `#{==:#{session_created},${authority.sessionCreated}}`,
+    `#{==:#{@omx_instance_id},${authority.ownerId}}`,
+  ];
+  return conditions.reduce((combined, condition) => `#{&&:${combined},${condition}}`);
+}
+
+function detachedPreReportLeaderPaneAbsent(authority: DetachedLeaderAuthority): boolean {
+  // Enumerate every pane id of the exact named session; the leader pane must
+  // be absent. Enumeration failures are fail-closed (no cleanup).
+  try {
+    const output = execTmuxFileSync(["list-panes", "-s", "-t", authority.sessionName, "-F", "#{pane_id}"], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
+    });
+    return !output.split("\n").map((line) => line.trim()).filter(Boolean).includes(authority.paneId);
+  } catch {
+    return false;
+  }
+}
+
 export function cleanupDetachedPreReportSession(authority: DetachedLeaderAuthority): void {
   const receipt = detachedAuthorityReceipt();
   const success = `kill-session -t ${quoteShellArg(authority.sessionName)} ; display-message -p ${quoteShellArg(receipt)}`;
+  // #3562/#3578: never evaluate a pane-targeted format against a pane that may
+  // no longer exist — a missing -t target can terminate the server. Probe pane
+  // membership of the exact named session first; only a pane that still exists
+  // may take the original retained-dead-pane fence.
+  if (detachedPreReportLeaderPaneAbsent(authority)) {
+    // #3578: the leader pane was removed entirely (normal exit with
+    // remain-on-exit off). Clean up through the session-scoped fence instead.
+    const sessionScoped = execTmuxFileSync([
+      "if-shell", "-F", "-t", authority.sessionName, detachedPreReportSessionCleanupCondition(authority),
+      success, "display-message -p ''",
+    ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (sessionScoped !== receipt) throw new Error("detached pre-report topology changed before cleanup");
+    return;
+  }
   const output = execTmuxFileSync([
     "if-shell", "-F", "-t", authority.paneId, detachedPreReportCleanupCondition(authority),
     success, "display-message -p ''",
@@ -2103,6 +2153,40 @@ function reportOrdinaryLaunchRootConflict(
       "[omx] cmd.exe: set \"OMX_ROOT=%USERPROFILE%\\.omx\\instances\\second-conversation\" && omx\n" +
       "[omx] The selected OMX_ROOT is used literally; OMX does not reroute or allocate one automatically.",
   );
+}
+/**
+ * #3578: a detached leader's session-pointer abort previously died with the
+ * leader pane. The validated abort code now reaches the outer launcher; print
+ * the same bounded, actionable guidance the ordinary launch path prints.
+ * `cwd` selects the root that produced the conflict, mirroring the ordinary
+ * path's cwd-default gating without weakening any ownership check.
+ */
+export function reportDetachedSessionPointerGuidance(
+  error: unknown,
+  cwd: string = process.cwd(),
+): void {
+  const candidate = findDetachedSessionPointerAbort(error);
+  if (!candidate) return;
+  if (candidate.code === "session_pointer_owner_conflict") {
+    // Rebuild a well-formed SessionPointerLaunchAbort so reportOrdinaryLaunchRootConflict's
+    // isSessionPointerLaunchAbort gate (name/committed/cwd/operation/code) accepts it,
+    // then reuse the ordinary path's exact OMX_ROOT guidance block unchanged.
+    reportOrdinaryLaunchRootConflict(
+      Object.assign(new Error("Session pointer sess-live-owner conflicts with an active session; launch aborted"), {
+        name: "SessionPointerLaunchAbort",
+        committed: false as const,
+        cwd,
+        operation: "detached-leader-pre-bind",
+        code: candidate.code,
+      }),
+      cwd,
+      true,
+    );
+    return;
+  }
+  if (candidate.code === "session_pointer_unusable") {
+    console.error("[omx] the selected session pointer is unusable; run `omx doctor` for the exact pointer status and bounded recovery steps.");
+  }
 }
 
 function logCliOperationFailure(error: unknown): void {
@@ -3215,12 +3299,21 @@ export function describeDetachedLeaderFailure(error: unknown): string {
 
 export class DetachedLaunchSafetyError extends Error {
   readonly name = "DetachedLaunchSafetyError";
+  /**
+   * The exact bootstrap step that failed, when the failure came from a named
+   * detached tmux step (#3578). `phase` stays the coarse D-state group; `step`
+   * disambiguates `tag-session`, its follow-on mutations, the HUD split, and
+   * every finalize step that previously collapsed into `pane-id`.
+   */
+  readonly step?: string;
   constructor(
     readonly phase: "establishment" | "completion" | "inert-session" | "pane-id" | "name-metadata" | "pane-metadata" | "active-record" | "lease-close" | "barrier-release" | "post-release-attach",
     readonly cause: unknown,
     readonly report: DetachedBootstrapReport,
+    step?: string,
   ) {
-    super(`detached launch safety failure during ${phase}${cause instanceof Error ? `: ${describeDetachedLeaderFailure(cause)}` : ""}`);
+    super(`detached launch safety failure during ${phase}${step && step !== phase ? ` (${step})` : ""}${cause instanceof Error ? `: ${describeDetachedLeaderFailure(cause)}` : ""}`);
+    if (step) this.step = step;
   }
 }
 
@@ -3424,7 +3517,7 @@ export async function executeDetachedLaunchStateMachine<Binding, InertSession, P
       }
     }
     if (error instanceof DetachedLaunchSafetyError) {
-      throw new DetachedLaunchSafetyError(error.phase, error.cause, report);
+      throw new DetachedLaunchSafetyError(error.phase, error.cause, report, error.step);
     }
     const phase = report.transitions.at(-1);
     const phaseName = phase === "D1" ? "establishment"
@@ -3534,6 +3627,7 @@ function renderDetachedLaunchSafetyReport(error: DetachedLaunchSafetyError): str
   }));
   return JSON.stringify({
     phase: error.phase,
+    ...(error.step ? { step: error.step } : {}),
     failure: describeDetachedLeaderFailure(error.cause),
     transitions: error.report.transitions,
     ...(establishmentCleanup ? { establishmentCleanup } : {}),
@@ -3833,6 +3927,7 @@ if (command !== "launch" && command !== "resume") {
     if (err instanceof DetachedLaunchSafetyError) {
       console.error(`Error: ${err.message}`);
       console.error(`[omx] detached launch safety report: ${renderDetachedLaunchSafetyReport(err)}`);
+      reportDetachedSessionPointerGuidance(err.cause);
     } else {
       console.error(`Error: ${err instanceof Error ? err.message : err}`);
     }
@@ -5087,9 +5182,79 @@ interface DetachedLeaderReport {
   paneId?: string;
   leaderPid?: number;
   error?: string;
+  /** Session-pointer abort code carried from a leader-side SessionPointerLaunchAbort (#3578). */
+  abortCode?: string;
   finalized?: boolean;
   exitStatus?: number;
   hud?: DetachedHudAuthority;
+}
+
+/**
+ * #3578: forward only the bounded machine-readable abort code of a leader-side
+ * session-pointer abort into the failed report. The human reason travels in
+ * `error`; nothing else from the nested error object is copied, so arbitrary
+ * nested errors are never dumped into the report.
+ */
+function detachedSessionPointerAbortCode(failure: unknown): { abortCode?: string } {
+  if (isSessionPointerLaunchAbort(failure)) return { abortCode: failure.code };
+  // #3578: the leader's terminal catch wraps non-finalized failures in an
+  // AggregateError (launch + lifecycle errors). The session-pointer abort can
+  // only be the launch-side member, never the lifecycle error, so a bounded
+  // one-level unwrap keeps the code without copying anything else.
+  if (failure instanceof AggregateError) {
+    for (const member of failure.errors) {
+      if (isSessionPointerLaunchAbort(member)) return { abortCode: member.code };
+    }
+  }
+  return {};
+}
+/**
+ * #3578: rebuild a leader-side session-pointer abort (code + reason only) from
+ * a validated failed report so the outer launcher can present the same
+ * actionable guidance the ordinary launch path prints. Non-abort failures keep
+ * a plain Error carrying the leader's bounded reason.
+ */
+function detachedLeaderFailureError(report: DetachedLeaderReport): Error {
+  const reason = report.error || "detached leader setup failed";
+  if (!report.abortCode) return new Error(reason);
+  const error = new Error(reason) as Error & { code?: string; abortedSessionPointer?: true };
+  error.code = report.abortCode;
+  error.abortedSessionPointer = true;
+  return error;
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function detachedLeaderFailureErrorForTest(report: {
+  error?: string;
+  abortCode?: string;
+}): Error {
+  return detachedLeaderFailureError({
+    version: 1, kind: "failed", nonce: "test", sessionId: "test-session", sessionName: "test-name",
+    ...report,
+  });
+}
+/**
+ * #3578: recognize the bounded abort marker set by {@link detachedLeaderFailureError}
+ * directly on an error or on the launch-side member of a wrapping AggregateError.
+ * The D2 completion path wraps the leader's error in an AggregateError before the
+ * outer launcher sees it; without this unwrap the actionable abort code would be
+ * invisible to the guidance printer.
+ */
+function findDetachedSessionPointerAbort(error: unknown): { code: string } | undefined {
+  const candidates: unknown[] = [error];
+  if (error instanceof AggregateError) candidates.push(...error.errors);
+  for (const candidate of candidates) {
+    const marker = candidate as { code?: unknown; abortedSessionPointer?: unknown } | undefined;
+    if (marker && marker.abortedSessionPointer === true && typeof marker.code === "string") {
+      return { code: marker.code };
+    }
+  }
+  return undefined;
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function isDetachedSessionPointerAbortCarried(error: unknown): boolean {
+  return findDetachedSessionPointerAbort(error) !== undefined;
 }
 
 export function isDetachedReadyReportAuthorized(
@@ -5150,6 +5315,7 @@ function readDetachedLeaderReport(path: string): DetachedLeaderReport | undefine
     if (report.paneId !== undefined && typeof report.paneId !== "string") return undefined;
     if (report.leaderPid !== undefined && (!Number.isSafeInteger(report.leaderPid) || Number(report.leaderPid) <= 0)) return undefined;
     if (report.exitStatus !== undefined && (!Number.isSafeInteger(report.exitStatus) || Number(report.exitStatus) < 0 || Number(report.exitStatus) > 255)) return undefined;
+    if (report.abortCode !== undefined && (typeof report.abortCode !== "string" || report.abortCode.length > 128 || !/^[a-z_]+$/.test(report.abortCode))) return undefined;
     return report as unknown as DetachedLeaderReport;
   } catch { return undefined; }
 }
@@ -6781,7 +6947,7 @@ async function runCodex(
               else runDetachedLeaderMutation(authority, finalizeStep.args);
             }
           } catch (error) {
-            throw new DetachedLaunchSafetyError(step.name === "new-session" ? "inert-session" : "pane-id", error, detachedPreflight.report);
+            throw new DetachedLaunchSafetyError(step.name === "new-session" ? "inert-session" : "pane-id", error, detachedPreflight.report, step.name);
           }
         }
         return undefined;
@@ -6807,7 +6973,14 @@ async function runCodex(
               }
               if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.sessionName === sessionName && report.leaderPid && report.kind === "failed") {
                 detachedLeaderPid = report.leaderPid;
-                return { kind: "failure", operation: "session-instructions", error: new Error(report.error || "detached leader setup failed") };
+                // #3578: a failed leader report is terminal evidence. A leader that
+                // never reached readiness cannot hold pointer authority, so the
+                // outer launcher owns the pre-report tmux topology it created and
+                // may roll it back through the captured authority — never through
+                // the wait-for-finalization path, which only a ready leader can
+                // satisfy and would otherwise stall 30s and skip rollback.
+                rollbackFromPreReportAuthority = detachedLeaderAuthority !== null;
+                return { kind: "failure", operation: "session-instructions", error: detachedLeaderFailureError(report) };
               }
               if (Date.now() >= readyDeadline) return { kind: "failure", operation: "session-instructions", error: new Error("detached leader readiness timed out") };
               blockMs(20);
@@ -6857,7 +7030,13 @@ async function runCodex(
             // The leader has the retained binding. Publishing abort is the only
             // outer action permitted after a D9 write failure; a mismatched or
             // missing report leaves every artifact and the tmux session intact.
-            if (!detachedLeaderPid) {
+            if (!detachedLeaderPid || rollbackFromPreReportAuthority) {
+              // #3578: either the leader was never observed (classic timeout /
+              // bootstrap abort) or it already reported a terminal failure before
+              // readiness — in both cases it never held pointer authority, so the
+              // pre-report tmux topology the outer launcher created is its own to
+              // roll back. Never wait for finalization here: only a leader that
+              // reached readiness can acknowledge it.
               rollbackFromPreReportAuthority = detachedLeaderAuthority !== null;
               return { acknowledged: false, rollbackAuthorized: rollbackFromPreReportAuthority };
             }
@@ -7192,6 +7371,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     if (isDetachedLaunchControlPlaneKey(key, process.platform === "win32")) continue;
     process.env[key] = value;
   }
+  const nonce = payload.readyPath?.split(".").at(-2) || payload.sessionId;
   let pane: string;
   const inheritedPane = process.env.TMUX_PANE?.trim();
   if (payload.preLaunchOptions.shouldAttach === false) {
@@ -7207,19 +7387,36 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     pane = parseDetachedLeaderPaneIdByPid(paneSnapshot, process.pid);
   }
   process.env.TMUX_PANE = pane;
-  const established = await establishPreLaunchBinding(payload.cwd, payload.sessionId, {
-    tmuxSessionName: payload.sessionName,
-    tmuxPaneId: pane,
-  });
+  // #3578: a pre-binding failure (notably session_pointer_owner_conflict) used to
+  // die with the pane — remain-on-exit is off, so this leader's stderr vanished and
+  // the outer launcher could only report a readiness failure. Record the same
+  // bounded failure string the in-try path records so the parent can surface the
+  // actionable abort instead of a generic detached phase. Keep pane resolution
+  // outside the try so the exact clean-base identity path is preserved.
+  let established: Awaited<ReturnType<typeof establishPreLaunchBinding>> | undefined;
+  try {
+    established = await establishPreLaunchBinding(payload.cwd, payload.sessionId, {
+      tmuxSessionName: payload.sessionName,
+      tmuxPaneId: pane,
+    });
+  } catch (error) {
+    if (payload.readyPath) {
+      writeDetachedLeaderReport(payload.readyPath, {
+        version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
+        leaderPid: process.pid, error: describeDetachedLeaderFailure(error),
+        ...detachedSessionPointerAbortCode(error),
+      });
+    }
+    throw error;
+  }
   const binding = established.binding;
   let ownedRecord: DetachedActiveRecordOwnership | undefined;
   let detachedHudProof: DetachedHudAuthority | undefined;
-  const nonce = payload.readyPath?.split(".").at(-2) || payload.sessionId;
   const contextKey = process.env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
+  let externalInterrupt: NodeJS.Signals | undefined;
   const activeRecordPath = contextKey
     ? madmaxDetachedActiveRecordPath(resolveMadmaxRunsRoot(process.env), contextKey)
     : join(omxRoot(payload.cwd), "state", "detached-active-record.json");
-  let externalInterrupt: NodeJS.Signals | undefined;
 
   try {
     const completion = await completePreLaunchSetup(
@@ -7383,6 +7580,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
     if (payload.readyPath) writeDetachedLeaderReport(payload.readyPath, {
       version: 1, kind: "failed", nonce, sessionId: payload.sessionId, sessionName: payload.sessionName,
       leaderPid: process.pid, finalized, error: failure instanceof Error ? failure.message : String(failure),
+      ...detachedSessionPointerAbortCode(failure),
     });
     throw failure;
   } finally {
