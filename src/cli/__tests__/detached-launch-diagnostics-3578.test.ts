@@ -13,6 +13,8 @@ import {
   isDetachedReadyReportAuthorized,
   isDetachedSessionPointerAbortCarried,
   reportDetachedSessionPointerGuidance,
+  resolveDetachedLeaderPaneForTest,
+  scheduleDetachedPreReportCleanupRetryForTest,
   type DetachedBootstrapReport,
 } from '../index.js';
 import { isRealTmuxAvailable, withTempTmuxSession } from '../../team/__tests__/tmux-test-fixture.js';
@@ -31,6 +33,48 @@ function skipUnlessTmux(t: TestContext): boolean {
 const emptyReport = (): DetachedBootstrapReport => ({ transitions: ['D0'], rollback: { attempted: [], failures: [] } });
 
 describe('#3578 detached launch diagnostics', () => {
+  describe('Windows detached leader identity', () => {
+    it('accepts an inherited pane when the tmux session id differs from the OMX session id', () => {
+      assert.equal(resolveDetachedLeaderPaneForTest({
+        sessionName: 'omx-session',
+        inheritedPane: '%42',
+        platform: 'win32',
+        leaderPid: 901,
+        requireInheritedPane: false,
+        identityOutput: 'omx-session\t$7\t%42',
+        paneSnapshot: '%42\t0\t901',
+      }), '%42');
+      assert.throws(() => resolveDetachedLeaderPaneForTest({
+        sessionName: 'omx-session',
+        expectedTmuxSessionId: '$1',
+        inheritedPane: '%42',
+        platform: 'win32',
+        leaderPid: 901,
+        requireInheritedPane: false,
+        identityOutput: 'omx-session\t$7\t%42',
+        paneSnapshot: '%42\t0\t901',
+      }), /inherited pane identity is unavailable/);
+    });
+
+    it('authorizes Windows ready and failed reports by pane identity when process PIDs differ', () => {
+      const expected = {
+        nonce: 'windows-nonce',
+        sessionId: 'omx-session-id',
+        sessionName: 'omx-session',
+        shouldAttach: true,
+        leaderPaneId: '%42',
+        leaderPanePid: 901,
+      };
+      const ready = { version: 1 as const, kind: 'ready' as const, ...expected, paneId: '%42', leaderPid: 1201 };
+      const failed = { version: 1 as const, kind: 'failed' as const, ...expected, paneId: '%42', leaderPid: 1201 };
+      assert.equal(isDetachedReadyReportAuthorized(ready, expected, 'win32'), true);
+      assert.equal(isDetachedReadyReportAuthorized(ready, expected, 'linux'), false);
+      assert.equal(isDetachedFailedReportAuthorizedForTest(failed, expected, 'win32'), true);
+      assert.equal(isDetachedFailedReportAuthorizedForTest(failed, expected, 'linux'), false);
+      assert.equal(isDetachedFailedReportAuthorizedForTest({ ...failed, paneId: '%43' }, expected, 'win32'), false);
+    });
+  });
+
   describe('exact failing-step and cause reporting', () => {
     it('carries the exact bootstrap step name next to the coarse phase', () => {
       const cause = new Error('leader authority blocked tmux mutation history-limit');
@@ -421,6 +465,65 @@ describe('#3578 detached launch diagnostics', () => {
         assert.equal(isDetachedReadyReportAuthorized(lateReadyReport, expected), true, 'the late report must be authenticated');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true, 'ready session must survive');
         assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(foreignSessionName), true, 'unrelated session must survive');
+      });
+    });
+
+    it('keeps timeout rollback nonblocking and asynchronously cleans a later authenticated failure', async (t) => {
+      if (!skipUnlessTmux(t)) return;
+      await withTempTmuxSession(async (fixture) => {
+        const sessionName = 'omx-3578-late-failure-async';
+        fixture.run(['new-session', '-d', '-s', sessionName, '-c', fixture.sessionName, 'sleep 3']);
+        fixture.run(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', sessionName, 'sleep 300']);
+        const authority = captureSession(fixture, sessionName, 'late-failure-owner');
+        fixture.run(['set-option', '-t', sessionName, '@omx_instance_id', authority.ownerId]);
+        const foreignSessionName = `${sessionName}-foreign`;
+        fixture.run(['new-session', '-d', '-s', foreignSessionName, '-c', fixture.sessionName, 'sleep 300']);
+        const expected = {
+          nonce: 'late-failure-nonce',
+          sessionId: authority.sessionId,
+          sessionName,
+          leaderPaneId: authority.paneId,
+          leaderPanePid: authority.panePid,
+        };
+        let failedReport: {
+          version: 1;
+          kind: 'failed';
+          nonce: string;
+          sessionId: string;
+          sessionName: string;
+          paneId: string;
+          leaderPid: number;
+        } | undefined;
+        let cleaned = false;
+        const timeoutStartedAt = Date.now();
+        cleanupDetachedPreReportSessionForTest(authority, () => {}, false, () => false);
+        assert.ok(Date.now() - timeoutStartedAt < 1_000, 'plain timeout must return without synchronous retry wait');
+        assert.equal(fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n').includes(sessionName), true);
+        setTimeout(() => {
+          failedReport = {
+            version: 1,
+            kind: 'failed',
+            nonce: expected.nonce,
+            sessionId: expected.sessionId,
+            sessionName,
+            paneId: authority.paneId,
+            leaderPid: authority.panePid,
+          };
+        }, 100);
+        scheduleDetachedPreReportCleanupRetryForTest(
+          authority,
+          () => false,
+          () => isDetachedFailedReportAuthorizedForTest(failedReport, expected, 'linux'),
+          () => { cleaned = true; },
+          5_000,
+        );
+        for (let attempt = 0; attempt < 300 && !cleaned; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        assert.equal(cleaned, true, 'late authenticated failure must trigger asynchronous cleanup after exit');
+        const sessions = fixture.run(['list-sessions', '-F', '#{session_name}']).split('\n');
+        assert.equal(sessions.includes(sessionName), false, 'the exact late-failed session must be cleaned');
+        assert.equal(sessions.includes(foreignSessionName), true, 'the unrelated session must survive');
       });
     });
 

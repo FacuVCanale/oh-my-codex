@@ -78,6 +78,12 @@ describe('detached tmux authority contract', () => {
     assert.match(cleanup, /result === "cleaned" \|\| !authenticatedFailedReportProbe\?\.\(\)/);
   });
 
+  it('authenticates failed reports before complete selects rollback and retains async timeout cleanup', () => {
+    const complete = cliIndex.slice(cliIndex.indexOf('complete: async () =>'));
+    assert.match(complete, /if \(!isDetachedFailedReportAuthorized\(report,/);
+    assert.match(cliIndex, /scheduleDetachedPreReportCleanupRetry\(/);
+  });
+
   it('executes a created-HUD recycling denial fixture rather than only declaring one', () => {
     const recyclingTest = launchFallbackSource.match(
       /it\('denies detached HUD finalization when the receipted pane id is recycled'[\s\S]*?\n  \}\);/,

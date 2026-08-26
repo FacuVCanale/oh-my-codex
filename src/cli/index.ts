@@ -2499,7 +2499,7 @@ export function parseDetachedLeaderPaneIdByPid(snapshot: string, leaderPid: numb
 
 function resolveDetachedLeaderPaneIdentity(
   sessionName: string,
-  sessionId: string,
+  expectedTmuxSessionId: string | undefined,
   inheritedPane: string | undefined,
   platform: NodeJS.Platform,
   leaderPid: number,
@@ -2510,7 +2510,8 @@ function resolveDetachedLeaderPaneIdentity(
   if (inheritedPane && /^%[0-9]+$/.test(inheritedPane)) {
     try {
       const [observedSessionName, observedSessionId, observedPaneId] = probeInheritedPane(inheritedPane).split("\t");
-      if (observedSessionName === sessionName && observedSessionId === sessionId && observedPaneId === inheritedPane) return inheritedPane;
+      if (observedSessionName === sessionName && observedPaneId === inheritedPane
+        && (expectedTmuxSessionId === undefined || observedSessionId === expectedTmuxSessionId)) return inheritedPane;
     } catch {
       // Fall through to the platform-specific resolution policy below.
     }
@@ -2524,7 +2525,7 @@ function resolveDetachedLeaderPaneIdentity(
 /** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
 export function resolveDetachedLeaderPaneForTest(options: {
   sessionName: string;
-  sessionId: string;
+  expectedTmuxSessionId?: string;
   inheritedPane?: string;
   platform: NodeJS.Platform;
   leaderPid: number;
@@ -2534,7 +2535,7 @@ export function resolveDetachedLeaderPaneForTest(options: {
 }): string {
   return resolveDetachedLeaderPaneIdentity(
     options.sessionName,
-    options.sessionId,
+    options.expectedTmuxSessionId,
     options.inheritedPane,
     options.platform,
     options.leaderPid,
@@ -2739,6 +2740,55 @@ function cleanupDetachedPreReportSessionWithRetry(
     if (result === "cleaned") return result;
   }
   throw new Error("detached leader remained live before pre-report cleanup retry");
+}
+
+function scheduleDetachedPreReportCleanupRetry(
+  authority: DetachedLeaderAuthority,
+  allowUnownedPreTag: boolean,
+  authenticatedReadyOrTerminalProbe: () => boolean,
+  authenticatedFailedReportProbe: () => boolean,
+  onCleaned: () => void,
+  maxWaitMs = 30_000,
+): void {
+  const deadline = Date.now() + maxWaitMs;
+  const poll = (): void => {
+    if (Date.now() >= deadline) return;
+    try {
+      if (authenticatedReadyOrTerminalProbe()) return;
+      if (!authenticatedFailedReportProbe()) {
+        setTimeout(poll, 20);
+        return;
+      }
+      if (cleanupDetachedPreReportSessionInternal(authority, undefined, allowUnownedPreTag, authenticatedReadyOrTerminalProbe) === "cleaned") {
+        onCleaned();
+        return;
+      }
+    } catch {
+      // Readiness, finalization, identity, and ownership changes all preserve
+      // the marker and stop this watcher rather than attempting cleanup.
+      return;
+    }
+    setTimeout(poll, 20);
+  };
+  setTimeout(poll, 20);
+}
+
+/** Internal detached-launch seam. Exported solely for deterministic CLI tests. */
+export function scheduleDetachedPreReportCleanupRetryForTest(
+  authority: DetachedLeaderAuthority,
+  authenticatedReadyOrTerminalProbe: () => boolean,
+  authenticatedFailedReportProbe: () => boolean,
+  onCleaned: () => void,
+  maxWaitMs = 30_000,
+): void {
+  scheduleDetachedPreReportCleanupRetry(
+    authority,
+    false,
+    authenticatedReadyOrTerminalProbe,
+    authenticatedFailedReportProbe,
+    onCleaned,
+    maxWaitMs,
+  );
 }
 
 export function cleanupDetachedPreReportSession(
@@ -6351,10 +6401,12 @@ export function isDetachedReadyReportAuthorized(
     leaderPaneId: string | null;
     leaderPanePid: number | null;
   },
+  platform: NodeJS.Platform = process.platform,
 ): boolean {
   if (report?.kind !== "ready" || report.nonce !== expected.nonce
     || report.sessionId !== expected.sessionId || report.sessionName !== expected.sessionName
     || typeof report.leaderPid !== "number" || report.leaderPid <= 0) return false;
+  if (platform === "win32") return report.paneId === expected.leaderPaneId;
   if (expected.shouldAttach && expected.leaderPanePid !== null) {
     return report.leaderPid === expected.leaderPanePid;
   }
@@ -6371,9 +6423,10 @@ function isDetachedTerminalReportAuthorized(
     leaderPaneId: string | null;
     leaderPanePid: number | null;
   },
+  platform: NodeJS.Platform = process.platform,
 ): boolean {
   if (report?.kind !== "terminal" || report.finalized !== true) return false;
-  return isDetachedReadyReportAuthorized({ ...report, kind: "ready" }, expected);
+  return isDetachedReadyReportAuthorized({ ...report, kind: "ready" }, expected, platform);
 }
 
 function isDetachedFailedReportAuthorized(
@@ -8106,6 +8159,15 @@ async function runCodex(
                 return { kind: "success" };
               }
               if (report?.nonce === detachedLaunchNonce && report.sessionId === sessionId && report.sessionName === sessionName && report.leaderPid && report.kind === "failed") {
+                if (!isDetachedFailedReportAuthorized(report, {
+                  nonce: detachedLaunchNonce,
+                  sessionId,
+                  sessionName,
+                  leaderPaneId: detachedLeaderPaneId,
+                  leaderPanePid: detachedLeaderAuthority?.panePid ?? null,
+                })) {
+                  throw new Error("detached failed report is not authorized");
+                }
                 detachedLeaderPid = report.leaderPid;
                 // #3578: a failed leader report is terminal evidence. A leader that
                 // never reached readiness cannot hold pointer authority, so the
@@ -8270,7 +8332,35 @@ async function runCodex(
                 });
               }
             }
-            if (sessionCleanupCompleted) await attempt("rollback", removeReleaseMarkers);
+            if (sessionCleanupCompleted) {
+              await attempt("rollback", removeReleaseMarkers);
+            } else if (rollbackFromPreReportAuthority && detachedLeaderAuthority) {
+              scheduleDetachedPreReportCleanupRetry(
+                detachedLeaderAuthority,
+                !detachedLeaderOwnerTagInstalled,
+                () => {
+                  const expected = {
+                    nonce: detachedLaunchNonce,
+                    sessionId,
+                    sessionName,
+                    shouldAttach: detachedPreflight.shouldAttach,
+                    leaderPaneId: detachedLeaderPaneId,
+                    leaderPanePid: detachedLeaderAuthority!.panePid,
+                  };
+                  const report = readDetachedLeaderReport(releaseMarkerPath);
+                  return isDetachedReadyReportAuthorized(report, expected) ||
+                    isDetachedTerminalReportAuthorized(report, expected);
+                },
+                () => isDetachedFailedReportAuthorized(readDetachedLeaderReport(releaseMarkerPath), {
+                  nonce: detachedLaunchNonce,
+                  sessionId,
+                  sessionName,
+                  leaderPaneId: detachedLeaderPaneId,
+                  leaderPanePid: detachedLeaderAuthority!.panePid,
+                }),
+                removeReleaseMarkers,
+              );
+            }
           },
         },
       );
@@ -8542,7 +8632,7 @@ async function runDetachedSessionLeader(payload: DetachedLeaderPayload): Promise
   const inheritedPane = process.env.TMUX_PANE?.trim();
   pane = resolveDetachedLeaderPaneIdentity(
     payload.sessionName,
-    payload.sessionId,
+    undefined,
     inheritedPane,
     process.platform,
     process.pid,
