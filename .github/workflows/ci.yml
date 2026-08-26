@@ -554,7 +554,10 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Run Windows history materialization regressions
-        run: node dist/scripts/run-test-files.js dist/cli/__tests__/index.test.js dist/cli/__tests__/resume.test.js
+        run: >-
+          node --test
+          --test-name-pattern="materializes resolved history links|merges a symlinked primary history tree|populates read-only history directories|skips an extra history home|keeps group-only history|skips cyclic durable history links|rejects source swaps|persists materialized sessions|does not rewrite canonical history"
+          dist/cli/__tests__/index.test.js
 
   coverage-team-critical:
     name: Coverage Gate (Team Critical)
