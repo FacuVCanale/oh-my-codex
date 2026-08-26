@@ -1244,6 +1244,7 @@ interface HistoryPersistenceLockLease {
   token: string;
   lockIdentity: { dev: number; ino: number };
   heartbeat: ReturnType<typeof setInterval>;
+  waitForHeartbeat: () => Promise<void>;
 }
 
 interface HistoryPersistenceLockOwner {
@@ -1330,6 +1331,7 @@ async function retireHistoryLock(
 
 export async function releaseHistoryPersistenceLock(lease: HistoryPersistenceLockLease): Promise<void> {
   clearInterval(lease.heartbeat);
+  await lease.waitForHeartbeat();
   if (!(await historyLockIsCurrent(lease))) return;
   await retireHistoryLock(lease.lockPath, lease.root, lease.lockIdentity, lease.token);
 }
@@ -1366,7 +1368,8 @@ export async function acquireHistoryPersistenceLock(
         { flag: "wx", mode: 0o600 },
       );
       await rename(initialOwnerPath, ownerPath);
-      const heartbeat = setInterval(async () => {
+      let heartbeatInFlight = Promise.resolve();
+      const runHeartbeat = async () => {
         let temporaryOwnerPath: string | undefined;
         try {
           const owner = await readHistoryPersistenceLockOwner(lockPath);
@@ -1395,9 +1398,12 @@ export async function acquireHistoryPersistenceLock(
           // A contender may have removed a dead owner's lock between checks.
           if (temporaryOwnerPath) await rm(temporaryOwnerPath, { force: true }).catch(() => undefined);
         }
+      };
+      const heartbeat = setInterval(() => {
+        heartbeatInFlight = heartbeatInFlight.then(runHeartbeat, runHeartbeat);
       }, heartbeatMs);
       heartbeat.unref?.();
-      return { root, lockPath, token, lockIdentity, heartbeat };
+      return { root, lockPath, token, lockIdentity, heartbeat, waitForHeartbeat: () => heartbeatInFlight };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const lockStat = await lstat(lockPath).catch(() => undefined);
