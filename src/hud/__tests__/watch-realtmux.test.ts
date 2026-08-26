@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import {
+	buildPtyScriptCommand,
 	isRealTmuxAvailable,
+	isRealScriptAvailable,
 	type TempTmuxSessionFixture,
 	withTempTmuxSession,
 } from "../../team/__tests__/tmux-test-fixture.js";
@@ -15,13 +17,13 @@ const POLL_INTERVAL_MS = 50;
 const TEST_TIMEOUT_MS = 10_000;
 
 function skipUnlessRealTmux(t: TestContext): boolean {
-	if (isRealTmuxAvailable()) return true;
+	if (isRealTmuxAvailable() && isRealScriptAvailable()) return true;
 	assert.equal(
 		process.env.CI,
 		undefined,
-		"CI must provide tmux for the real-tmux HUD refresh regression",
+		"CI must provide tmux and script for the real-tmux HUD refresh regression",
 	);
-	t.skip("tmux is not installed");
+	t.skip("tmux or script is not installed");
 	return false;
 }
 
@@ -63,7 +65,8 @@ async function waitForTmuxValue(
 
 function startAttachedClient(fixture: TempTmuxSessionFixture): ChildProcess {
 	const command = `exec tmux -f /dev/null -L ${quoteSh(fixture.serverName)} attach-session -t ${quoteSh(fixture.sessionName)}`;
-	const child = spawn("script", ["-q", "-e", "-c", command, "/dev/null"], {
+	const ptyCommand = buildPtyScriptCommand(command);
+	const child = spawn(ptyCommand.executable, ptyCommand.args, {
 		env: {
 			...process.env,
 			TMUX: undefined,
