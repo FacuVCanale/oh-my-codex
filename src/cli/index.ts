@@ -1351,7 +1351,7 @@ export async function acquireHistoryPersistenceLock(
       }
       await assertHistoryPathWithin(lockPath, root);
       const lockIdentity = { dev: lockStat.dev, ino: lockStat.ino };
-      if ((lockStat.mode & 0o077) !== 0) {
+      if (process.platform !== "win32" && (lockStat.mode & 0o077) !== 0) {
         throw new Error(`history persistence lock is not private: ${lockPath}`);
       }
       const token = randomUUID();
@@ -1405,7 +1405,9 @@ export async function acquireHistoryPersistenceLock(
         await retireHistoryLock(lockPath, root, lockStat ? { dev: lockStat.dev, ino: lockStat.ino } : { dev: -1, ino: -1 });
         continue;
       }
-      if ((lockStat.mode & 0o077) !== 0) throw new Error(`history persistence lock is not private: ${lockPath}`);
+      if (process.platform !== "win32" && (lockStat.mode & 0o077) !== 0) {
+        throw new Error(`history persistence lock is not private: ${lockPath}`);
+      }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for history persistence lock: ${lockPath}`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
