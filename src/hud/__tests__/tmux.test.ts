@@ -12,6 +12,7 @@ import {
   findHudSplitOperationMarkerPaneId,
   findLegacyFocusedHudWatchPaneIds,
   findHudWatchPaneIds,
+  hasValidHudOwnerMarker,
   hudPaneMatchesOwner,
   listCurrentWindowHudPaneIds,
   OMX_TMUX_HUD_LEADER_PANE_ENV,
@@ -278,6 +279,54 @@ describe('HUD pane ownership helpers', () => {
       sessionId: 'sess-a',
       leaderPaneId: '%1',
     });
+  });
+
+  it('reads ownership from tmux outer quoting with escaped nested quotes', () => {
+    const [pane] = parseTmuxPaneSnapshot(
+      `%9\tnode\t"env OMX_DETACHED_HUD_OPERATION='op' /bin/zsh -c 'exec env OMX_SESSION_ID=\\"sess-a\\" OMX_TMUX_HUD_OWNER=\\"1\\" ${OMX_TMUX_HUD_LEADER_PANE_ENV}=\\"%1\\" node omx hud --watch'"`,
+    );
+
+    assert.deepEqual(readHudPaneOwner(pane!), {
+      sessionId: 'sess-a',
+      leaderPaneId: '%1',
+    });
+    assert.equal(hasValidHudOwnerMarker(pane!), true);
+  });
+
+  it('collects owner assignments after leading non-owner assignments before exec env', () => {
+    const [pane] = parseTmuxPaneSnapshot(
+      `%9\tnode\tOMX_TMUX_SPLIT_OPERATION_MARKER='op' exec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' node omx hud --watch`,
+    );
+
+    assert.deepEqual(readHudPaneOwner(pane!), {
+      sessionId: 'sess-a',
+      leaderPaneId: '%1',
+    });
+    assert.equal(hasValidHudOwnerMarker(pane!), true);
+  });
+
+  it('accepts the valid initial empty leader metadata', () => {
+    const [pane] = parseTmuxPaneSnapshot(
+      `%9\tnode\texec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='' node omx hud --watch`,
+    );
+
+    assert.deepEqual(readHudPaneOwner(pane!), {
+      sessionId: 'sess-a',
+      leaderPaneId: undefined,
+    });
+    assert.equal(hasValidHudOwnerMarker(pane!), true);
+  });
+
+  it('rejects ambiguous repeated ownership assignments', () => {
+    const [pane] = parseTmuxPaneSnapshot(
+      `%9\tnode\texec env OMX_SESSION_ID='sess-a' OMX_TMUX_HUD_OWNER='1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%1' ${OMX_TMUX_HUD_LEADER_PANE_ENV}='%2' node omx hud --watch`,
+    );
+
+    assert.deepEqual(readHudPaneOwner(pane!), {
+      sessionId: undefined,
+      leaderPaneId: undefined,
+    });
+    assert.equal(hasValidHudOwnerMarker(pane!), false);
   });
 
   it('splits tmux octal-escaped control separators from live list-panes output', () => {

@@ -311,10 +311,35 @@ function lexPosixWords(command: string): string[] | null {
   return words;
 }
 
+function normalizeTmuxPaneStartCommand(command: string): string {
+  const trimmed = command.trim();
+  if (trimmed.length < 2 || trimmed[0] !== '"') return command;
+
+  let escaped = false;
+  for (let index = 1; index < trimmed.length; index += 1) {
+    const char = trimmed[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      const body = trimmed.slice(1, index).replace(/\\(["\\])/g, '$1');
+      return `${body}${trimmed.slice(index + 1)}`.trim();
+    }
+  }
+
+  return command;
+}
+
 function parsePosixHudEnvAssignments(command: string): PosixHudEnvAssignments {
   const values = new Map<string, string[]>();
-  const attempted = HUD_OWNER_ENV_KEYS.some((key) => command.includes(key));
-  const words = lexPosixWords(command);
+  const normalizedCommand = normalizeTmuxPaneStartCommand(command);
+  const attempted = HUD_OWNER_ENV_KEYS.some((key) => normalizedCommand.includes(key));
+  const words = lexPosixWords(normalizedCommand);
   if (!words) return { attempted, valid: false, values };
 
   const inspect = (tokens: string[]): boolean => {
@@ -330,6 +355,7 @@ function parsePosixHudEnvAssignments(command: string): PosixHudEnvAssignments {
         values.set(key, existing);
         continue;
       }
+      if (assignment && (!commandStarted || acceptsEnvAssignments)) continue;
       if (token === '-c' && index + 1 < tokens.length) {
         const nested = lexPosixWords(tokens[index + 1]!);
         if (!nested || !inspect(nested)) return false;
@@ -457,7 +483,8 @@ function hasHudOwnerMetadataAttempt(command: string): boolean {
 }
 
 function isInvalidHudOwnerValue(key: string, value: string): boolean {
-  return value === '' || (key === OMX_TMUX_HUD_OWNER_ENV && value !== '1');
+  return (key === OMX_TMUX_HUD_OWNER_ENV && value !== '1')
+    || (key !== OMX_TMUX_HUD_LEADER_PANE_ENV && value === '');
 }
 
 function parseHudEnvAssignment(command: string, key: string): string | undefined {
