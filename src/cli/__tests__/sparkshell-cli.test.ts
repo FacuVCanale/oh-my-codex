@@ -529,6 +529,17 @@ describe('parseSparkShellFallbackInvocation', () => {
       { kind: 'tmux-pane', argv: ['tmux', 'capture-pane', '-t', '%12', '-p', '-S', '-400'] },
     );
   });
+
+  it('rejects tail line values that are not entirely integers', () => {
+    assert.throws(
+      () => parseSparkShellFallbackInvocation(['--tmux-pane', '%12', '--tail-lines', '400junk']),
+      /--tail-lines must be an integer between 100 and 1000/,
+    );
+    assert.throws(
+      () => parseSparkShellFallbackInvocation(['--tmux-pane=%12', '--tail-lines=400.5']),
+      /--tail-lines must be an integer between 100 and 1000/,
+    );
+  });
 });
 
 describe('omx sparkshell', () => {
