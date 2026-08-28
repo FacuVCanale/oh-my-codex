@@ -1323,6 +1323,105 @@ describe("config generator idempotency (#384)", () => {
       "duplicate empty parents must keep the marker-contained conflict classification",
     );
   });
+  it("tolerates the empty parent header when it is itself marker-contained (#3589)", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const merged = buildMergedConfig('model = "x"\n', "/tmp/codex", {
+      codexHomeDir: "/tmp/codex",
+      managedHookTrustState: managedTrustState,
+    });
+    const trustMarker = "# OMX-owned Codex hook trust state";
+    const markerIdx = merged.indexOf(trustMarker);
+    assert.ok(markerIdx > 0, "fixture must contain the managed trust marker");
+    const withParent = `${merged.slice(0, markerIdx)}[hooks.state]\n\n${merged.slice(markerIdx)}`;
+    assert.doesNotThrow(() => TOML.parse(withParent));
+    const stripOptions = {
+      managedTrustState,
+      priorManagedHookTrustState: managedTrustState,
+    };
+    const stripped = stripManagedCodexHookTrustState(withParent, stripOptions);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+    assert.match(stripped, /^\[hooks\.state\]$/m);
+    const upgraded = upsertManagedCodexHookTrustState(withParent, "/tmp/omx", hooksPath, stripOptions);
+    assert.doesNotThrow(() => TOML.parse(upgraded));
+    assert.match(
+      upgraded,
+      /^\[hooks\.state\."\/tmp\/codex\/hooks\.json:session_start:0:0"\]$/m,
+      "managed entries must be re-provisioned after refresh",
+    );
+  });
+
+  it("keeps non-header empty hooks.state forms and duplicates fail-closed (#3589)", () => {
+    const hooksPath = "/tmp/codex/hooks.json";
+    const managedTrustState = buildManagedCodexHookTrustState(hooksPath, "/tmp/omx");
+    const managed = upsertManagedCodexHookTrustState('model = "x"\n', "/tmp/omx", hooksPath);
+    const trustMarker = "# OMX-owned Codex hook trust state\n";
+    const startIdx = managed.indexOf(trustMarker) + trustMarker.length;
+    const inside = (snippet: string): string =>
+      managed.slice(0, startIdx) + snippet + managed.slice(startIdx);
+    const stripOptions = {
+      managedTrustState,
+      priorManagedHookTrustState: managedTrustState,
+    };
+    const isManagedTrustConflict = (error: unknown): boolean =>
+      error instanceof ManagedCodexHooksPlanError &&
+      error.code === "managed_trust_key_conflict";
+
+    const insideCases = [
+      ["empty dotted assignment", "hooks.state = {}\n"],
+      ["empty inline table", "hooks = { state = {} }\n"],
+      ["[hooks] scope with empty state", "[hooks]\nstate = {}\n"],
+      ["scalar hooks.state", 'hooks.state = "foreign"\n'],
+    ] as const;
+    for (const [name, snippet] of insideCases) {
+      assert.throws(
+        () => stripManagedCodexHookTrustState(inside(snippet), stripOptions),
+        isManagedTrustConflict,
+        `${name} must remain a marker-contained conflict`,
+      );
+    }
+    const trustEndMarker = "# End OMX-owned Codex hook trust state";
+    const secondChildIdx = managed.indexOf(
+      "[hooks.state.",
+      managed.indexOf("[hooks.state.", startIdx) + 1,
+    );
+    // The reported parent sits before the fence; a second definition anywhere inside
+    // (or any whole-config-invalid prelude) must keep base fail-closed behavior.
+    const reported = `${managed.slice(0, managed.indexOf(trustMarker))}[hooks.state]\n\n${managed.slice(managed.indexOf(trustMarker))}`;
+    const reportedTrustsOnlyIdx = reported.indexOf(trustMarker) + trustMarker.length;
+    const duplicateCases = [
+      ["second parent after comments", reported.slice(0, reportedTrustsOnlyIdx) + "[hooks.state]\n" + reported.slice(reportedTrustsOnlyIdx)],
+      ["second parent between children", reported.slice(0, secondChildIdx) + "[hooks.state]\n" + reported.slice(secondChildIdx)],
+      ["second parent before trust end", reported.slice(0, reported.indexOf(trustEndMarker)) + "[hooks.state]\n" + reported.slice(reported.indexOf(trustEndMarker))],
+      ["two parents inside", inside("[hooks.state]\n[hooks.state]\n")],
+    ] as const;
+    for (const [name, config] of duplicateCases) {
+      assert.throws(
+        () => stripManagedCodexHookTrustState(config, stripOptions),
+        isManagedTrustConflict,
+        `${name} must remain a marker-contained conflict`,
+      );
+    }
+
+    // Whole-config-invalid preludes keep base fail-closed behavior.
+    assert.throws(
+      () =>
+        stripManagedCodexHookTrustState(
+          `hooks.state = {}\n\n${inside("[hooks.state]\n")}`,
+          stripOptions,
+        ),
+      isManagedTrustConflict,
+      "an inline-table prelude must keep the header conflict",
+    );
+
+    // A valid, empty-valued foreign sibling outside the fence is user content: it is
+    // preserved and the proven-owned managed children are still refreshed.
+    const withForeignPrelude = `hooks.state.foreign = {}\n\n${inside("[hooks.state]\n")}`;
+    assert.doesNotThrow(() => TOML.parse(withForeignPrelude));
+    const stripped = stripManagedCodexHookTrustState(withForeignPrelude, stripOptions);
+    assert.doesNotThrow(() => TOML.parse(stripped));
+    assert.match(stripped, /^hooks\.state\.foreign = \{\}$/m, "foreign state preserved");
+  });
 
   it("matches managed hooks.state keys case-sensitively", () => {
     const start = "# oh-my-codex (OMX) Configuration";

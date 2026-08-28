@@ -2158,22 +2158,25 @@ function collectMarkerRanges(
 function recordManagedMarkerHooksStateSourceSpan(
   spans: SourceSpan[],
   invalidSpans: SourceSpan[],
+  source: TomlSourceLexicalAnalysis,
   start: number,
   end: number,
   parsed: Record<string, unknown> | undefined,
   insideManagedMarkerBlock: boolean,
-  tolerance?: ManagedMarkerHooksStateSpanTolerance,
+  emptyParentHeaderTolerance?: ManagedMarkerHooksStateSpanTolerance,
 ): void {
   if (!insideManagedMarkerBlock) return;
   const state = tomlHooksStateValue(parsed);
   if (state === undefined) return;
   if (
+    emptyParentHeaderTolerance !== undefined &&
+    !emptyParentHeaderTolerance.emptyParentHeaderSeen &&
+    emptyParentHeaderTolerance.uniqueEmptyParentHeader &&
     isPlainTomlRecord(state) &&
     Object.keys(state).length === 0 &&
-    isExactlyEmptyHooksStateParentHeader(parsed) &&
-    !(tolerance?.emptyParentHeaderSeen ?? false)
+    isEmptyParentHeaderStatementSpan(source, start, end)
   ) {
-    if (tolerance) tolerance.emptyParentHeaderSeen = true;
+    emptyParentHeaderTolerance.emptyParentHeaderSeen = true;
     // A bare empty parent header such as `[hooks.state]` is semantically empty TOML
     // structure: it owns no trust entries, and child tables restate `hooks.state` in
     // their own headers. It cannot hide unmanaged state, so it is not a conflict.
@@ -2187,19 +2190,22 @@ function recordManagedMarkerHooksStateSourceSpan(
 }
 
 /**
- * Tracks whether the exact semantically empty parent-table shape `[hooks.state]` has
- * already been tolerated inside the managed marker block. Only the first occurrence is
- * benign; a second bare header (with or without children redefining it) is a real TOML
- * duplicate-table definition, so later empty-parent spans stay invalid.
+ * Eligibility gate for tolerating one bare empty `[hooks.state]` parent header inside
+ * the managed marker block. `emptyParentHeaderSeen` grants the tolerance at most once;
+ * `uniqueEmptyParentHeader` is proven file-wide before any span is tolerated, so a
+ * second definition (a real TOML duplicate-table error) never qualifies. Absence of a
+ * tolerance object — for example for plain assignments — never authorizes a skip.
  */
 interface ManagedMarkerHooksStateSpanTolerance {
   emptyParentHeaderSeen: boolean;
+  uniqueEmptyParentHeader: boolean;
 }
 
 /**
  * Accepts only the exact whole-statement parse of a bare empty parent table header,
- * `[hooks.state]`. Anything beyond that shape — nested tables under a deeper header,
- * sibling `hooks` tables with other keys, or unrelated statements — stays fail-closed.
+ * `[hooks.state]` (quoted-key variants included). Anything beyond that shape — empty
+ * assignments or inline tables, a `[hooks]` scope holding an empty `state`, nested
+ * tables under a deeper header, or unrelated statements — stays fail-closed.
  */
 function isExactlyEmptyHooksStateParentHeader(
   parsed: Record<string, unknown> | undefined,
@@ -2213,6 +2219,43 @@ function isExactlyEmptyHooksStateParentHeader(
     Object.keys(parsed.hooks.state).length === 0;
 }
 
+/**
+ * Proves a span's statements reduce to exactly one lexically real empty `[hooks.state]`
+ * table header line plus blank/comment lines. Parsed-shape equality alone is not
+ * enough: `hooks.state = {}`, `hooks = { state = {} }`, and `[hooks]` scopes holding
+ * `state = {}` parse to the same object but are not parent headers.
+ */
+function isEmptyParentHeaderStatementSpan(
+  source: TomlSourceLexicalAnalysis,
+  start: number,
+  end: number,
+): boolean {
+  let sawHeader = false;
+  for (let index = start; index < end; index += 1) {
+    if (!source.lineStartsOutsideMultiline[index]) return false;
+    const line = source.lines[index] ?? "";
+    if (isTomlSourceBlankOrComment(line)) continue;
+    if (sawHeader) return false;
+    const header = parseTomlSourceTableHeader(line);
+    if (!header || !isExactlyEmptyHooksStateParentHeader(header.parsed)) return false;
+    sawHeader = true;
+  }
+  return sawHeader;
+}
+
+function countExactEmptyParentHeaderLines(
+  source: TomlSourceLexicalAnalysis,
+): number {
+  let count = 0;
+  for (const [index, line] of source.lines.entries()) {
+    if (!source.lineStartsOutsideMultiline[index]) continue;
+    if (isTomlSourceBlankOrComment(line)) continue;
+    const header = parseTomlSourceTableHeader(line);
+    if (header && isExactlyEmptyHooksStateParentHeader(header.parsed)) count += 1;
+  }
+  return count;
+}
+
 function addManagedHookTrustStateSourceRepresentations(
   representations: Map<string, ManagedHookTrustStateSourceRepresentation[]>,
   markerContainedHooksStateSpans: SourceSpan[],
@@ -2224,14 +2267,17 @@ function addManagedHookTrustStateSourceRepresentations(
   insideManagedMarkerBlock: boolean,
   containingTableScope?: TomlSourceTableScope,
   fallbackKeys: readonly string[] = [],
+  emptyParentHeaderTolerance?: ManagedMarkerHooksStateSpanTolerance,
 ): void {
   recordManagedMarkerHooksStateSourceSpan(
     markerContainedHooksStateSpans,
     invalidMarkerContainedHooksStateSpans,
+    source,
     start,
     end,
     parsed,
     insideManagedMarkerBlock,
+    emptyParentHeaderTolerance,
   );
   const state = tomlHooksStateEntries(parsed);
   const hasComment = sourceRangeHasTomlComment(source, start, end);
@@ -2324,6 +2370,8 @@ function collectManagedHookTrustStateSourceRepresentations(
   const parsedStatementSpans: SourceSpan[] = [];
   const emptyParentHeaderTolerance: ManagedMarkerHooksStateSpanTolerance = {
     emptyParentHeaderSeen: false,
+    uniqueEmptyParentHeader: countExactEmptyParentHeaderLines(source) === 1 &&
+      safeParseToml(config) !== undefined,
   };
 
   const managedMarkerRanges = [
@@ -2355,6 +2403,7 @@ function collectManagedHookTrustStateSourceRepresentations(
       if (
         !source.lineStartsOutsideMultiline[cursor] ||
         line.trim().length === 0 ||
+        isTomlSourceBlankOrComment(line) ||
         line.trim() === OMX_HOOK_TRUST_START_MARKER ||
         line.trim() === OMX_CONFIG_START_MARKER
       ) {
@@ -2405,6 +2454,7 @@ function collectManagedHookTrustStateSourceRepresentations(
     recordManagedMarkerHooksStateSourceSpan(
       markerContainedHooksStateSpans,
       invalidMarkerContainedHooksStateSpans,
+      source,
       index,
       end,
       tableScope.parsed,
