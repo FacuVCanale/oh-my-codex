@@ -1788,7 +1788,6 @@ interface TomlSourceArrayTableOpener {
   firstKey: TomlSourceKeySegment | undefined;
   openerOnly: boolean;
 }
-
 /**
  * Detects a potential array-table opener without accepting malformed spacing
  * or extra opening brackets as TOML syntax. Array tables rooted at `hooks`
@@ -2163,15 +2162,55 @@ function recordManagedMarkerHooksStateSourceSpan(
   end: number,
   parsed: Record<string, unknown> | undefined,
   insideManagedMarkerBlock: boolean,
+  tolerance?: ManagedMarkerHooksStateSpanTolerance,
 ): void {
   if (!insideManagedMarkerBlock) return;
   const state = tomlHooksStateValue(parsed);
   if (state === undefined) return;
+  if (
+    isPlainTomlRecord(state) &&
+    Object.keys(state).length === 0 &&
+    isExactlyEmptyHooksStateParentHeader(parsed) &&
+    !(tolerance?.emptyParentHeaderSeen ?? false)
+  ) {
+    if (tolerance) tolerance.emptyParentHeaderSeen = true;
+    // A bare empty parent header such as `[hooks.state]` is semantically empty TOML
+    // structure: it owns no trust entries, and child tables restate `hooks.state` in
+    // their own headers. It cannot hide unmanaged state, so it is not a conflict.
+    return;
+  }
   const span = { start, end };
   spans.push(span);
   if (!isPlainTomlRecord(state) || Object.keys(state).length === 0) {
     invalidSpans.push(span);
   }
+}
+
+/**
+ * Tracks whether the exact semantically empty parent-table shape `[hooks.state]` has
+ * already been tolerated inside the managed marker block. Only the first occurrence is
+ * benign; a second bare header (with or without children redefining it) is a real TOML
+ * duplicate-table definition, so later empty-parent spans stay invalid.
+ */
+interface ManagedMarkerHooksStateSpanTolerance {
+  emptyParentHeaderSeen: boolean;
+}
+
+/**
+ * Accepts only the exact whole-statement parse of a bare empty parent table header,
+ * `[hooks.state]`. Anything beyond that shape — nested tables under a deeper header,
+ * sibling `hooks` tables with other keys, or unrelated statements — stays fail-closed.
+ */
+function isExactlyEmptyHooksStateParentHeader(
+  parsed: Record<string, unknown> | undefined,
+): boolean {
+  if (!parsed) return false;
+  return Object.keys(parsed).length === 1 &&
+    isPlainTomlRecord(parsed.hooks) &&
+    Object.keys(parsed.hooks).length === 1 &&
+    Object.hasOwn(parsed.hooks, "state") &&
+    isPlainTomlRecord(parsed.hooks.state) &&
+    Object.keys(parsed.hooks.state).length === 0;
 }
 
 function addManagedHookTrustStateSourceRepresentations(
@@ -2283,6 +2322,9 @@ function collectManagedHookTrustStateSourceRepresentations(
   const markerContainedHooksStateSpans: SourceSpan[] = [];
   const invalidMarkerContainedHooksStateSpans: SourceSpan[] = [];
   const parsedStatementSpans: SourceSpan[] = [];
+  const emptyParentHeaderTolerance: ManagedMarkerHooksStateSpanTolerance = {
+    emptyParentHeaderSeen: false,
+  };
 
   const managedMarkerRanges = [
     ...collectMarkerRanges(
@@ -2367,6 +2409,7 @@ function collectManagedHookTrustStateSourceRepresentations(
       end,
       tableScope.parsed,
       insideManagedMarkerBlock,
+      emptyParentHeaderTolerance,
     );
     const headerState = tomlHooksStateEntries(header.parsed);
     const directKeys = Object.keys(headerState ?? {});
