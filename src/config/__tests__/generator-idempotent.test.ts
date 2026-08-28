@@ -1381,14 +1381,14 @@ describe("config generator idempotency (#384)", () => {
       );
     }
     const trustEndMarker = "# End OMX-owned Codex hook trust state";
-    const secondChildIdx = managed.indexOf(
-      "[hooks.state.",
-      managed.indexOf("[hooks.state.", startIdx) + 1,
-    );
     // The reported parent sits before the fence; a second definition anywhere inside
     // (or any whole-config-invalid prelude) must keep base fail-closed behavior.
     const reported = `${managed.slice(0, managed.indexOf(trustMarker))}[hooks.state]\n\n${managed.slice(managed.indexOf(trustMarker))}`;
     const reportedTrustsOnlyIdx = reported.indexOf(trustMarker) + trustMarker.length;
+    const secondChildIdx = reported.indexOf(
+      "[hooks.state.",
+      reported.indexOf("[hooks.state.", reportedTrustsOnlyIdx) + 1,
+    );
     const duplicateCases = [
       ["second parent after comments", reported.slice(0, reportedTrustsOnlyIdx) + "[hooks.state]\n" + reported.slice(reportedTrustsOnlyIdx)],
       ["second parent between children", reported.slice(0, secondChildIdx) + "[hooks.state]\n" + reported.slice(secondChildIdx)],
