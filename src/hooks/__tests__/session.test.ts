@@ -29,6 +29,7 @@ import {
   recoverSessionPointerLock,
   resetSessionMetrics,
   resolveSessionPointerContext,
+  sessionOwnerFileIdentityMatches,
   writeSessionEnd,
   writeNativeSessionOwner,
   updateDetachedSessionMetadata,
@@ -37,6 +38,16 @@ import {
   type SessionState,
   type ProcessObservation,
 } from '../session.js';
+
+describe('native session owner file identity', () => {
+  it('accepts only the observed Windows path-zero to handle-nonzero asymmetry', () => {
+    assert.equal(sessionOwnerFileIdentityMatches({ dev: 0, ino: 42 }, { dev: 11, ino: 42 }, 'win32'), true);
+    assert.equal(sessionOwnerFileIdentityMatches({ dev: 11, ino: 42 }, { dev: 0, ino: 42 }, 'win32'), false);
+    assert.equal(sessionOwnerFileIdentityMatches({ dev: 11, ino: 42 }, { dev: 12, ino: 42 }, 'win32'), false);
+    assert.equal(sessionOwnerFileIdentityMatches({ dev: 0, ino: 42 }, { dev: 11, ino: 43 }, 'win32'), false);
+    assert.equal(sessionOwnerFileIdentityMatches({ dev: 0, ino: 42 }, { dev: 11, ino: 42 }, 'linux'), false);
+  });
+});
 
 interface SessionHistoryEntry {
   session_id: string;

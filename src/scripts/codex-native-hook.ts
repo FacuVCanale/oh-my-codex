@@ -57,6 +57,7 @@ import {
   readUsableSessionState,
   reconcileNativeSessionStart,
   resolveSessionPointerContext,
+  sessionOwnerFileIdentityMatches,
   type SessionStartOptions,
   writeNativeSessionOwner,
   type SessionState
@@ -3735,7 +3736,11 @@ function hookCancelIdentity(stats: { dev: number; ino: number; mode: number; uid
   return { dev: stats.dev, ino: stats.ino, mode: stats.mode, uid: stats.uid, size: stats.size, mtimeMs: stats.mtimeMs };
 }
 function hookCancelIdentityMatches(left: HookCancelTargetIdentity, right: HookCancelTargetIdentity): boolean {
-  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.uid === right.uid && left.size === right.size && left.mtimeMs === right.mtimeMs;
+  return sessionOwnerFileIdentityMatches(left, right, hookCancelPlatform())
+    && left.mode === right.mode
+    && left.uid === right.uid
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
 }
 function hookCancelTargetMatches(left: HookCancelTargetIdentity, right: HookCancelTargetIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode && left.uid === right.uid;

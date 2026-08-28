@@ -120,6 +120,23 @@ export interface SessionPointerReadResult {
 
 /** Classified native session-owner sidecar evidence for fail-closed consumers. */
 export interface NativeSessionOwnerEvidence extends SessionPointerReadResult {}
+
+interface SessionOwnerFileIdentity {
+  dev: number;
+  ino: number;
+}
+
+export function sessionOwnerFileIdentityMatches(
+  frozenPath: SessionOwnerFileIdentity,
+  openedHandle: SessionOwnerFileIdentity,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (frozenPath.ino <= 0 || openedHandle.ino !== frozenPath.ino) return false;
+  if (openedHandle.dev === frozenPath.dev) return true;
+  return platform === 'win32'
+    && frozenPath.dev === 0
+    && openedHandle.dev > 0;
+}
 export type SessionPointerTransactionOperation =
   | 'pointer-context-resolve'
   | 'state-dir-create'
@@ -3401,6 +3418,7 @@ export async function readNativeSessionOwnerEvidence(
   const stateRootDir = dirname(sessionsDir);
   const directoryPaths = [stateRootDir, sessionsDir, nativeOwnerDir];
   const directoryIdentities: Array<{ path: string; dev: number; ino: number }> = [];
+  let frozenFileIdentity: SessionOwnerFileIdentity | undefined;
   try {
     for (const directoryPath of directoryPaths) {
       const stat = await transactionDependencies.fs.lstat(directoryPath);
@@ -3409,6 +3427,7 @@ export async function readNativeSessionOwnerEvidence(
     }
     const pathStat = await transactionDependencies.fs.lstat(context.sessionPath);
     if (pathStat.isSymbolicLink() || !pathStat.isFile()) return { status: 'malformed' };
+    frozenFileIdentity = { dev: pathStat.dev, ino: pathStat.ino };
   } catch (error) {
     if (isNotFound(error)) return { status: 'absent' };
     throw error;
@@ -3421,9 +3440,12 @@ export async function readNativeSessionOwnerEvidence(
     if (!openedStat.isFile()) return { status: 'malformed' };
     raw = await handle.readFile({ encoding: 'utf8' });
     const finalPathStat = await transactionDependencies.fs.lstat(context.sessionPath);
-    if (finalPathStat.isSymbolicLink()
-      || finalPathStat.dev !== openedStat.dev
-      || finalPathStat.ino !== openedStat.ino) {
+    if (!frozenFileIdentity
+      || finalPathStat.isSymbolicLink()
+      || !finalPathStat.isFile()
+      || finalPathStat.dev !== frozenFileIdentity.dev
+      || finalPathStat.ino !== frozenFileIdentity.ino
+      || !sessionOwnerFileIdentityMatches(frozenFileIdentity, openedStat, transactionDependencies.runtimePlatform)) {
       return { status: 'malformed', raw };
     }
     for (const identity of directoryIdentities) {

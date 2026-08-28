@@ -137,6 +137,7 @@ import {
   readSessionPointer,
   readSessionState,
   resolveSessionPointerContext,
+  sessionOwnerFileIdentityMatches,
   finalizeBoundOnce,
   isSessionPointerLaunchAbort,
   normalizeSessionId,
@@ -10033,6 +10034,19 @@ interface CancellationTestFaults {
   rollbackFailureMode?: string;
 }
 
+interface CancellationFileIdentity {
+  dev: number;
+  ino: number;
+}
+
+export function cancellationFileIdentityMatches(
+  frozen: CancellationFileIdentity,
+  current: CancellationFileIdentity,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return sessionOwnerFileIdentityMatches(frozen, current, platform);
+}
+
 async function cancelModes(
   args: string[] = [],
   options: { cwd?: string; testFaults?: CancellationTestFaults } = {},
@@ -10337,7 +10351,10 @@ async function cancelModes(
         const handle = await open(change.entry.path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW);
         const currentStat = await handle.stat();
         const currentContent = await handle.readFile({ encoding: "utf-8" });
-        if (!currentStat.isFile() || currentStat.dev !== change.entry.dev || currentStat.ino !== change.entry.ino) {
+        if (
+          !currentStat.isFile()
+          || !cancellationFileIdentityMatches(change.entry, currentStat)
+        ) {
           await handle.close();
           throw new Error(`Refusing cancellation because state identity changed: ${change.entry.path}.`);
         }
